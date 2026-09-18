@@ -14,6 +14,7 @@ import {
   type ReviewItemData,
 } from "../shared/review";
 import { addComment, getComments, removeComment, subscribe } from "./review-store";
+import { MarkdownText } from "./markdown";
 
 type EditingTarget = {
   paragraphIndex: number;
@@ -90,7 +91,6 @@ function ReviewAssistantMessage({
   const styles = useMemo(
     () => ({
       root: { gap: layout.compact ? 6 : 8 } as const,
-      paragraph: { color: theme.colors.foreground, fontSize: layout.compact ? 14 : 15, lineHeight: 22 } as const,
       hint: { color: theme.colors.foregroundMuted, fontSize: 11 } as const,
       comments: { gap: 4, marginTop: 2 } as const,
       quote: { color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic" } as const,
@@ -138,11 +138,15 @@ function ReviewAssistantMessage({
         const anchored = comments.filter(
           (comment) =>
             comment.paragraphIndex === index &&
-            // Accept prefix matches: comments saved mid-stream snapshot a shorter paragraph.
-            (comment.messageId === data.messageId || paragraph.startsWith(comment.paragraphText)),
+            (comment.messageId !== null
+              ? // Known message id: anchor strictly by id and paragraph index.
+                comment.messageId === data.messageId
+              : // Unknown message id (no id assigned yet or at all): accept prefix
+                // matches, since streaming only appends to the paragraph text.
+                paragraph.startsWith(comment.paragraphText)),
         );
         return (
-          <View key={`${index}-${paragraph.slice(0, 24)}`} style={styles.comments}>
+          <View key={index} style={styles.comments}>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Comment on paragraph ${index + 1}`}
@@ -150,7 +154,7 @@ function ReviewAssistantMessage({
                 setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })
               }
             >
-              <Text style={styles.paragraph}>{paragraph}</Text>
+              <MarkdownText text={paragraph} theme={theme} compact={layout.compact} />
             </Pressable>
             {anchored.map((comment) => (
               <CommentCard

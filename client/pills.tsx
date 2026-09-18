@@ -22,6 +22,41 @@ export function registerPills(client: PluginClientContext): () => void {
 
   const unsubscribeComments = subscribe(refreshLabels);
 
+  // Seed pills for agents that already existed before this subscription; the
+  // agent_update stream may only carry future changes.
+  void client.paseo.agents
+    .list()
+    .then((result) => {
+      for (const entry of result.entries) {
+        const agent = entry.agent;
+        if (!agent.workspaceId || pills.has(agent.id)) continue;
+        pills.set(
+          agent.id,
+          client.addComposerPill({
+            id: "review",
+            workspaceId: agent.workspaceId,
+            agentId: agent.id,
+            button: {
+              title: "Review inline",
+              icon: "MessageSquareQuote",
+              label: "Review",
+              behavior: {
+                kind: "action",
+                onPress() {
+                  client.openPanel("review", {
+                    workspaceId: agent.workspaceId!,
+                    agentId: agent.id,
+                  });
+                },
+              },
+            },
+          }),
+        );
+      }
+      refreshLabels();
+    })
+    .catch(() => {});
+
   const unsubscribeAgents = client.paseo.agents.subscribe((update) => {
     if (update.kind === "remove") {
       pills.get(update.agentId)?.remove();
