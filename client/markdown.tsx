@@ -86,9 +86,12 @@ function InlineRun({
               <Text
                 key={index}
                 style={{
-                  color: theme.colors.foreground,
+                  color: theme.colors.accent,
                   backgroundColor: theme.colors.surface2,
                   fontSize: styles.codeFontSize,
+                  paddingHorizontal: 5,
+                  paddingVertical: 2,
+                  borderRadius: 4,
                   ...monospaceFont(),
                 }}
               >
