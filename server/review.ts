@@ -158,8 +158,8 @@ export async function searchDrafts(
     lastServed.set(agentId, { marker: "", ids: pending.map((comment) => comment.id) });
     items.push({
       id: `review-draft-${agentId}`,
-      identifier: `Attach all pending comments (${pending.length} ${pending.length === 1 ? "comment" : "comments"})`,
       title: `Attach all pending comments (${pending.length} ${pending.length === 1 ? "comment" : "comments"})`,
+      identifier: agentTitle,
       subtitle: `All un-sent inline review comments · ${agentTitle}`,
       url: `https://inline-review.local/draft/${encodeURIComponent(agentId)}`,
       text: draft,
