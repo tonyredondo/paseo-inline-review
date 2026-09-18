@@ -1,0 +1,6 @@
+{
+  "id": "inline-review",
+  "requirements": {
+    "paseo": ">=0.8.0"
+  }
+}
