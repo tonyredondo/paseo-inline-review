@@ -68,6 +68,17 @@ export function updateComment(id: string, text: string): ReviewComment | null {
   return updated;
 }
 
+/** Marks pending comments of one agent as sent (fastpath pill + panel send). */
+export function markAgentCommentsSent(agentId: string): void {
+  let changed = false;
+  comments = comments.map((comment) => {
+    if (comment.agentId !== agentId || comment.status !== "pending") return comment;
+    changed = true;
+    return { ...comment, status: "sent" as const };
+  });
+  if (changed) emit();
+}
+
 export function removeComment(id: string): void {
   comments = comments.filter((comment) => comment.id !== id);
   emit();

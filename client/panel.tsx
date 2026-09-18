@@ -56,7 +56,12 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
   const styles = useMemo(
     () => ({
       root: { flex: 1, padding: layout.compact ? 16 : 24, gap: 12, backgroundColor: theme.colors.surface0 } as const,
+      titleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" } as const,
       title: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 22, fontWeight: "600" } as const,
+      clearText: { color: theme.colors.statusDanger, fontSize: 13 } as const,
+      composer: { flexDirection: "row", gap: 8, alignItems: "flex-end" } as const,
+      sendButton: { backgroundColor: theme.colors.accent, borderRadius: 10, paddingVertical: 12, paddingHorizontal: 16 } as const,
+      sendText: { color: theme.colors.accentForeground, fontSize: 14, fontWeight: "600" } as const,
       label: { color: theme.colors.foregroundMuted, fontSize: 11 } as const,
       reopen: { color: theme.colors.accent, fontSize: 12 } as const,
       empty: { color: theme.colors.foregroundMuted, fontSize: 14 } as const,
@@ -72,11 +77,7 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
       quote: { color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic" } as const,
       text: { color: theme.colors.foreground, fontSize: 14 } as const,
       remove: { color: theme.colors.statusDanger, fontSize: 12 } as const,
-      actions: { gap: 8 } as const,
-      primary: { backgroundColor: theme.colors.accent, borderRadius: 10, padding: 12, alignItems: "center" as const } as const,
-      primaryText: { color: theme.colors.accentForeground, fontSize: 14, fontWeight: "600" } as const,
-      secondary: { borderColor: theme.colors.border, borderWidth: 1, borderRadius: 10, padding: 12, alignItems: "center" as const } as const,
-      secondaryText: { color: theme.colors.foreground, fontSize: 14 } as const,
+
       input: {
         color: theme.colors.foreground,
         backgroundColor: theme.colors.surface2,
@@ -134,9 +135,20 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
     }
   }
 
+  function clear(): void {
+    clearAgent(agentId);
+    setDraft("");
+    setEditingId(null);
+  }
+
   return (
     <View style={styles.root}>
-      <Text style={styles.title}>Review ({comments.length})</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Review ({comments.length})</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Clear comments" hitSlop={6} onPress={clear}>
+          <Text style={styles.clearText}>Clear</Text>
+        </Pressable>
+      </View>
       {comments.length === 0 ? (
         <Text style={styles.empty}>
           No comments yet. Tap a paragraph on an agent response to comment on it.
@@ -211,19 +223,16 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
           </View>
         </ScrollView>
       )}
-      <TextInput
-        value={draft}
-        onChangeText={setDraft}
-        placeholder="Optional general note to accompany the review..."
-        multiline
-        style={styles.input}
-      />
-      <View style={styles.actions}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Send review to the agent" style={styles.primary} disabled={busy} onPress={send}>
-          <Text style={styles.primaryText}>{busy ? "Sending..." : "Send to agent"}</Text>
-        </Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel="Clear comments" style={styles.secondary} onPress={() => clearAgent(agentId)}>
-          <Text style={styles.secondaryText}>Clear</Text>
+      <View style={styles.composer}>
+        <TextInput
+          value={draft}
+          onChangeText={setDraft}
+          placeholder="Optional note..."
+          multiline
+          style={[styles.input, { flex: 1, minHeight: 48 }]}
+        />
+        <Pressable accessibilityRole="button" accessibilityLabel="Send review to the agent" style={styles.sendButton} disabled={busy} onPress={send}>
+          <Text style={styles.sendText}>{busy ? "..." : "Send"}</Text>
         </Pressable>
       </View>
     </View>
