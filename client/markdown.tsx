@@ -119,11 +119,14 @@ function InlineRun({
   theme,
   styles,
   refs,
+  selectable,
 }: {
   tokens: InlineToken[];
   theme: PluginTheme;
   styles: ReturnType<typeof useStyles>;
   refs?: Map<string, string>;
+  /** Native: each word becomes its own selectable Text (word-level selection). */
+  selectable?: boolean;
 }): ReactNode {
   const openUrlViaDaemon = useRpc(openInBrowserRpc);
   return (
@@ -191,7 +194,20 @@ function InlineRun({
             return <Text key={index}>{"\n"}</Text>;
           case "text":
           default:
-            return <Fragment key={index}>{token.text}</Fragment>;
+            if (!selectable) return <Fragment key={index}>{token.text}</Fragment>;
+            // Word-level selectable fragments: long-press selects the touched
+            // word instead of the whole paragraph.
+            return (
+              <Fragment key={index}>
+                {token.text.split(/(\s+)/).map((piece, pieceIndex) =>
+                  piece.length > 0 ? (
+                    <Text key={pieceIndex} selectable>
+                      {piece}
+                    </Text>
+                  ) : null,
+                )}
+              </Fragment>
+            );
         }
       })}
     </>
@@ -371,13 +387,8 @@ export function MarkdownText({
 
   function renderTextLines(lines: string[], style: object): ReactNode {
     return lines.map((line, index) => (
-      <Text
-        key={index}
-        style={style}
-        selectable={selectable}
-        onPress={onChunkPress}
-      >
-        <InlineRun tokens={parseInline(line, refs)} theme={theme} styles={styles} refs={refs} />
+      <Text key={index} style={style} onPress={onChunkPress}>
+        <InlineRun tokens={parseInline(line, refs)} theme={theme} styles={styles} refs={refs} selectable={selectable} />
       </Text>
     ));
   }
