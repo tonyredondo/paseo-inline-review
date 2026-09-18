@@ -110,6 +110,9 @@ export function setActiveAgent(agentId: string): void {
 export async function setActiveAgentHandler(
   input: RpcInput<typeof setActiveAgentRpc>,
 ): Promise<{ ok: boolean }> {
+  if (activeAgentId !== input.agentId) {
+    console.log(`inline-review: active agent set to ${input.agentId}`);
+  }
   activeAgentId = input.agentId;
   return { ok: true };
 }
@@ -168,6 +171,7 @@ export async function searchDrafts(
     });
     ensureWatch(agentId);
   }
+  console.log(`inline-review: search served ${items.length} item(s) for active agent ${activeAgentId}`);
   return { items };
 }
 
