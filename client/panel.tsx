@@ -12,6 +12,7 @@ import {
   removeComment,
   scheduleSave,
   subscribe,
+  updateComment,
 } from "./review-store";
 
 export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
@@ -26,6 +27,8 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
   const sent = all.filter((comment) => comment.status === "sent");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
 
   // Refresh from the daemon when it opens, and whenever a new user message
   // arrives (the server marks attached drafts sent on the next user message).
@@ -157,17 +160,52 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
                     : "Sent \u2713 \u00b7 already part of the conversation"}
                 </Text>
                 <Text style={styles.quote}>"{comment.paragraphText.slice(0, 160)}"</Text>
-                <Text style={styles.text}>{comment.text}</Text>
-                <View style={{ flexDirection: "row", gap: 12 }}>
-                  <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" hitSlop={8} onPress={() => removeComment(comment.id)}>
-                    <Text style={styles.remove}>Delete</Text>
-                  </Pressable>
-                  {comment.status === "sent" ? (
-                    <Pressable accessibilityRole="button" accessibilityLabel="Re-open comment" hitSlop={8} onPress={() => setStatus(comment, "pending")}>
-                      <Text style={styles.reopen}>Re-open</Text>
+                {editingId === comment.id ? (
+                  <View style={{ gap: 6 }}>
+                    <TextInput
+                      value={editDraft}
+                      onChangeText={setEditDraft}
+                      placeholder="Edit your comment..."
+                      multiline
+                      autoFocus
+                      style={styles.input}
+                    />
+                    <View style={{ flexDirection: "row", gap: 12 }}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Save edited comment"
+                        hitSlop={8}
+                        onPress={() => {
+                          if (editingId) updateComment(editingId, editDraft);
+                          setEditingId(null);
+                          setEditDraft("");
+                        }}
+                      >
+                        <Text style={styles.reopen}>Save</Text>
+                      </Pressable>
+                      <Pressable accessibilityRole="button" accessibilityLabel="Cancel comment edit" hitSlop={8} onPress={() => setEditingId(null)}>
+                        <Text style={styles.remove}>Cancel</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : (
+                  <Text style={styles.text}>{comment.text}</Text>
+                )}
+                {editingId !== comment.id ? (
+                  <View style={{ flexDirection: "row", gap: 12 }}>
+                    <Pressable accessibilityRole="button" accessibilityLabel="Edit comment" hitSlop={8} onPress={() => { setEditingId(comment.id); setEditDraft(comment.text); }}>
+                      <Text style={styles.reopen}>Edit</Text>
                     </Pressable>
-                  ) : null}
-                </View>
+                    <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" hitSlop={8} onPress={() => removeComment(comment.id)}>
+                      <Text style={styles.remove}>Delete</Text>
+                    </Pressable>
+                    {comment.status === "sent" ? (
+                      <Pressable accessibilityRole="button" accessibilityLabel="Re-open comment" hitSlop={8} onPress={() => setStatus(comment, "pending")}>
+                        <Text style={styles.reopen}>Re-open</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                ) : null}
               </View>
             ))}
           </View>

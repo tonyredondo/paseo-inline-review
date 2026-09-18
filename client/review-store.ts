@@ -53,6 +53,21 @@ export function addComment(input: {
   return comment;
 }
 
+/**
+ * Edits a comment's text. Editing a sent comment re-opens it: the new text has
+ * not been sent yet. No-op when the text is unchanged.
+ */
+export function updateComment(id: string, text: string): ReviewComment | null {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+  const existing = comments.find((comment) => comment.id === id);
+  if (!existing || existing.text === trimmed) return existing ?? null;
+  const updated: ReviewComment = { ...existing, text: trimmed, status: "pending" };
+  comments = comments.map((comment) => (comment.id === id ? updated : comment));
+  emit();
+  return updated;
+}
+
 export function removeComment(id: string): void {
   comments = comments.filter((comment) => comment.id !== id);
   emit();

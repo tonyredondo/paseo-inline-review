@@ -22,6 +22,7 @@ import {
   removeComment,
   scheduleSave,
   subscribe,
+  updateComment,
 } from "./review-store";
 import { MarkdownText } from "./markdown";
 
@@ -29,6 +30,8 @@ type EditingTarget = {
   paragraphIndex: number;
   paragraphText: string;
   draft: string;
+  /** When set, the editor updates an existing comment instead of adding one. */
+  commentId?: string;
 };
 
 /**
@@ -68,10 +71,12 @@ function useMessageComments(agentId: string, data: ReviewItemData) {
 function CommentCard({
   comment,
   theme,
+  onEdit,
   onRemove,
 }: {
   comment: ReviewComment;
   theme: PluginTheme;
+  onEdit(comment: ReviewComment): void;
   onRemove(): void;
 }) {
   const sent = comment.status === "sent";
@@ -98,9 +103,14 @@ function CommentCard({
     <View style={styles.card}>
       <View style={styles.header}>
         <Text style={styles.label}>{sent ? "Your comment \u00b7 sent \u2713" : "Your comment \u00b7 pending"}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" onPress={onRemove} hitSlop={8}>
-          <Text style={styles.delete}>Delete</Text>
-        </Pressable>
+        <View style={{ flexDirection: "row", gap: 10 }}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Edit comment" onPress={() => onEdit(comment)} hitSlop={6}>
+            <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Edit</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" onPress={onRemove} hitSlop={6}>
+            <Text style={styles.delete}>Delete</Text>
+          </Pressable>
+        </View>
       </View>
       <Text style={styles.text}>{comment.text}</Text>
     </View>
@@ -172,13 +182,17 @@ function ReviewAssistantMessage({
       setEditing(null);
       return;
     }
-    addComment({
-      agentId,
-      messageId: data.messageId,
-      paragraphIndex: editing.paragraphIndex,
-      paragraphText: editing.paragraphText,
-      text: editing.draft.trim(),
-    });
+    if (editing.commentId) {
+      updateComment(editing.commentId, editing.draft);
+    } else {
+      addComment({
+        agentId,
+        messageId: data.messageId,
+        paragraphIndex: editing.paragraphIndex,
+        paragraphText: editing.paragraphText,
+        text: editing.draft.trim(),
+      });
+    }
     setEditing(null);
   }
 
@@ -245,7 +259,7 @@ function ReviewAssistantMessage({
                 />
                 <View style={styles.actions}>
                   <Pressable accessibilityRole="button" accessibilityLabel="Save comment" style={styles.save} onPress={save}>
-                    <Text style={styles.saveText}>Save</Text>
+                    <Text style={styles.saveText}>{editing.commentId ? "Update" : "Save"}</Text>
                   </Pressable>
                   <Pressable accessibilityRole="button" accessibilityLabel="Cancel comment" style={styles.cancel} onPress={() => setEditing(null)}>
                     <Text style={styles.cancelText}>Cancel</Text>
@@ -258,6 +272,14 @@ function ReviewAssistantMessage({
                 key={comment.id}
                 comment={comment}
                 theme={theme}
+                onEdit={(target) =>
+                  setEditing({
+                    paragraphIndex: index,
+                    paragraphText: comment.paragraphText,
+                    draft: comment.text,
+                    commentId: comment.id,
+                  })
+                }
                 onRemove={() => removeComment(comment.id)}
               />
             ))}
