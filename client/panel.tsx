@@ -54,32 +54,32 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
   async function copy() {
     const formatted = formatReview(comments);
     if (formatted.length === 0) {
-      toast.error("No hay comentarios todavia.");
+      toast.error("No comments yet.");
       return;
     }
     try {
       await copyText(formatted);
-      toast.show("Review copiado. Pegalo en el composer.", { variant: "success" });
+      toast.show("Review copied. Paste it into the composer.", { variant: "success" });
     } catch {
-      toast.error("No se pudo copiar al portapapeles.");
+      toast.error("Could not copy to the clipboard.");
     }
   }
 
   async function send() {
     const formatted = formatReview(comments);
     if (formatted.length === 0) {
-      toast.error("No hay comentarios que enviar.");
+      toast.error("Nothing to send yet.");
       return;
     }
     const message = draft.trim().length > 0 ? `${draft.trim()}\n\n${formatted}` : formatted;
     setBusy(true);
     try {
       await paseo.agents.ref(agentId).send(message);
-      toast.show("Review enviado al agente.", { variant: "success" });
+      toast.show("Review sent to the agent.", { variant: "success" });
       clearAgent(agentId);
       setDraft("");
     } catch {
-      toast.error("No se pudo enviar el review.");
+      toast.error("Could not send the review.");
     } finally {
       setBusy(false);
     }
@@ -90,7 +90,7 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
       <Text style={styles.title}>Review ({comments.length})</Text>
       {comments.length === 0 ? (
         <Text style={styles.empty}>
-          Sin comentarios todavia. Toca un parrafo de una respuesta del agente para comentarlo.
+          No comments yet. Tap a paragraph on an agent response to comment on it.
         </Text>
       ) : (
         <ScrollView style={styles.list}>
@@ -99,8 +99,8 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
               <View key={comment.id} style={styles.card}>
                 <Text style={styles.quote}>"{comment.paragraphText.slice(0, 160)}"</Text>
                 <Text style={styles.text}>{comment.text}</Text>
-                <Pressable accessibilityRole="button" accessibilityLabel="Eliminar comentario" hitSlop={8} onPress={() => removeComment(comment.id)}>
-                  <Text style={styles.remove}>Eliminar</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" hitSlop={8} onPress={() => removeComment(comment.id)}>
+                  <Text style={styles.remove}>Delete</Text>
                 </Pressable>
               </View>
             ))}
@@ -110,19 +110,19 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
       <TextInput
         value={draft}
         onChangeText={setDraft}
-        placeholder="Nota general opcional para acompanar el review..."
+        placeholder="Optional general note to accompany the review..."
         multiline
         style={styles.input}
       />
       <View style={styles.actions}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Copiar review al composer" style={styles.primary} onPress={copy}>
-          <Text style={styles.primaryText}>Copiar al composer</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Copy review to the composer" style={styles.primary} onPress={copy}>
+          <Text style={styles.primaryText}>Copy to composer</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel="Enviar review al agente" style={styles.secondary} disabled={busy} onPress={send}>
-          <Text style={styles.secondaryText}>{busy ? "Enviando..." : "Enviar al agente"}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Send review to the agent" style={styles.secondary} disabled={busy} onPress={send}>
+          <Text style={styles.secondaryText}>{busy ? "Sending..." : "Send to agent"}</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel="Limpiar comentarios" style={styles.secondary} onPress={() => clearAgent(agentId)}>
-          <Text style={styles.secondaryText}>Limpiar</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Clear comments" style={styles.secondary} onPress={() => clearAgent(agentId)}>
+          <Text style={styles.secondaryText}>Clear</Text>
         </Pressable>
       </View>
     </View>

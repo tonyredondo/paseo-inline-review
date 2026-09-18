@@ -1,29 +1,29 @@
 # paseo-inline-review
 
-Plugin de [Paseo](https://paseo.sh) para comentar las respuestas del agente inline y enviarlas como review.
+A [Paseo](https://paseo.sh) plugin for commenting on agent responses inline and sending the comments back as a review.
 
-## Qué hace
+## What it does
 
-- Reemplaza cada respuesta del agente en el timeline por una vista por párrafos: toca un párrafo para añadirle un comentario anclado debajo del texto.
-- Añade una pill "Review (n)" en el composer de cada agente que abre el panel del plugin.
-- El panel lista los comentarios (editables y eliminables), permite una nota general, y ofrece:
-  - **Copiar al composer**: copia el review formateado (citas + comentarios) al portapapeles para pegarlo en el textbox del mensaje.
-  - **Enviar al agente**: envía el review directamente al agente vía SDK.
-  - **Limpiar**: descarta los comentarios del agente.
+- Replaces each assistant response in the timeline with a paragraph view: tap a paragraph to attach a comment anchored below it.
+- Adds a "Review (n)" composer pill for every agent that opens the plugin panel.
+- The panel lists the pending comments (removable), supports an optional general note, and offers:
+  - **Copy to composer**: copies the formatted review (quotes + comments) to the clipboard so you can paste it into the message composer.
+  - **Send to agent**: sends the review directly to the agent through the SDK.
+  - **Clear**: discards the agent's comments.
 
-## Instalación
-
-```bash
-paseo plugin add tony-redondo_ddog/paseo-inline-review
-```
-
-o desde un checkout local:
+## Install
 
 ```bash
-paseo plugin install /ruta/a/paseo-inline-review
+paseo plugin add tonyredondo/paseo-inline-review
 ```
 
-## Desarrollo
+or from a local checkout:
+
+```bash
+paseo plugin install /path/to/paseo-inline-review
+```
+
+## Development
 
 ```bash
 npm install
@@ -32,4 +32,4 @@ paseo plugin reload inline-review
 paseo plugin logs inline-review
 ```
 
-Requiere Paseo >= 0.8.0 con plugins habilitados en el daemon (`Settings → Plugins → Enable plugins` o `pluginsEnabled: true` en el config del daemon).
+Requires Paseo >= 0.8.0 with plugins enabled on the daemon (`Settings → Plugins → Enable plugins`, or `pluginsEnabled: true` in the daemon config).

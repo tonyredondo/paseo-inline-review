@@ -60,9 +60,9 @@ function CommentCard({
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Tu comentario</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Eliminar comentario" onPress={onRemove} hitSlop={8}>
-          <Text style={styles.delete}>Eliminar</Text>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Your comment</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" onPress={onRemove} hitSlop={8}>
+          <Text style={styles.delete}>Delete</Text>
         </Pressable>
       </View>
       <Text style={styles.text}>{comment.text}</Text>
@@ -75,7 +75,7 @@ function ReviewAssistantMessage({
   item,
   theme,
   layout,
-}: PluginTimelineItemProps<ReviewItemData> & { agentId: string }) {
+}: PluginTimelineItemProps<ReviewItemData>) {
   const data = item.data;
   const revealed = useRevealedText(data.text, data.phase);
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
@@ -88,7 +88,7 @@ function ReviewAssistantMessage({
       paragraph: { color: theme.colors.foreground, fontSize: layout.compact ? 14 : 15, lineHeight: 22 } as const,
       hint: { color: theme.colors.foregroundMuted, fontSize: 11 } as const,
       comments: { gap: 4, marginTop: 2 } as const,
-      quote: { color: theme.colors.foregroundMuted, fontSize: 12 } as const,
+      quote: { color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic" } as const,
       input: {
         color: theme.colors.foreground,
         backgroundColor: theme.colors.surface2,
@@ -139,7 +139,7 @@ function ReviewAssistantMessage({
           <View key={`${index}-${paragraph.slice(0, 24)}`} style={styles.comments}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Comentar párrafo ${index + 1}`}
+              accessibilityLabel={`Comment on paragraph ${index + 1}`}
               onPress={() =>
                 setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })
               }
@@ -158,9 +158,10 @@ function ReviewAssistantMessage({
         );
       })}
       <Text style={styles.hint}>
-        Toca un párrafo para comentarlo. {comments.length > 0 ? `${comments.length} comentario(s) en esta respuesta.` : ""}
+        Tap a paragraph to comment on it.{" "}
+        {comments.length > 0 ? `${comments.length} comment(s) on this response.` : ""}
       </Text>
-      <Modal title="Comentar párrafo" open={editing !== null} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+      <Modal title="Comment on paragraph" open={editing !== null} onOpenChange={(open) => { if (!open) setEditing(null); }}>
         <Modal.Content>
           {editing !== null && (
             <View style={{ gap: 10 }}>
@@ -168,15 +169,15 @@ function ReviewAssistantMessage({
               <TextInput
                 value={editing.draft}
                 onChangeText={(draft) => setEditing({ ...editing, draft })}
-                placeholder="Escribe tu comentario sobre este fragmento..."
+                placeholder="Write your comment about this passage..."
                 multiline
                 style={styles.input}
               />
-              <Pressable accessibilityRole="button" accessibilityLabel="Guardar comentario" style={styles.save} onPress={save}>
-                <Text style={styles.saveText}>Guardar comentario</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Save comment" style={styles.save} onPress={save}>
+                <Text style={styles.saveText}>Save comment</Text>
               </Pressable>
-              <Pressable accessibilityRole="button" accessibilityLabel="Cancelar comentario" style={styles.cancel} onPress={() => setEditing(null)}>
-                <Text style={styles.cancelText}>Cancelar</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Cancel comment" style={styles.cancel} onPress={() => setEditing(null)}>
+                <Text style={styles.cancelText}>Cancel</Text>
               </Pressable>
             </View>
           )}

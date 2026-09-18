@@ -40,10 +40,10 @@ export function formatReview(comments: readonly ReviewComment[]): string {
   if (comments.length === 0) return "";
   const lines: string[] = ["Review:", ""];
   comments.forEach((comment, index) => {
-    lines.push(`[${index + 1}] Sobre: "${shortenQuote(comment.paragraphText)}"`);
+    lines.push(`[${index + 1}] On: "${shortenQuote(comment.paragraphText)}"`);
     lines.push(`> ${shortenQuote(comment.paragraphText)}`);
     lines.push("");
-    lines.push(`Comentario: ${comment.text.trim()}`);
+    lines.push(`Comment: ${comment.text.trim()}`);
     lines.push("");
   });
   return lines.join("\n").trimEnd();
