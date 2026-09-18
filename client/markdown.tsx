@@ -107,12 +107,6 @@ function hslToHex(h: number, s: number, l: number): string {
   return `#${rgb.join("")}`;
 }
 
-/** Rotates the hue of a hex color while keeping its saturation/lightness. */
-function rotateHue(hex: string, degrees: number, lightnessBoost = 0): string {
-  const { h, s, l } = hexToHsl(hex);
-  return hslToHex(h + degrees, Math.min(0.9, s + 0.05), Math.min(0.85, Math.max(0.2, l + lightnessBoost)));
-}
-
 function monospaceFont(): { fontFamily?: string } {
   if (Platform.OS === "ios") return { fontFamily: "Menlo" };
   if (Platform.OS === "android") return { fontFamily: "monospace" };
@@ -223,25 +217,19 @@ function CodeBlockView({
     };
   }, []);
   const lines = useMemo(() => highlightCode(code, language), [code, language]);
-  // Code blocks always render on a solid black background (editor style), so
-  // the palette is fixed and theme-independent: the accent hue keeps the
-  // scheme tied to the user's theme, with editor-like lightness.
-  const { h: accentHue } = hexToHsl(theme.colors.accent);
-  const darkPalette = useMemo(
-    () => ({
-      plain: "#e6edf3",
-      keyword: hslToHex(accentHue, 0.5, 0.66),
-      string: hslToHex(accentHue + 140, 0.5, 0.68),
-      comment: "#8b949e",
-      number: hslToHex(accentHue + 60, 0.5, 0.68),
-      function: hslToHex(accentHue + 190, 0.45, 0.7),
-      type: hslToHex(accentHue + 250, 0.4, 0.7),
-      added: "#3fb950",
-      removed: "#f85149",
-      meta: "#8b949e",
-    }),
-    [accentHue],
-  );
+  // Fixed custom palette (One Dark-inspired), vivid on the black background.
+  const darkPalette = {
+    plain: "#d7dce3",
+    keyword: "#c678dd",
+    string: "#98c379",
+    comment: "#7f848e",
+    number: "#d19a66",
+    function: "#61afef",
+    type: "#e5c07b",
+    added: "#3fb950",
+    removed: "#f85149",
+    meta: "#c8b3ff",
+  };
   const mono = monospaceFont();
   // Web: code lines must not wrap; they scroll horizontally instead.
   const nowrap =
@@ -275,23 +263,25 @@ function CodeBlockView({
         )}
       </Pressable>
       <ScrollView horizontal showsHorizontalScrollIndicator>
-        <View>
-          {lines.map((line, lineIndex: number) => (
-            <Text
-              key={lineIndex}
-              style={[
-                mono,
-                nowrap,
-                { color: darkPalette.plain, fontSize: styles.codeFontSize, lineHeight: 18 },
-              ]}
-            >
-              {line.map((token: CodeToken, tokenIndex: number) => (
-                <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type as keyof typeof darkPalette] }]}>
-                  {token.text}
-                </Text>
-              ))}
-            </Text>
-          ))}
+        <View style={{ flexDirection: "row" }}>
+          <Text
+            style={[
+              mono,
+              nowrap,
+              { color: darkPalette.plain, fontSize: styles.codeFontSize, lineHeight: 18 },
+            ]}
+          >
+            {lines.map((line, lineIndex) => (
+              <Fragment key={lineIndex}>
+                {line.map((token: CodeToken, tokenIndex: number) => (
+                  <Text key={tokenIndex} style={{ color: darkPalette[token.type as keyof typeof darkPalette] }}>
+                    {token.text}
+                  </Text>
+                ))}
+                {"\n"}
+              </Fragment>
+            ))}
+          </Text>
         </View>
       </ScrollView>
     </View>
