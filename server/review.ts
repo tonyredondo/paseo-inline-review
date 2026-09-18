@@ -156,10 +156,11 @@ export async function searchDrafts(
     const agentTitle = titles.get(agentId) || `agent ${agentId.slice(0, 6)}`;
     const draft = formatReview(comments);
     lastServed.set(agentId, { marker: "", ids: pending.map((comment) => comment.id) });
+    const count = `${pending.length} ${pending.length === 1 ? "comment" : "comments"}`;
     items.push({
       id: `review-draft-${agentId}`,
-      title: `Attach all pending comments (${pending.length} ${pending.length === 1 ? "comment" : "comments"})`,
-      identifier: agentTitle,
+      title: `Attach all pending comments (${count})`,
+      identifier: `Attach all pending comments (${count}) for ${agentTitle}`,
       subtitle: `All un-sent inline review comments · ${agentTitle}`,
       url: `https://inline-review.local/draft/${encodeURIComponent(agentId)}`,
       text: draft,
