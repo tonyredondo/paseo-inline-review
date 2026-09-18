@@ -223,23 +223,24 @@ function CodeBlockView({
     };
   }, []);
   const lines = useMemo(() => highlightCode(code, language), [code, language]);
-  // Full syntax palette derived from the theme accent hue (the host only
-  // gives us accent/status colors, which are too close to each other for a
-  // readable scheme).
-  const colors = useMemo(
+  // Code blocks always render on a solid black background (editor style), so
+  // the palette is fixed and theme-independent: the accent hue keeps the
+  // scheme tied to the user's theme, with editor-like lightness.
+  const { h: accentHue } = hexToHsl(theme.colors.accent);
+  const darkPalette = useMemo(
     () => ({
-      plain: theme.colors.foreground,
-      keyword: rotateHue(theme.colors.accent, 0, 0.08),
-      string: rotateHue(theme.colors.accent, 140, 0.08),
-      comment: theme.colors.foregroundMuted,
-      number: rotateHue(theme.colors.accent, 60, 0.1),
-      function: rotateHue(theme.colors.accent, 190, 0.05),
-      type: rotateHue(theme.colors.accent, 250, 0.08),
-      added: theme.colors.statusSuccess,
-      removed: theme.colors.statusDanger,
-      meta: theme.colors.foregroundMuted,
+      plain: "#e6edf3",
+      keyword: hslToHex(accentHue, 0.5, 0.66),
+      string: hslToHex(accentHue + 140, 0.5, 0.68),
+      comment: "#8b949e",
+      number: hslToHex(accentHue + 60, 0.5, 0.68),
+      function: hslToHex(accentHue + 190, 0.45, 0.7),
+      type: hslToHex(accentHue + 250, 0.4, 0.7),
+      added: "#3fb950",
+      removed: "#f85149",
+      meta: "#8b949e",
     }),
-    [theme],
+    [accentHue],
   );
   const mono = monospaceFont();
   // Web: code lines must not wrap; they scroll horizontally instead.
@@ -270,7 +271,7 @@ function CodeBlockView({
         {copied ? (
           <Text style={styles.copyText}>Copied</Text>
         ) : (
-          <Icon name="Copy" size={13} color={theme.colors.foregroundMuted} />
+          <Icon name="Copy" size={13} color="#8b949e" />
         )}
       </Pressable>
       <ScrollView horizontal showsHorizontalScrollIndicator>
@@ -281,15 +282,14 @@ function CodeBlockView({
               style={[
                 mono,
                 nowrap,
-                { color: theme.colors.foreground, fontSize: styles.codeFontSize, lineHeight: 18 },
+                { color: darkPalette.plain, fontSize: styles.codeFontSize, lineHeight: 18 },
               ]}
             >
               {line.map((token: CodeToken, tokenIndex: number) => (
-                <Text key={tokenIndex} style={[mono, { color: colors[token.type as keyof typeof colors] }]}>
+                <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type as keyof typeof darkPalette] }]}>
                   {token.text}
                 </Text>
               ))}
-              {"\n"}
             </Text>
           ))}
         </View>
@@ -318,14 +318,14 @@ function useStyles(theme: PluginTheme, compact: boolean) {
       paragraph: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22 } as const,
       paragraphLine: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22 } as const,
       codeBlock: {
-        backgroundColor: theme.colors.surface2,
+        backgroundColor: "#000000",
         borderColor: theme.colors.border,
         borderWidth: 1,
         borderRadius: 8,
         padding: 10,
       } as const,
       copyButton: { position: "absolute", top: 6, right: 6, padding: 4, borderRadius: 6 } as const,
-      copyText: { color: theme.colors.accent, fontSize: 11 } as const,
+      copyText: { color: "#58a6ff", fontSize: 11 } as const,
       codeText: { color: theme.colors.foreground, fontSize: compact ? 12 : 13, lineHeight: 18 } as const,
       heading: (level: number) =>
         ({
