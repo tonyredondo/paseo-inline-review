@@ -42,7 +42,8 @@ async function openLink(
 function monospaceFont(): { fontFamily?: string } {
   if (Platform.OS === "ios") return { fontFamily: "Menlo" };
   if (Platform.OS === "android") return { fontFamily: "monospace" };
-  return {};
+  // Web (desktop + browser): pass a CSS stack through react-native-web.
+  return { fontFamily: "ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" };
 }
 
 function InlineRun({

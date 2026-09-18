@@ -143,7 +143,7 @@ function ReviewAssistantMessage({
 
   const styles = useMemo(
     () => ({
-      root: { gap: layout.compact ? 6 : 8 } as const,
+      root: { gap: layout.compact ? 6 : 8, paddingBottom: 10 } as const,
       comments: { gap: 4, marginTop: 2 } as const,
       editor: {
         backgroundColor: theme.colors.surface1,
