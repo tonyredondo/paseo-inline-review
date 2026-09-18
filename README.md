@@ -6,9 +6,9 @@ A [Paseo](https://paseo.sh) plugin for commenting on agent responses inline and 
 
 - Replaces each assistant response in the timeline with a paragraph view: tap a paragraph to attach a comment anchored below it. Text renders with [CommonMark + GFM tables](https://github.com/ronradtke/react-native-markdown-display) via a bundled dependency (Paseo does not expose its native markdown renderer to plugins).
 - Adds a "Review (n)" composer pill for every agent that opens the plugin panel.
-- The panel lists the pending comments (removable), supports an optional general note, and offers:
-  - **Copy to composer**: copies the formatted review (quotes + comments) to the clipboard so you can paste it into the message composer.
-  - **Send to agent**: sends the review directly to the agent through the SDK.
+- Comments persist in the daemon store and carry a status: **pending** comments are included in the next "Send to agent"; **sent** comments stay visible as muted conversation context (and can be re-opened).
+- The agent panel offers:
+  - **Send to agent**: sends the pending comments (plus an optional note) directly to the agent through the SDK and marks them sent.
   - **Clear**: discards the agent's comments.
 
 ## Install

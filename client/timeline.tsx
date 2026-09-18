@@ -11,7 +11,6 @@ import {
   loadCommentsRpc,
   reviewItemSchema,
   saveCommentsRpc,
-  setActiveAgentRpc,
   splitParagraphs,
   type ReviewComment,
   type ReviewItemData,
@@ -119,15 +118,12 @@ function ReviewAssistantMessage({
   const persistComments = useRpc(saveCommentsRpc);
   // Hydrate persisted comments once per mount, and keep the daemon store in
   // sync (debounced) whenever this agent's comments change.
-  const setActiveAgent = useRpc(setActiveAgentRpc);
   useEffect(() => {
-    // This row is rendering, so its agent is the visible conversation.
-    void setActiveAgent({ agentId }).catch(() => {});
     hydrateFromServer(agentId, load);
     return subscribe(() => {
       void scheduleSave(agentId, persistComments);
     });
-  }, [agentId, load, persistComments, setActiveAgent]);
+  }, [agentId, load, persistComments]);
   const revealed = useRevealedText(data.text, data.phase);
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
   const comments = useMessageComments(agentId, data);

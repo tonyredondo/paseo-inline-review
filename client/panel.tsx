@@ -1,6 +1,6 @@
 import type { PluginAgentPanelProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
-import { copyText, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { loadCommentsRpc, saveCommentsRpc, setActiveAgentRpc } from "../shared/review";
@@ -103,20 +103,6 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
       agentId,
       comments: all.map((existing) => (existing.id === comment.id ? { ...existing, status } : existing)),
     });
-    hydrateFromServer(agentId, load);
-  }
-
-  async function copy() {
-    if (comments.length === 0 && draft.trim().length === 0) {
-      toast.error("No comments yet.");
-      return;
-    }
-    try {
-      await copyText(composeMessage());
-      toast.show("Review copied. Paste it into the composer.", { variant: "success" });
-    } catch {
-      toast.error("Could not copy to the clipboard.");
-    }
   }
 
   async function send() {
@@ -129,7 +115,14 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
     try {
       await paseo.agents.ref(agentId).send(message);
       toast.show("Review sent to the agent.", { variant: "success" });
-      clearAgent(agentId);
+      // Sent comments stay visible as muted context instead of disappearing.
+      const sentIds = new Set(comments.map((comment) => comment.id));
+      void persistComments({
+        agentId,
+        comments: all.map((existing) =>
+          sentIds.has(existing.id) ? { ...existing, status: "sent" as const } : existing,
+        ),
+      });
       setDraft("");
     } catch {
       toast.error("Could not send the review.");
@@ -188,11 +181,8 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
         style={styles.input}
       />
       <View style={styles.actions}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Copy review to the composer" style={styles.primary} onPress={copy}>
-          <Text style={styles.primaryText}>Copy to composer</Text>
-        </Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel="Send review to the agent" style={styles.secondary} disabled={busy} onPress={send}>
-          <Text style={styles.secondaryText}>{busy ? "Sending..." : "Send to agent"}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Send review to the agent" style={styles.primary} disabled={busy} onPress={send}>
+          <Text style={styles.primaryText}>{busy ? "Sending..." : "Send to agent"}</Text>
         </Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="Clear comments" style={styles.secondary} onPress={() => clearAgent(agentId)}>
           <Text style={styles.secondaryText}>Clear</Text>

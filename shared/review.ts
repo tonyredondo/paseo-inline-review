@@ -1,4 +1,4 @@
-import { defineAttachmentSource, defineRpc } from "@getpaseo/plugin";
+import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 /** Data carried by the plugin-owned replacement of an assistant message. */
@@ -26,16 +26,6 @@ export const reviewCommentSchema = z.object({
 
 export type ReviewComment = z.output<typeof reviewCommentSchema>;
 
-const attachmentItemSchema = z.object({
-  id: z.string(),
-  identifier: z.string(),
-  title: z.string(),
-  subtitle: z.string().optional(),
-  url: z.string().url(),
-  text: z.string(),
-  resourceType: z.string(),
-});
-
 /** Pulls the persisted comments for one agent into the client store. */
 export const loadCommentsRpc = defineRpc({
   name: "review.load-comments",
@@ -50,12 +40,7 @@ export const saveCommentsRpc = defineRpc({
   output: z.object({ ok: z.boolean() }),
 });
 
-/** Composer attachment search: returns the current pending review drafts. */
-export const draftSearchRpc = defineRpc({
-  name: "review.draft-search",
-  input: z.object({ query: z.string() }),
-  output: z.object({ items: z.array(attachmentItemSchema) }),
-});
+
 
 export const openInBrowserRpc = defineRpc({
   name: "review.open-in-browser",
@@ -70,15 +55,6 @@ export const setActiveAgentRpc = defineRpc({
   input: z.object({ agentId: z.string() }),
   output: z.object({ ok: z.boolean() }),
 });
-
-export const attachmentSource = {
-  id: "review-draft",
-  title: "Inline review draft",
-  icon: "MessageSquareQuote",
-  pickerTitle: "Attach review draft",
-  searchPlaceholder: "Search review drafts...",
-  search: draftSearchRpc,
-};
 
 /** Splits text into comment-anchorable chunks: blank-line separated blocks,
  * with fenced code blocks kept whole even when their content contains blank

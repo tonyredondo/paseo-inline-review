@@ -1,23 +1,5 @@
-import type { PluginButtonIconProps, PluginClientContext } from "@getpaseo/plugin/client";
-import { useRpc } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useEffect } from "react";
-import { setActiveAgentRpc } from "../shared/review";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { clearAgent, getComments, subscribe } from "./review-store";
-
-/**
- * Pill icon that reports its agent as the visible conversation on mount, so
- * the attachment picker scopes to the agent whose composer is on screen.
- */
-function makePillIcon(agentId: string) {
-  return function PillIcon(props: PluginButtonIconProps) {
-    const setActiveAgent = useRpc(setActiveAgentRpc);
-    useEffect(() => {
-      void setActiveAgent({ agentId }).catch(() => {});
-    }, [agentId, setActiveAgent]);
-    return <Icon name="MessageSquareQuote" size={props.size} color={props.color} />;
-  };
-}
 
 /**
  * Adds one composer pill per agent that opens the review panel for that agent,
@@ -94,7 +76,7 @@ export function registerPills(client: PluginClientContext): () => void {
         agentId,
         button: {
           title: "Review inline",
-          icon: makePillIcon(agentId),
+          icon: "MessageSquareQuote",
           label: "Review",
           behavior: {
             kind: "action",
