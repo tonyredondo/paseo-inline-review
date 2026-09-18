@@ -244,13 +244,7 @@ function ReviewAssistantMessage({
                 }
                 lastTapRef.current = { index, at: now };
               }}
-              // Long-press stays as a single-gesture alternative on touch.
-              onLongPress={
-                layout.platform !== "web"
-                  ? () =>
-                      setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })
-                  : undefined
-              }
+
             >
               <MarkdownText text={paragraph} theme={theme} compact={layout.compact} refs={refs} />
             </Pressable>

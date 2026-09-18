@@ -43,3 +43,8 @@ test("inline code chips keep accent color, padding and monospace", () => {
   assert.match(codeCase, /paddingHorizontal: 5/);
   assert.match(codeCase, /theme\.colors\.accent/);
 });
+
+test("paragraph pressables never register onLongPress (native selection stays native)", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  assert.ok(!timelineSource.includes("onLongPress"));
+});
