@@ -13,6 +13,7 @@ import {
   openInBrowserRpc,
   reviewCommentSchema,
   saveCommentsRpc,
+  setActiveAgentRpc,
   type ReviewComment,
 } from "../shared/review";
 
@@ -98,8 +99,20 @@ export async function openInBrowser(
 // --- Draft serving + sent detection ----------------------------------------
 
 let paseoRef: PaseoApi | null = null;
+let activeAgentId: string | null = null;
 const lastServed = new Map<string, { marker: string; ids: string[] }>();
 const watchers = new Map<string, () => void>();
+
+export function setActiveAgent(agentId: string): void {
+  activeAgentId = agentId;
+}
+
+export async function setActiveAgentHandler(
+  input: RpcInput<typeof setActiveAgentRpc>,
+): Promise<{ ok: boolean }> {
+  activeAgentId = input.agentId;
+  return { ok: true };
+}
 
 export function bindPaseo(paseo: PaseoApi): void {
   paseoRef = paseo;
@@ -131,7 +144,13 @@ export async function searchDrafts(
   const items: {
     id: string; identifier: string; title: string; subtitle?: string; url: string; text: string; resourceType: string;
   }[] = [];
-  for (const [agentId, comments] of Object.entries(load().agents)) {
+  // Only the currently visible agent's draft is offered; agents with no
+  // pending comments are never offered at all.
+  const candidates = activeAgentId
+    ? [activeAgentId]
+    : Object.keys(load().agents);
+  for (const agentId of candidates) {
+    const comments = getAgentComments(agentId);
     const pending = comments.filter((comment) => comment.status === "pending");
     if (pending.length === 0) continue;
     const agentTitle = titles.get(agentId) || `agent ${agentId.slice(0, 6)}`;

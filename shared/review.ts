@@ -63,6 +63,14 @@ export const openInBrowserRpc = defineRpc({
   output: z.object({ ok: z.boolean() }),
 });
 
+/** Client tells the daemon which agent's workspace is currently visible, so
+ * the attachment picker only offers that agent's draft. */
+export const setActiveAgentRpc = defineRpc({
+  name: "review.set-active-agent",
+  input: z.object({ agentId: z.string() }),
+  output: z.object({ ok: z.boolean() }),
+});
+
 export const attachmentSource = {
   id: "review-draft",
   title: "Inline review draft",
