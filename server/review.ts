@@ -105,27 +105,45 @@ export function bindPaseo(paseo: PaseoApi): void {
   paseoRef = paseo;
 }
 
+let agentTitleCache: { at: number; titles: Map<string, string> } | null = null;
+
+async function agentTitles(paseo: PaseoApi): Promise<Map<string, string>> {
+  if (agentTitleCache && Date.now() - agentTitleCache.at < 30_000) return agentTitleCache.titles;
+  const titles = new Map<string, string>();
+  try {
+    const result = await paseo.agents.list();
+    for (const entry of result.entries) {
+      titles.set(entry.agent.id, entry.agent.title ?? "");
+    }
+  } catch (error) {
+    console.error("inline-review: agent list failed", error);
+  }
+  agentTitleCache = { at: Date.now(), titles };
+  return titles;
+}
+
 export async function searchDrafts(
   _input: RpcInput<typeof draftSearchRpc>,
   context: PluginHandlerContext,
 ): Promise<{ items: { id: string; identifier: string; title: string; subtitle?: string; url: string; text: string; resourceType: string }[] }> {
   bindPaseo(context.paseo);
+  const titles = await agentTitles(context.paseo);
   const items: {
     id: string; identifier: string; title: string; subtitle?: string; url: string; text: string; resourceType: string;
   }[] = [];
   for (const [agentId, comments] of Object.entries(load().agents)) {
     const pending = comments.filter((comment) => comment.status === "pending");
     if (pending.length === 0) continue;
+    const agentTitle = titles.get(agentId) || `agent ${agentId.slice(0, 6)}`;
     const draft = formatReview(comments);
-    const marker = `[inline-review draft ${agentId.slice(0, 8)}-${Date.now().toString(36)}]`;
-    lastServed.set(agentId, { marker, ids: pending.map((comment) => comment.id) });
+    lastServed.set(agentId, { marker: "", ids: pending.map((comment) => comment.id) });
     items.push({
       id: `review-draft-${agentId}`,
-      identifier: `review:${agentId}`,
-      title: `Review draft (${pending.length} pending)`,
-      subtitle: "Inline review comments",
+      identifier: `${agentTitle}`,
+      title: `Review draft · ${agentTitle} (${pending.length} pending)`,
+      subtitle: `${pending.length} pending comments · attached to your next message`,
       url: `https://inline-review.local/draft/${encodeURIComponent(agentId)}`,
-      text: `${draft}\n\n${marker}`,
+      text: draft,
       resourceType: "review",
     });
     ensureWatch(agentId);
@@ -142,7 +160,8 @@ function ensureWatch(agentId: string): void {
       if (item.type !== "user_message") return;
       const served = lastServed.get(agentId);
       if (!served) return;
-      if (!item.text.includes(served.marker)) return;
+      // Attachments may be delivered outside user_message.text, so a user
+      // message arriving after the draft was served marks it sent.
       const updated = getAgentComments(agentId).map((comment) =>
         served.ids.includes(comment.id) ? { ...comment, status: "sent" as const } : comment,
       );
