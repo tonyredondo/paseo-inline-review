@@ -1,110 +1,15 @@
-import type { ReactNode } from "react";
+import type { InlineToken } from "../shared/markdown-parse";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { Fragment, useMemo } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { useMemo, Fragment, type ReactNode } from "react";
+import { Image, Platform, Text, View } from "react-native";
+import { parseBlocks, parseInline } from "../shared/markdown-parse";
 import { openExternal } from "./web";
 
 /**
- * Minimal markdown rendering for claimed assistant messages. Paseo does not
- * expose its native markdown renderer to plugins, so this keeps the response
- * readable (code blocks, headings, lists, quotes, bold/italic/code/links)
- * while the plugin adds per-paragraph comment affordances.
+ * Renders parsed markdown blocks with React Native primitives. Paseo does not
+ * expose its native markdown renderer to plugins, so the plugin parses and
+ * draws its own (see shared/markdown-parse.ts and test/markdown.test.ts).
  */
-
-type Block =
-  | { kind: "p"; text: string }
-  | { kind: "code"; text: string }
-  | { kind: "heading"; level: number; text: string }
-  | { kind: "bullet"; items: string[] }
-  | { kind: "ordered"; items: { marker: string; text: string }[] }
-  | { kind: "quote"; text: string };
-
-const fencePattern = /^\s*```.*$/;
-const headingPattern = /^(#{1,4})\s+(.*)$/;
-const bulletPattern = /^\s*[-*+]\s+(.*)$/;
-const orderedPattern = /^\s*(\d+)[.)]\s+(.*)$/;
-const quotePattern = /^\s*>\s?(.*)$/;
-
-export function parseBlocks(text: string): Block[] {
-  const blocks: Block[] = [];
-  const lines = text.split("\n");
-  let index = 0;
-
-  function isBlank(line: string): boolean {
-    return line.trim().length === 0;
-  }
-
-  while (index < lines.length) {
-    const line = lines[index];
-    if (isBlank(line)) {
-      index += 1;
-      continue;
-    }
-    if (fencePattern.test(line)) {
-      index += 1;
-      const code: string[] = [];
-      while (index < lines.length && !fencePattern.test(lines[index])) {
-        code.push(lines[index]);
-        index += 1;
-      }
-      index += 1; // consume the closing fence (or run past the end while streaming)
-      blocks.push({ kind: "code", text: code.join("\n") });
-      continue;
-    }
-    const heading = headingPattern.exec(line);
-    if (heading) {
-      blocks.push({ kind: "heading", level: heading[1].length, text: heading[2] });
-      index += 1;
-      continue;
-    }
-    if (quotePattern.test(line)) {
-      const parts: string[] = [];
-      while (index < lines.length && quotePattern.test(lines[index])) {
-        parts.push(quotePattern.exec(lines[index])![1]);
-        index += 1;
-      }
-      blocks.push({ kind: "quote", text: parts.join(" ") });
-      continue;
-    }
-    if (bulletPattern.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length && bulletPattern.test(lines[index]) && !fencePattern.test(lines[index])) {
-        items.push(bulletPattern.exec(lines[index])![1]);
-        index += 1;
-      }
-      blocks.push({ kind: "bullet", items });
-      continue;
-    }
-    if (orderedPattern.test(line)) {
-      const items: { marker: string; text: string }[] = [];
-      while (index < lines.length && orderedPattern.test(lines[index]) && !fencePattern.test(lines[index])) {
-        const match = orderedPattern.exec(lines[index])!;
-        items.push({ marker: match[1], text: match[2] });
-        index += 1;
-      }
-      blocks.push({ kind: "ordered", items });
-      continue;
-    }
-    // Paragraph: merge consecutive plain lines.
-    const plain: string[] = [];
-    while (
-      index < lines.length &&
-      !isBlank(lines[index]) &&
-      !fencePattern.test(lines[index]) &&
-      !headingPattern.test(lines[index]) &&
-      !quotePattern.test(lines[index]) &&
-      !bulletPattern.test(lines[index]) &&
-      !orderedPattern.test(lines[index])
-    ) {
-      plain.push(lines[index]);
-      index += 1;
-    }
-    blocks.push({ kind: "p", text: plain.join(" ") });
-  }
-  return blocks;
-}
-
-const inlinePattern = /(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`]+`|_[^_\n]+_|\[[^\]]+\]\([^)\s]+\))/g;
 
 function monospaceFont(): { fontFamily?: string } {
   if (Platform.OS === "ios") return { fontFamily: "Menlo" };
@@ -112,77 +17,101 @@ function monospaceFont(): { fontFamily?: string } {
   return {};
 }
 
-function renderInline(text: string, theme: PluginTheme): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  let lastIndex = 0;
-  let key = 0;
-  for (const match of text.matchAll(inlinePattern)) {
-    const token = match[0];
-    const start = match.index ?? 0;
-    if (start > lastIndex) {
-      nodes.push(<Fragment key={key++}>{text.slice(lastIndex, start)}</Fragment>);
-    }
-    if (token.startsWith("**") && token.endsWith("**")) {
-      nodes.push(
-        <Text key={key++} style={{ color: theme.colors.foreground, fontWeight: "700" }}>
-          {token.slice(2, -2)}
-        </Text>,
-      );
-    } else if (
-      (token.startsWith("*") && token.endsWith("*")) ||
-      (token.startsWith("_") && token.endsWith("_"))
-    ) {
-      nodes.push(
-        <Text key={key++} style={{ color: theme.colors.foreground, fontStyle: "italic" }}>
-          {token.slice(1, -1)}
-        </Text>,
-      );
-    } else if (token.startsWith("`") && token.endsWith("`")) {
-      nodes.push(
-        <Text
-          key={key++}
-          style={{
-            color: theme.colors.foreground,
-            backgroundColor: theme.colors.surface2,
-            ...monospaceFont(),
-            fontSize: 13,
-          }}
-        >
-          {token.slice(1, -1)}
-        </Text>,
-      );
-    } else {
-      const link = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(token);
-      if (link) {
-        const url = link[2];
-        nodes.push(
-          <Text
-            key={key++}
-            style={{ color: theme.colors.accent }}
-            onPress={() => {
-              openExternal(url).catch(() => {});
-            }}
-          >
-            {link[1]}
-          </Text>,
-        );
-      } else {
-        nodes.push(<Fragment key={key++}>{token}</Fragment>);
-      }
-    }
-    lastIndex = start + token.length;
-  }
-  if (lastIndex < text.length) {
-    nodes.push(<Fragment key={key++}>{text.slice(lastIndex)}</Fragment>);
-  }
-  return nodes;
+function InlineRun({
+  tokens,
+  theme,
+  styles,
+}: {
+  tokens: InlineToken[];
+  theme: PluginTheme;
+  styles: ReturnType<typeof useStyles>;
+}): ReactNode {
+  return (
+    <>
+      {tokens.map((token, index) => {
+        switch (token.type) {
+          case "bold":
+            return (
+              <Text key={index} style={{ color: theme.colors.foreground, fontWeight: "700" }}>
+                {token.text}
+              </Text>
+            );
+          case "italic":
+            return (
+              <Text key={index} style={{ color: theme.colors.foreground, fontStyle: "italic" }}>
+                {token.text}
+              </Text>
+            );
+          case "strike":
+            return (
+              <Text
+                key={index}
+                style={{ color: theme.colors.foreground, textDecorationLine: "line-through" }}
+              >
+                {token.text}
+              </Text>
+            );
+          case "code":
+            return (
+              <Text
+                key={index}
+                style={{
+                  color: theme.colors.foreground,
+                  backgroundColor: theme.colors.surface2,
+                  fontSize: styles.codeFontSize,
+                  ...monospaceFont(),
+                }}
+              >
+                {token.text}
+              </Text>
+            );
+          case "image":
+            // Inline image inside a text line renders as its alt text.
+            return (
+              <Text key={index} style={{ color: theme.colors.foregroundMuted }}>
+                {`[${token.alt}]`}
+              </Text>
+            );
+          case "link":
+            return (
+              <Text
+                key={index}
+                style={{ color: theme.colors.accent }}
+                onPress={() => {
+                  openExternal(token.url).catch(() => {});
+                }}
+              >
+                {token.text}
+              </Text>
+            );
+          case "text":
+          default:
+            return <Fragment key={index}>{token.text}</Fragment>;
+        }
+      })}
+    </>
+  );
 }
 
-export function MarkdownText({ text, theme, compact }: { text: string; theme: PluginTheme; compact: boolean }) {
-  const blocks = useMemo(() => parseBlocks(text), [text]);
-  const styles = useMemo(
+function Cell({ cell, theme, styles }: { cell: { spans: InlineToken[]; align: string }; theme: PluginTheme; styles: ReturnType<typeof useStyles> }) {
+  return (
+    <View style={{ flex: 1, padding: styles.cell.padding }}>
+      <Text style={{ color: theme.colors.foreground, fontSize: styles.tableFontSize, textAlign: cell.align as "left" | "center" | "right" }}>
+        <InlineRun tokens={cell.spans} theme={theme} styles={styles} />
+      </Text>
+    </View>
+  );
+}
+
+function useStyles(theme: PluginTheme, compact: boolean) {
+  return useMemo(
     () => ({
+      codeFontSize: compact ? 12 : 13,
+      tableFontSize: compact ? 12 : 13,
+      cell: { padding: 6 } as const,
+      blockGap: { gap: compact ? 6 : 8 } as const,
       paragraph: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22 } as const,
+      paragraphLine: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22 } as const,
       codeBlock: {
         backgroundColor: theme.colors.surface2,
         borderColor: theme.colors.border,
@@ -191,56 +120,98 @@ export function MarkdownText({ text, theme, compact }: { text: string; theme: Pl
         padding: 10,
       } as const,
       codeText: { color: theme.colors.foreground, fontSize: compact ? 12 : 13, lineHeight: 18 } as const,
-      heading1: { color: theme.colors.foreground, fontSize: compact ? 18 : 20, fontWeight: "700" } as const,
-      heading2: { color: theme.colors.foreground, fontSize: compact ? 16 : 18, fontWeight: "700" } as const,
-      heading3: { color: theme.colors.foreground, fontSize: 15, fontWeight: "700" } as const,
-      heading4: { color: theme.colors.foreground, fontSize: 14, fontWeight: "700" } as const,
-      quote: {
-        borderLeftColor: theme.colors.border,
-        borderLeftWidth: 3,
-        paddingLeft: 10,
-      } as const,
+      heading: (level: number) =>
+        ({
+          color: theme.colors.foreground,
+          fontWeight: "700",
+          fontSize: compact
+            ? level === 1 ? 18 : level === 2 ? 16 : 15
+            : level === 1 ? 20 : level === 2 ? 18 : 15,
+        }) as const,
+      quote: { borderLeftColor: theme.colors.border, borderLeftWidth: 3, paddingLeft: 10 } as const,
       quoteText: { color: theme.colors.foregroundMuted, fontSize: compact ? 13 : 14, fontStyle: "italic" } as const,
-      row: { flexDirection: "row", gap: 6 } as const,
+      listRow: { flexDirection: "row", gap: 6 } as const,
       marker: { color: theme.colors.foregroundMuted, fontSize: compact ? 14 : 15, lineHeight: 22 } as const,
+      taskDone: { color: theme.colors.statusSuccess, fontSize: compact ? 14 : 15, lineHeight: 22 } as const,
+      table: {
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 8,
+        overflow: "hidden" as const,
+      } as const,
+      tableRow: { flexDirection: "row" } as const,
+      headerRow: { backgroundColor: theme.colors.surface2 } as const,
+      cellBorder: { borderColor: theme.colors.border } as const,
+      hr: { height: 1, backgroundColor: theme.colors.border, marginVertical: 4 } as const,
+      image: { width: "100%" as const, height: 180, borderRadius: 8, marginVertical: 2 } as const,
+      paragraphGap: { gap: 4 } as const,
     }),
     [theme, compact],
   );
+}
+
+export function MarkdownText({
+  text,
+  theme,
+  compact,
+}: {
+  text: string;
+  theme: PluginTheme;
+  compact: boolean;
+}) {
+  const blocks = useMemo(() => parseBlocks(text), [text]);
+  const styles = useStyles(theme, compact);
   const mono = monospaceFont();
 
+  function renderTextLines(lines: string[], style: object): ReactNode {
+    return lines.map((line, index) => (
+      <Text key={index} style={style}>
+        <InlineRun tokens={parseInline(line)} theme={theme} styles={styles} />
+      </Text>
+    ));
+  }
+
   return (
-    <View style={{ gap: 6 }}>
+    <View style={styles.blockGap}>
       {blocks.map((block, index) => {
         switch (block.kind) {
           case "code":
             return (
               <View key={index} style={styles.codeBlock}>
-                <Text style={[styles.codeText, mono]}>{block.text}</Text>
+                <Text style={[mono, { color: theme.colors.foreground, fontSize: styles.codeFontSize, lineHeight: 18 }]}>
+                  {block.text}
+                </Text>
               </View>
             );
-          case "heading": {
-            const headingStyle =
-              block.level === 1
-                ? styles.heading1
-                : block.level === 2
-                  ? styles.heading2
-                  : block.level === 3
-                    ? styles.heading3
-                    : styles.heading4;
+          case "heading":
             return (
-              <Text key={index} style={headingStyle}>
-                {renderInline(block.text, theme)}
+              <Text
+                key={index}
+                style={{
+                  color: theme.colors.foreground,
+                  fontWeight: "700",
+                  fontSize: compact
+                    ? block.level === 1 ? 18 : block.level === 2 ? 16 : 15
+                    : block.level === 1 ? 20 : block.level === 2 ? 18 : 15,
+                }}
+              >
+                <InlineRun tokens={parseInline(block.text)} theme={theme} styles={styles} />
               </Text>
             );
-          }
           case "bullet":
             return (
               <View key={index} style={{ gap: 2 }}>
                 {block.items.map((item, itemIndex) => (
-                  <View key={itemIndex} style={styles.row}>
-                    <Text style={styles.marker}>{"\u2022"}</Text>
+                  <View key={itemIndex} style={[styles.listRow, { paddingLeft: 14 * item.level }]}>
+                    {item.task ? (
+                      <Text style={item.checked ? styles.taskDone : styles.marker}>
+                        {item.checked ? "\u2713" : "\u25CB"}
+                      </Text>
+                    ) : (
+                      <Text style={styles.marker}>{"\u2022"}</Text>
+                    )}
                     <Text style={styles.paragraph}>
-                      {renderInline(item, theme)}
+                      <InlineRun tokens={item.spans} theme={theme} styles={styles} />
                     </Text>
                   </View>
                 ))}
@@ -250,10 +221,10 @@ export function MarkdownText({ text, theme, compact }: { text: string; theme: Pl
             return (
               <View key={index} style={{ gap: 2 }}>
                 {block.items.map((item, itemIndex) => (
-                  <View key={itemIndex} style={styles.row}>
+                  <View key={itemIndex} style={[styles.listRow, { paddingLeft: 14 * item.level }]}>
                     <Text style={styles.marker}>{item.marker}.</Text>
                     <Text style={styles.paragraph}>
-                      {renderInline(item.text, theme)}
+                      <InlineRun tokens={item.spans} theme={theme} styles={styles} />
                     </Text>
                   </View>
                 ))}
@@ -263,17 +234,57 @@ export function MarkdownText({ text, theme, compact }: { text: string; theme: Pl
             return (
               <View key={index} style={styles.quote}>
                 <Text style={styles.quoteText}>
-                  {renderInline(block.text, theme)}
+                  <InlineRun tokens={parseInline(block.text)} theme={theme} styles={styles} />
                 </Text>
               </View>
             );
-          case "p":
-          default:
+          case "table":
             return (
-              <Text key={index} style={styles.paragraph}>
-                {renderInline(block.text, theme)}
-              </Text>
+              <View key={index} style={styles.table}>
+                <View style={[styles.tableRow, styles.headerRow, styles.cellBorder, { borderBottomWidth: 1 }]}>
+                  {block.header.map((cell, cellIndex) => (
+                    <Cell key={cellIndex} cell={cell} theme={theme} styles={styles} />
+                  ))}
+                </View>
+                {block.rows.map((row, rowIndex) => (
+                  <View
+                    key={rowIndex}
+                    style={[styles.tableRow, styles.cellBorder, rowIndex < block.rows.length - 1 ? { borderBottomWidth: 1 } : null]}
+                  >
+                    {row.map((cell, cellIndex) => (
+                      <View key={cellIndex} style={[{ flex: 1 }, cellIndex < row.length - 1 ? { borderRightWidth: 1, borderColor: theme.colors.border } : null]}>
+                        <Cell cell={cell} theme={theme} styles={styles} />
+                      </View>
+                    ))}
+                  </View>
+                ))}
+              </View>
             );
+          case "hr":
+            return <View key={index} style={styles.hr} />;
+          case "p":
+          default: {
+            const single = block.lines.length === 1 && parseInline(block.lines[0]).length === 1 && parseInline(block.lines[0])[0]?.type === "image";
+            if (single) {
+              const token = parseInline(block.lines[0])[0];
+              if (token.type === "image") {
+                return (
+                  <Image
+                    key={index}
+                    source={{ uri: token.url }}
+                    style={styles.image}
+                    resizeMode="contain"
+                    accessibilityLabel={token.alt}
+                  />
+                );
+              }
+            }
+            return (
+              <View key={index} style={styles.paragraphGap}>
+                {renderTextLines(block.lines, styles.paragraphLine)}
+              </View>
+            );
+          }
         }
       })}
     </View>
