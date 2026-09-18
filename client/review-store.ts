@@ -38,6 +38,15 @@ export function addComment(input: {
     text: input.text,
     createdAt: new Date().toISOString(),
   };
+  // Guard against accidental duplicates from double submissions.
+  const duplicate = comments.find(
+    (existing) =>
+      existing.agentId === comment.agentId &&
+      existing.messageId === comment.messageId &&
+      existing.paragraphIndex === comment.paragraphIndex &&
+      existing.text === comment.text,
+  );
+  if (duplicate) return duplicate;
   comments = [...comments, comment];
   emit();
   return comment;

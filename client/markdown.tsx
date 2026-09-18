@@ -1,15 +1,30 @@
 import type { InlineToken } from "../shared/markdown-parse";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { useMemo, Fragment, type ReactNode } from "react";
-import { Image, Platform, Text, View } from "react-native";
-import { parseBlocks, parseInline } from "../shared/markdown-parse";
 import { openExternalUrl } from "@getpaseo/plugin/client";
+import { useMemo, Fragment, type ReactNode } from "react";
+import { Image, Linking, Platform, Text, View } from "react-native";
+import { parseBlocks, parseInline } from "../shared/markdown-parse";
 
 /**
  * Renders parsed markdown blocks with React Native primitives. Paseo does not
  * expose its native markdown renderer to plugins, so the plugin parses and
  * draws its own (see shared/markdown-parse.ts and test/markdown.test.ts).
  */
+
+async function openLink(url: string): Promise<void> {
+  // Prefer the host external opener (system browser on desktop, new tab on
+  // web). The app injects it at runtime; fall back to React Native's opener
+  // when the running host does not supply it.
+  if (typeof openExternalUrl === "function") {
+    try {
+      await openExternalUrl(url);
+      return;
+    } catch {
+      // fall through to the React Native opener
+    }
+  }
+  await Linking.openURL(url);
+}
 
 function monospaceFont(): { fontFamily?: string } {
   if (Platform.OS === "ios") return { fontFamily: "Menlo" };
@@ -78,10 +93,7 @@ function InlineRun({
                 key={index}
                 style={{ color: theme.colors.accent }}
                 onPress={() => {
-                  // Follow the same link rules as Paseo's own renderer: the
-                  // host opener uses the system browser on desktop, a new tab
-                  // on web, and ignores malformed or non-HTTP(S) URLs.
-                  openExternalUrl(token.url).catch(() => {});
+                  void openLink(token.url);
                 }}
               >
                 {token.text}

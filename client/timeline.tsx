@@ -21,18 +21,36 @@ type EditingTarget = {
   draft: string;
 };
 
+/**
+ * Anchoring rules. A comment renders under a paragraph only when the message
+ * identity and the paragraph identity both match exactly, so a comment can
+ * never leak into other paragraphs or messages:
+ * - With a known message id: the comment must carry the same id.
+ * - Without one (id-less messages): the saved paragraph snapshot must equal
+ *   the paragraph exactly, in a message that has no id either.
+ */
+function commentAnchorsHere(
+  data: ReviewItemData,
+  paragraph: string,
+  index: number,
+  comment: ReviewComment,
+): boolean {
+  if (comment.paragraphIndex !== index) return false;
+  if (comment.messageId !== null) return comment.messageId === data.messageId;
+  return data.messageId === null && comment.paragraphText === paragraph;
+}
+
 function commentBelongsToMessage(data: ReviewItemData, comment: ReviewComment): boolean {
   if (comment.messageId !== null) return comment.messageId === data.messageId;
-  // Unknown message id: fall back to the paragraph snapshot being a prefix of the
-  // message text. Streaming only appends, so the snapshot stays a prefix.
-  return data.text.includes(comment.paragraphText);
+  // Unknown message id: the comment may belong to any id-less message of the
+  // agent; paragraph anchoring decides where it renders.
+  return data.messageId === null;
 }
 
 function useMessageComments(agentId: string, data: ReviewItemData) {
   const all = useSyncExternalStore(subscribe, getComments);
   return useMemo(
     () => all.filter((comment) => comment.agentId === agentId && commentBelongsToMessage(data, comment)),
-    // data.text changes while streaming; recompute so orphan recovery stays correct.
     [all, agentId, data.text, data.messageId],
   );
 }
@@ -141,15 +159,8 @@ function ReviewAssistantMessage({
   return (
     <View style={styles.root}>
       {paragraphs.map((paragraph, index) => {
-        const anchored = comments.filter(
-          (comment) =>
-            comment.paragraphIndex === index &&
-            (comment.messageId !== null
-              ? // Known message id: anchor strictly by id and paragraph index.
-                comment.messageId === data.messageId
-              : // Unknown message id (no id assigned yet or at all): accept prefix
-                // matches, since streaming only appends to the paragraph text.
-                paragraph.startsWith(comment.paragraphText)),
+        const anchored = comments.filter((comment) =>
+          commentAnchorsHere(data, paragraph, index, comment),
         );
         const isEditing = editing !== null && editing.paragraphIndex === index;
         return (
