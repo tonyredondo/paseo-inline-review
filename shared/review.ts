@@ -22,11 +22,36 @@ export type ReviewComment = {
   createdAt: string;
 };
 
+/**
+ * Splits text into comment-anchorable chunks: blank-line separated blocks,
+ * with fenced code blocks kept whole even when their content contains blank
+ * lines. Splitting inside a fence used to break code block rendering.
+ */
 export function splitParagraphs(text: string): string[] {
-  return text
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph.length > 0);
+  const chunks: string[] = [];
+  let current: string[] = [];
+  let inFence = false;
+  for (const line of text.split("\n")) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      current.push(line);
+      continue;
+    }
+    if (!inFence && line.trim().length === 0) {
+      if (current.length > 0) {
+        const chunk = current.join("\n").trim();
+        if (chunk.length > 0) chunks.push(chunk);
+        current = [];
+      }
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length > 0) {
+    const chunk = current.join("\n").trim();
+    if (chunk.length > 0) chunks.push(chunk);
+  }
+  return chunks;
 }
 
 const quoteLimit = 280;

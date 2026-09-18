@@ -12,6 +12,19 @@ test("single newlines stay inside one paragraph", () => {
   assert.deepEqual(splitParagraphs("line a\nline b"), ["line a\nline b"]);
 });
 
+test("fenced code blocks stay whole even with blank lines inside", () => {
+  const text = "intro\n\n```\nAntes:\ntest span \u2014\u2014\u2510\n\nhttp span \u2014\u2014\u2518\n```\n\ndespues";
+  assert.deepEqual(splitParagraphs(text), ["intro", "```\nAntes:\ntest span \u2014\u2014\u2510\n\nhttp span \u2014\u2014\u2518\n```", "despues"]);
+});
+
+test("unclosed fence while streaming stays one chunk", () => {
+  assert.deepEqual(splitParagraphs("```\npartial\n\nmore"), ["```\npartial\n\nmore"]);
+});
+
+test("blank lines inside indented text still split outside fences", () => {
+  assert.deepEqual(splitParagraphs("a\n\n\tb\n\nc"), ["a", "b", "c"]);
+});
+
 test("shortenQuote flattens whitespace and truncates", () => {
   assert.equal(shortenQuote("a  \n b"), "a b");
   assert.equal(shortenQuote("x".repeat(400)).length, 280);
