@@ -49,7 +49,7 @@ export function formatReview(comments: readonly ReviewComment[]): string {
 }
 
 export const openInBrowserRpc = defineRpc({
-  name: "review.openInBrowser",
+  name: "review.open-in-browser",
   input: z.object({ url: z.string() }),
   output: z.object({ ok: z.boolean() }),
 });
