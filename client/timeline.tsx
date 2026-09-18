@@ -255,6 +255,18 @@ function ReviewAssistantMessage({
                   placeholder="Write your comment about this passage..."
                   multiline
                   autoFocus
+                  onKeyPress={(event) => {
+                    // Platform+Return saves; plain Return inserts a newline.
+                    const native = event.nativeEvent as unknown as {
+                      key?: string;
+                      metaKey?: boolean;
+                      ctrlKey?: boolean;
+                    };
+                    if (native.key === "Enter" && (native.metaKey || native.ctrlKey)) {
+                      event.preventDefault?.();
+                      save();
+                    }
+                  }}
                   style={styles.input}
                 />
                 <View style={styles.actions}>

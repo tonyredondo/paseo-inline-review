@@ -180,6 +180,19 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
                       placeholder="Edit your comment..."
                       multiline
                       autoFocus
+                      onKeyPress={(event) => {
+                        const native = event.nativeEvent as unknown as {
+                          key?: string;
+                          metaKey?: boolean;
+                          ctrlKey?: boolean;
+                        };
+                        if (native.key === "Enter" && (native.metaKey || native.ctrlKey)) {
+                          event.preventDefault?.();
+                          if (editingId) updateComment(editingId, editDraft);
+                          setEditingId(null);
+                          setEditDraft("");
+                        }
+                      }}
                       style={styles.input}
                     />
                     <View style={{ flexDirection: "row", gap: 12 }}>

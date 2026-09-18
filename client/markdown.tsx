@@ -101,7 +101,7 @@ function InlineRun({
               <Text
                 key={index}
                 style={{
-                  color: lighten(theme.colors.accent, 0.35),
+                  color: lighten(theme.colors.accent, 0.15),
                   backgroundColor: theme.colors.surface2,
                   fontSize: styles.codeFontSize,
                   paddingHorizontal: 5,
