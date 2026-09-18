@@ -5,7 +5,7 @@ import {
   useRevealedText,
 } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
   loadCommentsRpc,
@@ -128,6 +128,8 @@ function ReviewAssistantMessage({
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
   const comments = useMessageComments(agentId, data);
   const [editing, setEditing] = useState<EditingTarget | null>(null);
+  // Double-tap detection for touch devices (web uses modifier-click).
+  const lastTapRef = useRef<{ index: number; at: number } | null>(null);
 
   const styles = useMemo(
     () => ({
@@ -198,17 +200,30 @@ function ReviewAssistantMessage({
                   : undefined
               }
               onPress={(event) => {
-                // Plain clicks stay free for text selection; only the
-                // platform modifier opens the inline comment editor.
-                const native = event.nativeEvent as unknown as {
-                  metaKey?: boolean;
-                  ctrlKey?: boolean;
-                };
-                if (native.metaKey || native.ctrlKey) {
-                  setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" });
+                if (layout.platform === "web") {
+                  // Web: plain clicks stay free for text selection; only the
+                  // platform modifier opens the inline comment editor.
+                  const native = event.nativeEvent as unknown as {
+                    metaKey?: boolean;
+                    ctrlKey?: boolean;
+                  };
+                  if (native.metaKey || native.ctrlKey) {
+                    setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" });
+                  }
+                  return;
                 }
+                // Touch: a double-tap on the same paragraph opens the editor,
+                // so single taps keep scroll/selection gestures free.
+                const now = Date.now();
+                const last = lastTapRef.current;
+                if (last && last.index === index && now - last.at < 350) {
+                  lastTapRef.current = null;
+                  setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" });
+                  return;
+                }
+                lastTapRef.current = { index, at: now };
               }}
-              // Native fallback: desktop builds are web; use long-press there.
+              // Long-press stays as a single-gesture alternative on touch.
               onLongPress={
                 layout.platform !== "web"
                   ? () =>
