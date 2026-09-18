@@ -155,8 +155,13 @@ function ReviewAssistantMessage({
         return (
           <View key={index} style={styles.comments}>
             <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Comment on paragraph ${index + 1} with the platform modifier key`}
+              // Web: keep the text cursor and selectable text; only the
+              // modifier click is interactive, so a normal drag selects text.
+              style={
+                layout.platform === "web"
+                  ? ({ cursor: "text", userSelect: "text" } as object)
+                  : undefined
+              }
               onPress={(event) => {
                 // Plain clicks stay free for text selection; only the
                 // platform modifier opens the inline comment editor.
