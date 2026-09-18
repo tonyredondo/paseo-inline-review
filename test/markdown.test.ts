@@ -262,3 +262,84 @@ test("indented code cannot interrupt a paragraph", () => {
   const blocks = parseBlocks("paragraph start\n    still paragraph\n\n    code");
   assert.deepEqual(kinds(blocks), ["p", "code"]);
 });
+
+// --- syntax highlighting -----------------------------------------------------
+
+import { highlightCode, normalizeLanguage } from "../shared/syntax.ts";
+
+function tokenTypesPerLine(lines: { type: string; text: string }[][], lineIndex: number): string[] {
+  return lines[lineIndex].map((token) => token.type);
+}
+
+test("highlightCode: keywords, strings, comments, numbers, functions", () => {
+  const lines = highlightCode("const x = 1; // hi\nfunction foo() { return 'a' }", "ts");
+  assert.deepEqual(tokenTypesPerLine(lines, 0), ["keyword", "plain", "number", "plain", "comment"]);
+  assert.deepEqual(tokenTypesPerLine(lines, 1), ["keyword", "plain", "function", "plain", "keyword", "plain", "string", "plain"]);
+  const joined = lines[1].map((token) => token.text).join("");
+  assert.equal(joined, "function foo() { return 'a' }");
+});
+
+test("highlightCode: diff gets line colors", () => {
+  const lines = highlightCode("+ added\n- removed\n@@ meta", "diff");
+  assert.deepEqual(tokenTypesPerLine(lines, 0), ["added"]);
+  assert.deepEqual(tokenTypesPerLine(lines, 1), ["removed"]);
+  assert.deepEqual(tokenTypesPerLine(lines, 2), ["meta"]);
+});
+
+test("highlightCode: block comments span lines", () => {
+  const lines = highlightCode("/* start\nstill comment\n*/ code", "js");
+  assert.equal(lines[0][0].type, "comment");
+  assert.equal(lines[1][0].type, "comment");
+  assert.ok(lines[2].some((token) => token.type === "plain"));
+});
+
+test("highlightCode: unknown languages render plain", () => {
+  const lines = highlightCode("anything here", "cobol");
+  assert.deepEqual(tokenTypesPerLine(lines, 0), ["plain"]);
+});
+
+test("normalizeLanguage maps aliases", () => {
+  assert.equal(normalizeLanguage("TypeScript"), "js");
+  assert.equal(normalizeLanguage("c#"), "cs");
+  assert.equal(normalizeLanguage("py"), "python");
+  assert.equal(normalizeLanguage("golang"), "go");
+});
+
+// --- references, <br>, emoji --------------------------------------------------
+
+import { extractRefDefs } from "../shared/markdown-parse.ts";
+
+test("reference definitions are extracted and skipped from blocks", () => {
+  const text = "text [link][repo] more\n\n[repo]: https://github.com/getpaseo\n";
+  const refs = extractRefDefs(text);
+  assert.equal(refs.get("repo"), "https://github.com/getpaseo");
+  const blocks = parseBlocks(text);
+  // the definition line is not rendered
+  assert.ok(!JSON.stringify(blocks).includes("github.com/getpaseo"));
+});
+
+test("parseInline resolves reference links when refs are provided", () => {
+  const refs = new Map([["repo", "https://github.com/getpaseo"]]);
+  const tokens = parseInline("see [repo] and [the repo][repo]", refs);
+  const links = tokens.filter((token) => token.type === "link");
+  assert.equal(links.length, 2);
+  assert.ok(links.every((token) => token.type === "link" && token.url === "https://github.com/getpaseo"));
+});
+
+test("parseInline without refs leaves shortcut brackets as text", () => {
+  const tokens = parseInline("see [repo] now");
+  assert.ok(tokens.every((token) => token.type !== "link"));
+});
+
+test("<br> becomes a break token", () => {
+  const tokens = parseInline("one <br> two");
+  assert.deepEqual(inlineTypes(tokens), ["text", "break", "text"]);
+});
+
+test("emoji shortcodes convert outside code spans", () => {
+  const tokens = parseInline("shipped :tada: with `:tada:` literal");
+  const textToken = tokens[0];
+  assert.ok(textToken.type === "text" && textToken.text.includes("\u{1F389}"));
+  const codeToken = tokens.find((token) => token.type === "code");
+  assert.ok(codeToken && codeToken.type === "code" && codeToken.text === ":tada:");
+});

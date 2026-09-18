@@ -1,10 +1,17 @@
 import type { InlineToken } from "../shared/markdown-parse";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
-import { useMemo, Fragment, type ReactNode } from "react";
-import { Image, Linking, Platform, Text, View } from "react-native";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Image, Linking, Platform, Pressable, Text, View } from "react-native";
 import { isValidHttpUrl, openInBrowserRpc } from "../shared/review";
-import { parseBlocks, parseInline } from "../shared/markdown-parse";
+import {
+  extractRefDefs,
+  parseBlocks,
+  parseInline,
+  type Block,
+} from "../shared/markdown-parse";
+import { highlightCode, type CodeToken, type CodeTokenType } from "../shared/syntax";
+import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
 
 /**
  * Renders parsed markdown blocks with React Native primitives. Paseo does not
@@ -65,10 +72,12 @@ function InlineRun({
   tokens,
   theme,
   styles,
+  refs,
 }: {
   tokens: InlineToken[];
   theme: PluginTheme;
   styles: ReturnType<typeof useStyles>;
+  refs?: Map<string, string>;
 }): ReactNode {
   const openUrlViaDaemon = useRpc(openInBrowserRpc);
   return (
@@ -132,6 +141,8 @@ function InlineRun({
                 {token.text}
               </Text>
             );
+          case "break":
+            return <Text key={index}>{"\n"}</Text>;
           case "text":
           default:
             return <Fragment key={index}>{token.text}</Fragment>;
@@ -141,9 +152,90 @@ function InlineRun({
   );
 }
 
-function Cell({ cell, theme, styles }: { cell: { spans: InlineToken[]; align: string }; theme: PluginTheme; styles: ReturnType<typeof useStyles> }) {
+function CodeBlockView({
+  code,
+  language,
+  theme,
+  styles,
+}: {
+  code: string;
+  language: string;
+  theme: PluginTheme;
+  styles: ReturnType<typeof useStyles>;
+}) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+    };
+  }, []);
+  const lines = useMemo(() => highlightCode(code, language), [code, language]);
+  const colors = useMemo(
+    () => ({
+      plain: theme.colors.foreground,
+      keyword: lighten(theme.colors.accent, 0.15),
+      string: lighten(theme.colors.statusSuccess, 0.25),
+      comment: theme.colors.foregroundMuted,
+      number: lighten(theme.colors.statusWarning, 0.2),
+      function: theme.colors.foreground,
+      type: lighten(theme.colors.accent, 0.45),
+      added: theme.colors.statusSuccess,
+      removed: theme.colors.statusDanger,
+      meta: theme.colors.foregroundMuted,
+    }),
+    [theme],
+  );
+  const mono = monospaceFont();
+
+  async function copy(): Promise<void> {
+    try {
+      await copyText(code);
+      setCopied(true);
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = (setTimeout(() => setCopied(false), 2000) as unknown) as number;
+    } catch {
+      // clipboard unavailable
+    }
+  }
+
   return (
-    <View style={{ flex: 1, padding: styles.cell.padding }}>
+    <View style={styles.codeBlock}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Copy code"
+        style={styles.copyButton}
+        onPress={() => {
+          void copy();
+        }}
+      >
+        {copied ? (
+          <Text style={styles.copyText}>Copied</Text>
+        ) : (
+          <Icon name="Copy" size={13} color={theme.colors.foregroundMuted} />
+        )}
+      </Pressable>
+      <View>
+        {lines.map((line, lineIndex: number) => (
+          <Text
+            key={lineIndex}
+            style={[mono, { color: theme.colors.foreground, fontSize: styles.codeFontSize, lineHeight: 18 }]}
+          >
+            {line.map((token: CodeToken, tokenIndex: number) => (
+              <Text key={tokenIndex} style={{ color: colors[token.type as keyof typeof colors] }}>
+                {token.text}
+              </Text>
+            ))}
+          </Text>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function Cell({ cell, theme, styles, flex }: { cell: { spans: InlineToken[]; align: string }; theme: PluginTheme; styles: ReturnType<typeof useStyles>; flex: number }) {
+  return (
+    <View style={{ flex, padding: styles.cell.padding }}>
       <Text style={{ color: theme.colors.foreground, fontSize: styles.tableFontSize, textAlign: cell.align as "left" | "center" | "right" }}>
         <InlineRun tokens={cell.spans} theme={theme} styles={styles} />
       </Text>
@@ -167,6 +259,8 @@ function useStyles(theme: PluginTheme, compact: boolean) {
         borderRadius: 8,
         padding: 10,
       } as const,
+      copyButton: { position: "absolute", top: 6, right: 6, padding: 4, borderRadius: 6 } as const,
+      copyText: { color: theme.colors.accent, fontSize: 11 } as const,
       codeText: { color: theme.colors.foreground, fontSize: compact ? 12 : 13, lineHeight: 18 } as const,
       heading: (level: number) =>
         ({
@@ -202,10 +296,13 @@ export function MarkdownText({
   text,
   theme,
   compact,
+  refs,
 }: {
   text: string;
   theme: PluginTheme;
   compact: boolean;
+  /** Reference link definitions extracted from the full message. */
+  refs?: Map<string, string>;
 }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   const styles = useStyles(theme, compact);
@@ -214,7 +311,7 @@ export function MarkdownText({
   function renderTextLines(lines: string[], style: object): ReactNode {
     return lines.map((line, index) => (
       <Text key={index} style={style}>
-        <InlineRun tokens={parseInline(line)} theme={theme} styles={styles} />
+        <InlineRun tokens={parseInline(line, refs)} theme={theme} styles={styles} refs={refs} />
       </Text>
     ));
   }
@@ -222,14 +319,27 @@ export function MarkdownText({
   return (
     <View style={styles.blockGap}>
       {blocks.map((block, index) => {
+        const weights =
+          block.kind === "table"
+            ? block.header.map((cell, columnIndex) => {
+                let max = cell.text.length;
+                for (const row of block.rows) {
+                  const candidate = (row[columnIndex]?.text ?? "").length;
+                  if (candidate > max) max = candidate;
+                }
+                return Math.min(8, Math.max(1, Math.round(max / 14)));
+              })
+            : null;
         switch (block.kind) {
           case "code":
             return (
-              <View key={index} style={styles.codeBlock}>
-                <Text style={[mono, { color: theme.colors.foreground, fontSize: styles.codeFontSize, lineHeight: 18 }]}>
-                  {block.text}
-                </Text>
-              </View>
+              <CodeBlockView
+                key={index}
+                code={block.text}
+                language={block.language ?? ""}
+                theme={theme}
+                styles={styles}
+              />
             );
           case "heading":
             return (
@@ -243,7 +353,7 @@ export function MarkdownText({
                     : block.level === 1 ? 20 : block.level === 2 ? 18 : 15,
                 }}
               >
-                <InlineRun tokens={parseInline(block.text)} theme={theme} styles={styles} />
+                <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} />
               </Text>
             );
           case "bullet":
@@ -285,7 +395,7 @@ export function MarkdownText({
                 style={[styles.quote, { marginLeft: 10 * Math.max(0, block.depth - 1) }]}
               >
                 <Text style={styles.quoteText}>
-                  <InlineRun tokens={parseInline(block.text)} theme={theme} styles={styles} />
+                  <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} />
                 </Text>
               </View>
             );
@@ -294,7 +404,7 @@ export function MarkdownText({
               <View key={index} style={styles.table}>
                 <View style={[styles.tableRow, styles.headerRow, styles.cellBorder, { borderBottomWidth: 1 }]}>
                   {block.header.map((cell, cellIndex) => (
-                    <Cell key={cellIndex} cell={cell} theme={theme} styles={styles} />
+                    <Cell key={cellIndex} cell={cell} theme={theme} styles={styles} flex={weights?.[cellIndex] ?? 1} />
                   ))}
                 </View>
                 {block.rows.map((row, rowIndex) => (
@@ -303,8 +413,8 @@ export function MarkdownText({
                     style={[styles.tableRow, styles.cellBorder, rowIndex < block.rows.length - 1 ? { borderBottomWidth: 1 } : null]}
                   >
                     {row.map((cell, cellIndex) => (
-                      <View key={cellIndex} style={[{ flex: 1 }, cellIndex < row.length - 1 ? { borderRightWidth: 1, borderColor: theme.colors.border } : null]}>
-                        <Cell cell={cell} theme={theme} styles={styles} />
+                      <View key={cellIndex} style={[{ flex: weights?.[cellIndex] ?? 1 }, cellIndex < row.length - 1 ? { borderRightWidth: 1, borderColor: theme.colors.border } : null]}>
+                        <Cell cell={cell} theme={theme} styles={styles} flex={weights?.[cellIndex] ?? 1} />
                       </View>
                     ))}
                   </View>
@@ -317,7 +427,7 @@ export function MarkdownText({
           default: {
             const single = block.lines.length === 1 && parseInline(block.lines[0]).length === 1 && parseInline(block.lines[0])[0]?.type === "image";
             if (single) {
-              const token = parseInline(block.lines[0])[0];
+              const token = parseInline(block.lines[0], refs)[0];
               if (token.type === "image") {
                 return (
                   <Image

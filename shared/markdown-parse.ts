@@ -12,6 +12,7 @@
 
 export type InlineToken =
   | { type: "text"; text: string }
+  | { type: "break" }
   | { type: "bold"; text: string }
   | { type: "italic"; text: string }
   | { type: "code"; text: string }
@@ -30,7 +31,7 @@ export type TableCell = { text: string; spans: InlineToken[]; align: "left" | "c
 
 export type Block =
   | { kind: "p"; lines: string[] }
-  | { kind: "code"; text: string }
+  | { kind: "code"; text: string; language: string | null }
   | { kind: "heading"; level: number; text: string }
   | { kind: "bullet"; items: ListItem[] }
   | { kind: "ordered"; items: { marker: string; level: number; spans: InlineToken[] }[] }
@@ -97,6 +98,7 @@ export function parseBlocks(text: string): Block[] {
       continue;
     }
     if (fencePattern.test(line)) {
+      const language = /^\s*```\s*([\w#+.-]*)/.exec(line)?.[1] ?? null;
       index += 1;
       const code: string[] = [];
       while (index < lines.length && !fencePattern.test(lines[index])) {
@@ -104,7 +106,7 @@ export function parseBlocks(text: string): Block[] {
         index += 1;
       }
       index += 1; // consume the closing fence, or run past the end while streaming
-      blocks.push({ kind: "code", text: code.join("\n") });
+      blocks.push({ kind: "code", text: code.join("\n"), language: language && language.length > 0 ? language : null });
       continue;
     }
     if (isTableRow(line) && index + 1 < lines.length && tableSeparatorPattern.test(lines[index + 1])) {
@@ -210,7 +212,11 @@ export function parseBlocks(text: string): Block[] {
         code.push(lines[index].replace(/^(?:    |\t)/, ""));
         index += 1;
       }
-      blocks.push({ kind: "code", text: code.join("\n") });
+      blocks.push({ kind: "code", text: code.join("\n"), language: null });
+      continue;
+    }
+    if (refDefPattern.test(line) && !isTableRow(line)) {
+      index += 1;
       continue;
     }
     const paragraph: string[] = [];
@@ -251,7 +257,7 @@ export function parseBlocks(text: string): Block[] {
 }
 
 const inlinePattern =
-  /(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+)/g;
+  /(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+)/g;
 
 /**
  * Consumes wrapped and indented continuation lines of a list item:
@@ -303,6 +309,27 @@ function consumeListContinuation(
   if (extra.length > 0) accept(index, extra);
 }
 
+/** Reference link definition lines are removed from rendering and resolved. */
+const refDefPattern = /^\s{0,3}\[([^\]]+)\]:\s*(\S+)/;
+
+export function extractRefDefs(text: string): Map<string, string> {
+  const refs = new Map<string, string>();
+  const lines = text.split("\n");
+  let inFence = false;
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const match = refDefPattern.exec(line);
+    if (match) {
+      refs.set(match[1].toLowerCase(), match[2].trim());
+    }
+  }
+  return refs;
+}
+
 const escapeSequence = /\\([\\`*_{}\[\]()#+.!>~|-])/g;
 
 /** Replaces backslash escapes with sentinels so they never match a pattern. */
@@ -320,7 +347,28 @@ function maskEscapes(text: string): { masked: string; restore: (value: string) =
 }
 
 /** Tokenizes one line of text into typed inline spans. */
-export function parseInline(raw: string): InlineToken[] {
+const emojiShortcodes: Record<string, string> = {
+  tada: "\u{1F389}", rocket: "\u{1F680}", fire: "\u{1F525}", bug: "\u{1F41B}",
+  warning: "\u26A0\uFE0F", white_check_mark: "\u2705", x: "\u274C", question: "\u2753",
+  exclamation: "\u2757", heavy_check_mark: "\u2714\uFE0F", heart: "\u2764\uFE0F",
+  star: "\u2B50", wrench: "\u1F527", hammer: "\u1F528", memo: "\u1F4DD",
+  book: "\u1F4D6", bulb: "\u{1F4A1}", zap: "\u26A1", eyes: "\u{1F440}",
+  "ok_hand": "\u{1F44C}", wave: "\u{1F44B}", clap: "\u{1F44F}", thinking: "\u{1F914}",
+  "+1": "\u{1F44D}", "-1": "\u{1F44E}", smile: "\u{1F600}", laughing: "\u{1F606}",
+  cry: "\u{1F62D}", praying: "\u{1F64F}", muscle: "\u{1F4AA}", mag: "\u{1F50D}",
+  seedling: "\u{1F331}", sparkles: "\u2728", package: "\u{1F4E6}", lock: "\u{1F512}",
+  ship: "\u{1F6A2}", construction: "\u{1F6A7}", memo_pencil: "\u{1F4DD}",
+};
+
+function replaceShortcodes(value: string): string {
+  if (!value.includes(":")) return value;
+  return value.replace(/:([a-z0-9_+-]{1,30}):/gi, (match, name: string) => {
+    const emoji = emojiShortcodes[name.toLowerCase()];
+    return emoji ?? match;
+  });
+}
+
+export function parseInline(raw: string, refs?: Map<string, string>): InlineToken[] {
   const { masked, restore } = maskEscapes(raw);
   const tokens: InlineToken[] = [];
   let lastIndex = 0;
@@ -349,16 +397,38 @@ export function parseInline(raw: string): InlineToken[] {
       } else {
         tokens.push({ type: "text", text: token });
       }
-    } else if (token.startsWith("[") || token.startsWith("<")) {
-      const link = /^(?:\[([^\]]+)\]\(|<)([^)\s>]+)(?:\s+"[^"]*")?(\)|>)$/.exec(token);
-      if (link) {
-        tokens.push({
-          type: "link",
-          text: link[1] ?? link[2],
-          url: link[2],
-        });
-      } else {
-        tokens.push({ type: "text", text: token });
+    } else if (token.startsWith("<br") && /^<br\s*\/?>$/i.test(token)) {
+      tokens.push({ type: "break" });
+    } else if (token.startsWith("<") || token.startsWith("[")) {
+      let handled = false;
+      // [text][label] and [label] resolve only when the reference exists.
+      if (refs) {
+        const ref = /^\[([^\]]+)\]\[([^\]]*)\]$/.exec(token);
+        if (ref) {
+          const label = (ref[2] || ref[1]).toLowerCase();
+          const url = refs.get(label);
+          if (url) tokens.push({ type: "link", text: ref[1], url });
+          else tokens.push({ type: "text", text: token });
+          handled = true;
+        } else if (/^\[[^\]]+\]$/.test(token)) {
+          const url = refs.get(token.slice(1, -1).toLowerCase());
+          if (url) {
+            tokens.push({ type: "link", text: token.slice(1, -1), url });
+            handled = true;
+          }
+        }
+      }
+      if (!handled) {
+        const link = /^(?:\[([^\]]+)\]\(|<)([^)\s>]+)(?:\s+"[^"]*")?(\)|>)$/.exec(token);
+        if (link) {
+          tokens.push({
+            type: "link",
+            text: link[1] ?? link[2],
+            url: link[2],
+          });
+        } else {
+          tokens.push({ type: "text", text: token });
+        }
       }
     } else {
       tokens.push({ type: "link", text: token, url: token });
@@ -370,8 +440,14 @@ export function parseInline(raw: string): InlineToken[] {
   }
   return tokens.map((token) => {
     if (token.type === "image") {
-      return { ...token, alt: restore(token.alt) };
+      return { ...token, alt: replaceShortcodes(restore(token.alt)) };
     }
-    return { ...token, text: restore(token.text) };
+    if (token.type === "code") {
+      return { ...token, text: restore(token.text) };
+    }
+    if (token.type === "break") {
+      return token;
+    }
+    return { ...token, text: replaceShortcodes(restore(token.text)) };
   });
 }
