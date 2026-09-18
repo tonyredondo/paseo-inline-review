@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types test/markdown.test.ts"
+    "test": "node --experimental-strip-types test/review.test.ts"
   },
   "devDependencies": {
     "@getpaseo/plugin": "0.8.0",
@@ -15,5 +15,8 @@
     "react-native": "0.81.5",
     "typescript": "^5.9.3",
     "zod": "^4.4.3"
+  },
+  "dependencies": {
+    "@ronradtke/react-native-markdown-display": "^9.0.3"
   }
 }

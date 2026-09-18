@@ -1,0 +1,37 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { formatReview, shortenQuote, splitParagraphs, type ReviewComment } from "../shared/review.ts";
+
+test("splitParagraphs splits on blank lines and trims empties", () => {
+  assert.deepEqual(splitParagraphs("one\n\ntwo\n\n\n\nthree"), ["one", "two", "three"]);
+  assert.deepEqual(splitParagraphs("\n\n  spaced  \n\n"), ["spaced"]);
+  assert.deepEqual(splitParagraphs(""), []);
+});
+
+test("single newlines stay inside one paragraph", () => {
+  assert.deepEqual(splitParagraphs("line a\nline b"), ["line a\nline b"]);
+});
+
+test("shortenQuote flattens whitespace and truncates", () => {
+  assert.equal(shortenQuote("a  \n b"), "a b");
+  assert.equal(shortenQuote("x".repeat(400)).length, 280);
+  assert.ok(shortenQuote("x".repeat(400)).endsWith("\u2026"));
+  assert.equal(shortenQuote("short"), "short");
+});
+
+test("formatReview emits numbered quotes and comments", () => {
+  const out = formatReview([
+    {
+      id: "1",
+      agentId: "a",
+      messageId: "m",
+      paragraphIndex: 0,
+      paragraphText: "The bug is here",
+      text: "Fix the null check",
+      createdAt: new Date().toISOString(),
+    },
+  ]);
+  assert.match(out, /\[1\] On: "The bug is here"/);
+  assert.match(out, /Comment: Fix the null check/);
+  assert.equal(formatReview([]), "");
+});
