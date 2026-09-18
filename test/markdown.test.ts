@@ -229,3 +229,36 @@ test("nested quotes render as stacked depth levels", () => {
   if (blocks[1].kind !== "quote" || blocks[1].depth !== 2) throw new Error("expected nested quote");
   assert.equal(blocks[1].text, "inner");
 });
+
+test("wrapped bullet lines stay inside the item", () => {
+  const blocks = parseBlocks("- first item that wraps\n  over two lines");
+  const block = first(blocks);
+  if (block.kind !== "bullet") throw new Error("expected bullet");
+  assert.equal(block.items.length, 1);
+  const joined = block.items[0].spans.map((token) => (token.type === "text" ? token.text : "")).join("");
+  assert.ok(joined.includes("over two lines"));
+});
+
+test("indented continuation after a blank line belongs to the list item", () => {
+  const blocks = parseBlocks("- item\n\n  continued paragraph of the same item\n\nnext paragraph");
+  const block = first(blocks);
+  if (block.kind !== "bullet") throw new Error("expected bullet");
+  assert.equal(block.items.length, 1);
+  const joined = block.items[0].spans.map((token) => (token.type === "text" ? token.text : "")).join("");
+  assert.ok(joined.includes("continued paragraph"));
+  const last = blocks[blocks.length - 1];
+  assert.ok(last.kind === "p" && last.lines[0] === "next paragraph");
+});
+
+test("indented code blocks after a blank line render as code", () => {
+  const blocks = parseBlocks("text\n\n    const a = 1;\n    const b = 2;\n\nafter");
+  assert.deepEqual(kinds(blocks), ["p", "code", "p"]);
+  const block = blocks[1];
+  if (block.kind !== "code") throw new Error("expected code");
+  assert.equal(block.text, "const a = 1;\nconst b = 2;");
+});
+
+test("indented code cannot interrupt a paragraph", () => {
+  const blocks = parseBlocks("paragraph start\n    still paragraph\n\n    code");
+  assert.deepEqual(kinds(blocks), ["p", "code"]);
+});

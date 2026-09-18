@@ -39,6 +39,7 @@ export type Block =
   | { kind: "hr" };
 
 const fencePattern = /^\s*```/;
+const indentedCodePattern = /^(?:    |\t)/;
 const headingPattern = /^(#{1,6})\s+(.*)$/;
 const bulletPattern = /^(\s*)[-*+]\s+(.*)$/;
 const orderedPattern = /^(\s*)(\d+)[.)]\s+(.*)$/;
@@ -157,13 +158,18 @@ export function parseBlocks(text: string): Block[] {
         const indent = match[1].replace(/\t/g, "  ").length;
         const level = Math.min(4, Math.floor(indent / 2));
         const task = isTaskItem(match[2]);
+        const content: string[] = [task.rest];
+        index += 1;
+        consumeListContinuation(lines, index, (nextIndex, extraLines) => {
+          index = nextIndex;
+          content.push(...extraLines);
+        });
         items.push({
           level,
           task: task.task,
           checked: task.checked,
-          spans: parseInline(task.rest),
+          spans: parseInline(content.join("\n")),
         });
-        index += 1;
       }
       blocks.push({ kind: "bullet", items });
       continue;
@@ -174,10 +180,37 @@ export function parseBlocks(text: string): Block[] {
       while (index < lines.length && orderedPattern.test(lines[index]) && !fencePattern.test(lines[index])) {
         const match = orderedPattern.exec(lines[index])!;
         const indent = match[1].replace(/\t/g, "  ").length;
-        items.push({ marker: match[2], level: Math.min(4, Math.floor(indent / 2)), spans: parseInline(match[3]) });
+        const content: string[] = [match[3]];
         index += 1;
+        consumeListContinuation(lines, index, (nextIndex, extraLines) => {
+          index = nextIndex;
+          content.push(...extraLines);
+        });
+        items.push({ marker: match[2], level: Math.min(4, Math.floor(indent / 2)), spans: parseInline(content.join("\n")) });
+        index = index;
       }
       blocks.push({ kind: "ordered", items });
+      continue;
+    }
+    // Indented code blocks (4 spaces / tab) — CommonMark requires the block
+    // not to interrupt a paragraph, so only after a blank line or at the start.
+    if (
+      indentedCodePattern.test(line) &&
+      !bulletPattern.test(line) &&
+      !orderedPattern.test(line) &&
+      !quotePattern.test(line) &&
+      (index === 0 || lines[index - 1].trim().length === 0)
+    ) {
+      const code: string[] = [];
+      while (
+        index < lines.length &&
+        indentedCodePattern.test(lines[index]) &&
+        lines[index].trim().length > 0
+      ) {
+        code.push(lines[index].replace(/^(?:    |\t)/, ""));
+        index += 1;
+      }
+      blocks.push({ kind: "code", text: code.join("\n") });
       continue;
     }
     const paragraph: string[] = [];
@@ -219,6 +252,56 @@ export function parseBlocks(text: string): Block[] {
 
 const inlinePattern =
   /(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+)/g;
+
+/**
+ * Consumes wrapped and indented continuation lines of a list item:
+ * - indented non-blank lines attach to the current item;
+ * - after a blank line, further INDENTED lines still belong to the item
+ *   (multi-paragraph items); any other line ends the item.
+ */
+function consumeListContinuation(
+  lines: string[],
+  startIndex: number,
+  accept: (nextIndex: number, extraLines: string[]) => void,
+): void {
+  let index = startIndex;
+  const extra: string[] = [];
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.trim().length === 0) {
+      const next = lines[index + 1];
+      if (
+        next !== undefined &&
+        /^[ ]{2,}|\t/.test(next) &&
+        !bulletPattern.test(next) &&
+        !orderedPattern.test(next) &&
+        !fencePattern.test(next)
+      ) {
+        extra.push("");
+        index += 1;
+        continue;
+      }
+      break;
+    }
+    if (
+      fencePattern.test(line) ||
+      headingPattern.test(line) ||
+      quotePattern.test(line) ||
+      bulletPattern.test(line) ||
+      orderedPattern.test(line) ||
+      hrPattern.test(line)
+    ) {
+      break;
+    }
+    if (/^[ ]{2,}|\t/.test(line)) {
+      extra.push(line.replace(/^(?: {2}|\t+)/, ""));
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  if (extra.length > 0) accept(index, extra);
+}
 
 const escapeSequence = /\\([\\`*_{}\[\]()#+.!>~|-])/g;
 
