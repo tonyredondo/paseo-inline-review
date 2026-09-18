@@ -34,15 +34,15 @@ export type Block =
   | { kind: "heading"; level: number; text: string }
   | { kind: "bullet"; items: ListItem[] }
   | { kind: "ordered"; items: { marker: string; level: number; spans: InlineToken[] }[] }
-  | { kind: "quote"; text: string }
+  | { kind: "quote"; depth: number; text: string }
   | { kind: "table"; header: TableCell[]; rows: TableCell[][] }
   | { kind: "hr" };
 
 const fencePattern = /^\s*```/;
-const headingPattern = /^(#{1,4})\s+(.*)$/;
+const headingPattern = /^(#{1,6})\s+(.*)$/;
 const bulletPattern = /^(\s*)[-*+]\s+(.*)$/;
 const orderedPattern = /^(\s*)(\d+)[.)]\s+(.*)$/;
-const quotePattern = /^\s*>\s?(.*)$/;
+const quotePattern = /^(\s*)(>+)\s?(.*)$/;
 const hrPattern = /^\s*(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
 const tableRowPattern = /^\s*\|.*\|\s*$|^\s*\|.*[^|]\s*$/;
 const tableSeparatorPattern =
@@ -127,19 +127,26 @@ export function parseBlocks(text: string): Block[] {
       index += 1;
       continue;
     }
-    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
+    const heading = headingPattern.exec(line);
     if (heading) {
       blocks.push({ kind: "heading", level: heading[1].length, text: heading[2] });
       index += 1;
       continue;
     }
     if (quotePattern.test(line)) {
-      const parts: string[] = [];
+      const first = quotePattern.exec(line)!;
+      const depth = Math.min(4, first[2].length);
+      const parts: string[] = [first[3]];
+      index += 1;
+      // Contiguous lines of the SAME depth merge; a depth change starts a
+      // new nested quote block (renderer indents by depth).
       while (index < lines.length && quotePattern.test(lines[index])) {
-        parts.push(quotePattern.exec(lines[index])![1]);
+        const match = quotePattern.exec(lines[index])!;
+        if (Math.min(4, match[2].length) !== depth) break;
+        parts.push(match[3]);
         index += 1;
       }
-      blocks.push({ kind: "quote", text: parts.join(" ") });
+      blocks.push({ kind: "quote", depth, text: parts.join(" ") });
       continue;
     }
     const bullet = bulletPattern.exec(line);
@@ -187,24 +194,58 @@ export function parseBlocks(text: string): Block[] {
     ) {
       paragraph.push(lines[index]);
       index += 1;
+      // Setext heading: a paragraph line followed by a === or --- underline.
+      if (
+        paragraph.length > 0 &&
+        index < lines.length &&
+        /^(=+|-+)\s*$/.test(lines[index]) &&
+        !isTableRow(lines[index]) &&
+        !tableSeparatorPattern.test(lines[index])
+      ) {
+        blocks.push({
+          kind: "heading",
+          level: lines[index].trim().startsWith("=") ? 1 : 2,
+          text: paragraph.join(" "),
+        });
+        paragraph.length = 0;
+        index += 1;
+        break;
+      }
     }
-    blocks.push({ kind: "p", lines: paragraph });
+    if (paragraph.length > 0) blocks.push({ kind: "p", lines: paragraph });
   }
   return blocks;
 }
 
 const inlinePattern =
-  /(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|!\[[^\]]*\]\([^)\s]+\)|\[[^\]]+\]\([^)\s]+\)|https?:\/\/[^\s)]+)/g;
+  /(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+)/g;
+
+const escapeSequence = /\\([\\`*_{}\[\]()#+.!>~|-])/g;
+
+/** Replaces backslash escapes with sentinels so they never match a pattern. */
+function maskEscapes(text: string): { masked: string; restore: (value: string) => string } {
+  const escaped: string[] = [];
+  const masked = text.replace(/\\([\\`*_{}\[\]()#+\-.!>~])/g, (_match, character: string) => {
+    escaped.push(character);
+    return `\u0000${escaped.length - 1}\u0000`;
+  });
+  return {
+    masked,
+    restore: (value: string) =>
+      value.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => escaped[Number(index)] ?? ""),
+  };
+}
 
 /** Tokenizes one line of text into typed inline spans. */
-export function parseInline(text: string): InlineToken[] {
+export function parseInline(raw: string): InlineToken[] {
+  const { masked, restore } = maskEscapes(raw);
   const tokens: InlineToken[] = [];
   let lastIndex = 0;
-  for (const match of text.matchAll(inlinePattern)) {
+  for (const match of masked.matchAll(inlinePattern)) {
     const token = match[0];
     const start = match.index ?? 0;
     if (start > lastIndex) {
-      tokens.push({ type: "text", text: text.slice(lastIndex, start) });
+      tokens.push({ type: "text", text: masked.slice(lastIndex, start) });
     }
     if (token.startsWith("**") && token.endsWith("**")) {
       tokens.push({ type: "bold", text: token.slice(2, -2) });
@@ -225,10 +266,14 @@ export function parseInline(text: string): InlineToken[] {
       } else {
         tokens.push({ type: "text", text: token });
       }
-    } else if (token.startsWith("[")) {
-      const link = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(token);
+    } else if (token.startsWith("[") || token.startsWith("<")) {
+      const link = /^(?:\[([^\]]+)\]\(|<)([^)\s>]+)(?:\s+"[^"]*")?(\)|>)$/.exec(token);
       if (link) {
-        tokens.push({ type: "link", text: link[1], url: link[2] });
+        tokens.push({
+          type: "link",
+          text: link[1] ?? link[2],
+          url: link[2],
+        });
       } else {
         tokens.push({ type: "text", text: token });
       }
@@ -237,8 +282,13 @@ export function parseInline(text: string): InlineToken[] {
     }
     lastIndex = start + token.length;
   }
-  if (lastIndex < text.length) {
-    tokens.push({ type: "text", text: text.slice(lastIndex) });
+  if (lastIndex < masked.length) {
+    tokens.push({ type: "text", text: masked.slice(lastIndex) });
   }
-  return tokens;
+  return tokens.map((token) => {
+    if (token.type === "image") {
+      return { ...token, alt: restore(token.alt) };
+    }
+    return { ...token, text: restore(token.text) };
+  });
 }

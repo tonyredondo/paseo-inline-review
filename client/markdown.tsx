@@ -280,7 +280,10 @@ export function MarkdownText({
             );
           case "quote":
             return (
-              <View key={index} style={styles.quote}>
+              <View
+                key={index}
+                style={[styles.quote, { marginLeft: 10 * Math.max(0, block.depth - 1) }]}
+              >
                 <Text style={styles.quoteText}>
                   <InlineRun tokens={parseInline(block.text)} theme={theme} styles={styles} />
                 </Text>

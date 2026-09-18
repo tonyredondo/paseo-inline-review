@@ -15,15 +15,11 @@ function inlineTypes(tokens: InlineToken[]): string[] {
   return tokens.map((token) => token.type);
 }
 
-test("headings levels 1-4; five hashes stays a paragraph", () => {
-  const blocks = parseBlocks("# Title\n## Sub\n### Sub sub\n#### Deep\n##### Too deep");
-  assert.deepEqual(kinds(blocks), ["heading", "heading", "heading", "heading", "p"]);
-  const heading = blocks[0];
-  if (heading.kind !== "heading") throw new Error("expected heading");
-  assert.equal(heading.level, 1);
-  const para = blocks[4];
-  if (para.kind !== "p") throw new Error("expected paragraph");
-  assert.equal(para.lines[0], "##### Too deep");
+test("headings levels 1-6", () => {
+  const blocks = parseBlocks("# Title\n## Sub\n### Sub sub\n#### Deep\n##### Deeper\n###### Deepest");
+  assert.deepEqual(kinds(blocks), ["heading", "heading", "heading", "heading", "heading", "heading"]);
+  assert.ok(blocks.every((block) => block.kind === "heading"));
+  assert.deepEqual(blocks.map((block) => (block.kind === "heading" ? block.level : 0)), [1, 2, 3, 4, 5, 6]);
 });
 
 test("fenced code block consumes language tag", () => {
@@ -112,9 +108,9 @@ test("table row missing cells pads with empty aligned cells", () => {
   assert.equal(block.rows[0][1].text, "");
 });
 
-test("a lone dashed line is a horizontal rule, not a table", () => {
-  const blocks = parseBlocks("above\n---\nbelow");
-  assert.deepEqual(kinds(blocks), ["p", "hr", "p"]);
+test("dashes under a paragraph make a setext heading; blank line keeps the hr", () => {
+  assert.deepEqual(kinds(parseBlocks("above\n---\nbelow")), ["heading", "p"]);
+  assert.deepEqual(kinds(parseBlocks("above\n\n---\n\nbelow")), ["p", "hr", "p"]);
 });
 
 test("asterisk and underscore rules are horizontal rules", () => {
@@ -194,4 +190,42 @@ test("table cells containing pipes inside code spans", () => {
 test("paragraph line with pipe but no separator row stays a paragraph", () => {
   const blocks = parseBlocks("use | pipes | in prose");
   assert.deepEqual(kinds(blocks), ["p"]);
+});
+
+test("escaped characters never become inline styles", () => {
+  const tokens = parseInline("\\*not italic\\* and \\*\\*not bold\\*\\* and \\`not code\\`");
+  assert.ok(tokens.every((token) => token.type === "text"));
+  assert.equal(tokens.map((token) => (token.type === "text" ? token.text : "")).join(""), "*not italic* and **not bold** and `not code`");
+});
+
+test("setext headings from === and --- underlines", () => {
+  const blocks = parseBlocks("My title\n===\n\nother text\n---\ntrail");
+  assert.deepEqual(kinds(blocks), ["heading", "heading", "p"]);
+  assert.ok(blocks[0].kind === "heading" && blocks[0].level === 1);
+  assert.ok(blocks[1].kind === "heading" && blocks[1].level === 2 && blocks[1].text === "other text");
+});
+
+test("lone dashes after a blank line are still an hr", () => {
+  assert.deepEqual(kinds(parseBlocks("above\n\n---\n\nbelow")), ["p", "hr", "p"]);
+});
+
+test("angle autolinks become link tokens", () => {
+  const tokens = parseInline("see <https://paseo.sh/docs> now");
+  assert.deepEqual(inlineTypes(tokens), ["text", "link", "text"]);
+  const link = tokens.find((token) => token.type === "link");
+  assert.ok(link && link.type === "link" && link.url === "https://paseo.sh/docs");
+});
+
+test("link titles are ignored but the link survives", () => {
+  const tokens = parseInline('[docs](https://paseo.sh "the docs")');
+  assert.deepEqual(inlineTypes(tokens), ["link"]);
+  assert.ok(tokens[0].type === "link" && tokens[0].url === "https://paseo.sh" && tokens[0].text === "docs");
+});
+
+test("nested quotes render as stacked depth levels", () => {
+  const blocks = parseBlocks("> outer\n>> inner");
+  if (blocks[0].kind !== "quote" || blocks[0].depth !== 1) throw new Error("expected outer quote");
+  assert.equal(blocks[0].text, "outer");
+  if (blocks[1].kind !== "quote" || blocks[1].depth !== 2) throw new Error("expected nested quote");
+  assert.equal(blocks[1].text, "inner");
 });
