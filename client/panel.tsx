@@ -59,7 +59,7 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
       titleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" } as const,
       title: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 22, fontWeight: "600" } as const,
       clearText: { color: theme.colors.statusDanger, fontSize: 13 } as const,
-      composer: { flexDirection: "row", gap: 8, alignItems: "flex-end" } as const,
+      composer: { flexDirection: "row", gap: 8, alignItems: "center" } as const,
       sendButton: { backgroundColor: theme.colors.accent, borderRadius: 10, paddingVertical: 12, paddingHorizontal: 16 } as const,
       sendText: { color: theme.colors.accentForeground, fontSize: 14, fontWeight: "600" } as const,
       label: { color: theme.colors.foregroundMuted, fontSize: 11 } as const,
