@@ -1,9 +1,11 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { attachmentSource } from "./shared/review";
 import { ReviewPanel } from "./client/panel";
 import { registerPills } from "./client/pills";
 import { registerTimeline } from "./client/timeline";
 
 export default function contribute(client: PluginClientContext) {
+  client.addAttachmentSource(attachmentSource);
   client.addWorkspacePanel({
     id: "review",
     title: "Review inline",

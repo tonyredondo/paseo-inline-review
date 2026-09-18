@@ -42,6 +42,7 @@ test("formatReview emits numbered quotes and comments", () => {
       paragraphText: "The bug is here",
       text: "Fix the null check",
       createdAt: new Date().toISOString(),
+      status: "pending" as const,
     },
   ]);
   assert.match(out, /\[1\] On: "The bug is here"/);

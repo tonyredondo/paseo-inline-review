@@ -1,24 +1,59 @@
 import type { PluginAgentPanelProps } from "@getpaseo/plugin/client";
-import { usePaseo } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { copyText, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { formatReview } from "../shared/review";
-import { clearAgent, getComments, removeComment, subscribe } from "./review-store";
+import { loadCommentsRpc, saveCommentsRpc } from "../shared/review";
+import { formatReview, type ReviewComment } from "../shared/review";
+import {
+  clearAgent,
+  getComments,
+  hydrateFromServer,
+  removeComment,
+  scheduleSave,
+  subscribe,
+} from "./review-store";
 
 export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
   const paseo = usePaseo();
   const toast = useToast();
-  const comments = useSyncExternalStore(subscribe, getComments).filter(
+  const load = useRpc(loadCommentsRpc);
+  const persistComments = useRpc(saveCommentsRpc);
+  const all = useSyncExternalStore(subscribe, getComments).filter(
     (comment) => comment.agentId === agentId,
   );
+  const comments = all.filter((comment) => comment.status === "pending");
+  const sent = all.filter((comment) => comment.status === "sent");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Refresh from the daemon when it opens, and whenever a new user message
+  // arrives (the server marks attached drafts sent on the next user message).
+  useEffect(() => {
+    hydrateFromServer(agentId, load);
+    let unsubscribe: (() => void) | null = null;
+    try {
+      unsubscribe = paseo.agents.ref(agentId).timeline.subscribe((event) => {
+        if (event.event.type !== "timeline") return;
+        if (event.event.item.type !== "user_message") return;
+        hydrateFromServer(agentId, load);
+      });
+    } catch {
+      // agent subscription unavailable; panel refresh happens on reopen
+    }
+    const removeSaveWatcher = subscribe(() => scheduleSave(agentId, persistComments));
+    return () => {
+      unsubscribe?.();
+      removeSaveWatcher();
+    };
+  }, [agentId, load, persistComments, paseo]);
 
   const styles = useMemo(
     () => ({
       root: { flex: 1, padding: layout.compact ? 16 : 24, gap: 12, backgroundColor: theme.colors.surface0 } as const,
       title: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 22, fontWeight: "600" } as const,
+      label: { color: theme.colors.foregroundMuted, fontSize: 11 } as const,
+      reopen: { color: theme.colors.accent, fontSize: 12 } as const,
       empty: { color: theme.colors.foregroundMuted, fontSize: 14 } as const,
       list: { flex: 1 } as const,
       card: {
@@ -59,6 +94,14 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
       : note.length > 0
         ? note
         : formatted;
+  }
+
+  function setStatus(comment: ReviewComment, status: "pending" | "sent"): void {
+    void persistComments({
+      agentId,
+      comments: all.map((existing) => (existing.id === comment.id ? { ...existing, status } : existing)),
+    });
+    hydrateFromServer(agentId, load);
   }
 
   async function copy() {
@@ -103,13 +146,33 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
       ) : (
         <ScrollView style={styles.list}>
           <View style={{ gap: 8 }}>
-            {comments.map((comment) => (
-              <View key={comment.id} style={styles.card}>
+            {all.map((comment) => (
+              <View
+                key={comment.id}
+                style={[
+                  styles.card,
+                  comment.status === "pending"
+                    ? { borderLeftWidth: 3, borderLeftColor: theme.colors.accent }
+                    : null,
+                ]}
+              >
+                <Text style={styles.label}>
+                  {comment.status === "pending"
+                    ? "Pending \u00b7 will be attached to your next message"
+                    : "Sent \u2713 \u00b7 already part of the conversation"}
+                </Text>
                 <Text style={styles.quote}>"{comment.paragraphText.slice(0, 160)}"</Text>
                 <Text style={styles.text}>{comment.text}</Text>
-                <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" hitSlop={8} onPress={() => removeComment(comment.id)}>
-                  <Text style={styles.remove}>Delete</Text>
-                </Pressable>
+                <View style={{ flexDirection: "row", gap: 12 }}>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" hitSlop={8} onPress={() => removeComment(comment.id)}>
+                    <Text style={styles.remove}>Delete</Text>
+                  </Pressable>
+                  {comment.status === "sent" ? (
+                    <Pressable accessibilityRole="button" accessibilityLabel="Re-open comment" hitSlop={8} onPress={() => setStatus(comment, "pending")}>
+                      <Text style={styles.reopen}>Re-open</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               </View>
             ))}
           </View>

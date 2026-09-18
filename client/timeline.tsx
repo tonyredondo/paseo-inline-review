@@ -4,15 +4,25 @@ import {
   TextInput,
   useRevealedText,
 } from "@getpaseo/plugin/client/react-native";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useRpc } from "@getpaseo/plugin/client";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
+  loadCommentsRpc,
   reviewItemSchema,
+  saveCommentsRpc,
   splitParagraphs,
   type ReviewComment,
   type ReviewItemData,
 } from "../shared/review";
-import { addComment, getComments, removeComment, subscribe } from "./review-store";
+import {
+  addComment,
+  getComments,
+  hydrateFromServer,
+  removeComment,
+  scheduleSave,
+  subscribe,
+} from "./review-store";
 import { MarkdownText } from "./markdown";
 
 type EditingTarget = {
@@ -64,26 +74,30 @@ function CommentCard({
   theme: PluginTheme;
   onRemove(): void;
 }) {
+  const sent = comment.status === "sent";
   const styles = useMemo(
     () => ({
       card: {
         borderRadius: 8,
-        backgroundColor: theme.colors.surface2,
+        backgroundColor: sent ? theme.colors.surface1 : theme.colors.surface2,
         borderColor: theme.colors.border,
         borderWidth: 1,
+        borderLeftWidth: sent ? 1 : 3,
+        borderLeftColor: sent ? theme.colors.border : theme.colors.accent,
         padding: 8,
         gap: 4,
       } as const,
       header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" } as const,
-      text: { color: theme.colors.foreground, fontSize: 13 } as const,
+      label: { color: theme.colors.foregroundMuted, fontSize: 11 } as const,
+      text: { color: sent ? theme.colors.foregroundMuted : theme.colors.foreground, fontSize: 13 } as const,
       delete: { color: theme.colors.statusDanger, fontSize: 12 } as const,
     }),
-    [theme],
+    [theme, sent],
   );
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Your comment</Text>
+        <Text style={styles.label}>{sent ? "Your comment \u00b7 sent \u2713" : "Your comment \u00b7 pending"}</Text>
         <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" onPress={onRemove} hitSlop={8}>
           <Text style={styles.delete}>Delete</Text>
         </Pressable>
@@ -100,6 +114,16 @@ function ReviewAssistantMessage({
   layout,
 }: PluginTimelineItemProps<ReviewItemData>) {
   const data = item.data;
+  const load = useRpc(loadCommentsRpc);
+  const persistComments = useRpc(saveCommentsRpc);
+  // Hydrate persisted comments once per mount, and keep the daemon store in
+  // sync (debounced) whenever this agent's comments change.
+  useEffect(() => {
+    hydrateFromServer(agentId, load);
+    return subscribe(() => {
+      void scheduleSave(agentId, persistComments);
+    });
+  }, [agentId, load, persistComments]);
   const revealed = useRevealedText(data.text, data.phase);
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
   const comments = useMessageComments(agentId, data);

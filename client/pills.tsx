@@ -12,6 +12,7 @@ export function registerPills(client: PluginClientContext): () => void {
     const snapshot = getComments();
     const counts = new Map<string, number>();
     for (const comment of snapshot) {
+      if (comment.status !== "pending") continue;
       counts.set(comment.agentId, (counts.get(comment.agentId) ?? 0) + 1);
     }
     for (const [agentId, pill] of pills) {
