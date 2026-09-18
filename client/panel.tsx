@@ -3,7 +3,7 @@ import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { copyText, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { loadCommentsRpc, saveCommentsRpc } from "../shared/review";
+import { loadCommentsRpc, saveCommentsRpc, setActiveAgentRpc } from "../shared/review";
 import { formatReview, type ReviewComment } from "../shared/review";
 import {
   clearAgent,
@@ -29,7 +29,9 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
 
   // Refresh from the daemon when it opens, and whenever a new user message
   // arrives (the server marks attached drafts sent on the next user message).
+  const setActiveAgent = useRpc(setActiveAgentRpc);
   useEffect(() => {
+    void setActiveAgent({ agentId }).catch(() => {});
     hydrateFromServer(agentId, load);
     let unsubscribe: (() => void) | null = null;
     try {
@@ -46,7 +48,7 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
       unsubscribe?.();
       removeSaveWatcher();
     };
-  }, [agentId, load, persistComments, paseo]);
+  }, [agentId, load, persistComments, paseo, setActiveAgent]);
 
   const styles = useMemo(
     () => ({
