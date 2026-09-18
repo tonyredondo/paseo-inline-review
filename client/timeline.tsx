@@ -92,8 +92,9 @@ function CommentCard({
         // Inset from sibling blocks and pad the sides so comment cards read
         // as their own element, not as another full-width block.
         marginHorizontal: 10,
+        marginVertical: 4,
         paddingHorizontal: 10,
-        paddingVertical: 8,
+        paddingVertical: 10,
         gap: 4,
       } as const,
       header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" } as const,
