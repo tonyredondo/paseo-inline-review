@@ -3,6 +3,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Image, Linking, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { MarkdownSpan } from "./markdown-span";
 import { isValidHttpUrl, openInBrowserRpc } from "../shared/review";
 import {
   extractRefDefs,
@@ -135,28 +136,29 @@ function InlineRun({
         switch (token.type) {
           case "bold":
             return (
-              <Text key={index} style={{ color: theme.colors.foreground, fontWeight: "700" }}>
+              <MarkdownSpan key={index} style={{ color: theme.colors.foreground, fontWeight: "700" }} selectable={selectable}>
                 {token.text}
-              </Text>
+              </MarkdownSpan>
             );
           case "italic":
             return (
-              <Text key={index} style={{ color: theme.colors.foreground, fontStyle: "italic" }}>
+              <MarkdownSpan key={index} style={{ color: theme.colors.foreground, fontStyle: "italic" }} selectable={selectable}>
                 {token.text}
-              </Text>
+              </MarkdownSpan>
             );
           case "strike":
             return (
-              <Text
+              <MarkdownSpan
                 key={index}
                 style={{ color: theme.colors.foreground, textDecorationLine: "line-through" }}
+                selectable={selectable}
               >
                 {token.text}
-              </Text>
+              </MarkdownSpan>
             );
           case "code":
             return (
-              <Text
+              <MarkdownSpan
                 key={index}
                 style={{
                   color: lighten(theme.colors.accent, 0.15),
@@ -167,20 +169,21 @@ function InlineRun({
                   borderRadius: 6,
                   ...monospaceFont(),
                 }}
+                selectable={selectable}
               >
                 {token.text}
-              </Text>
+              </MarkdownSpan>
             );
           case "image":
             // Inline image inside a text line renders as its alt text.
             return (
-              <Text key={index} style={{ color: theme.colors.foregroundMuted }}>
+              <MarkdownSpan key={index} style={{ color: theme.colors.foregroundMuted }} selectable={selectable}>
                 {`[${token.alt}]`}
-              </Text>
+              </MarkdownSpan>
             );
           case "link":
             return (
-              <Text
+              <MarkdownSpan
                 key={index}
                 style={{ color: theme.colors.accent }}
                 onPress={() => {
@@ -188,7 +191,7 @@ function InlineRun({
                 }}
               >
                 {token.text}
-              </Text>
+              </MarkdownSpan>
             );
           case "break":
             return <Text key={index}>{"\n"}</Text>;
@@ -201,9 +204,9 @@ function InlineRun({
               <Fragment key={index}>
                 {token.text.split(/(\s+)/).map((piece, pieceIndex) =>
                   piece.length > 0 ? (
-                    <Text key={pieceIndex} selectable>
+                    <MarkdownSpan key={pieceIndex} selectable>
                       {piece}
-                    </Text>
+                    </MarkdownSpan>
                   ) : null,
                 )}
               </Fragment>
@@ -213,6 +216,7 @@ function InlineRun({
     </>
   );
 }
+
 
 function CodeBlockView({
   code,
@@ -387,9 +391,9 @@ export function MarkdownText({
 
   function renderTextLines(lines: string[], style: object): ReactNode {
     return lines.map((line, index) => (
-      <Text key={index} style={style} onPress={onChunkPress}>
+      <MarkdownSpan key={index} style={style} uiTextView selectable={selectable} onPress={onChunkPress}>
         <InlineRun tokens={parseInline(line, refs)} theme={theme} styles={styles} refs={refs} selectable={selectable} />
-      </Text>
+      </MarkdownSpan>
     ));
   }
 
