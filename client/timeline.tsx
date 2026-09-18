@@ -89,7 +89,11 @@ function CommentCard({
         borderWidth: 1,
         borderLeftWidth: sent ? 1 : 3,
         borderLeftColor: sent ? theme.colors.border : theme.colors.accent,
-        padding: 8,
+        // Inset from sibling blocks and pad the sides so comment cards read
+        // as their own element, not as another full-width block.
+        marginHorizontal: 10,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
         gap: 4,
       } as const,
       header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" } as const,
