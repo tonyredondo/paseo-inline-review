@@ -2,7 +2,7 @@ import type { InlineToken } from "../shared/markdown-parse";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Image, Linking, Platform, Pressable, Text, View } from "react-native";
+import { Image, Linking, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { isValidHttpUrl, openInBrowserRpc } from "../shared/review";
 import {
   extractRefDefs,
@@ -187,6 +187,9 @@ function CodeBlockView({
     [theme],
   );
   const mono = monospaceFont();
+  // Web: code lines must not wrap; they scroll horizontally instead.
+  const nowrap =
+    Platform.OS === "web" ? ({ whiteSpace: "pre", flexWrap: "nowrap" } as object) : undefined;
 
   async function copy(): Promise<void> {
     try {
@@ -215,20 +218,27 @@ function CodeBlockView({
           <Icon name="Copy" size={13} color={theme.colors.foregroundMuted} />
         )}
       </Pressable>
-      <View>
-        {lines.map((line, lineIndex: number) => (
-          <Text
-            key={lineIndex}
-            style={[mono, { color: theme.colors.foreground, fontSize: styles.codeFontSize, lineHeight: 18 }]}
-          >
-            {line.map((token: CodeToken, tokenIndex: number) => (
-              <Text key={tokenIndex} style={{ color: colors[token.type as keyof typeof colors] }}>
-                {token.text}
-              </Text>
-            ))}
-          </Text>
-        ))}
-      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator>
+        <View>
+          {lines.map((line, lineIndex: number) => (
+            <Text
+              key={lineIndex}
+              style={[
+                mono,
+                nowrap,
+                { color: theme.colors.foreground, fontSize: styles.codeFontSize, lineHeight: 18 },
+              ]}
+            >
+              {line.map((token: CodeToken, tokenIndex: number) => (
+                <Text key={tokenIndex} style={[mono, { color: colors[token.type as keyof typeof colors] }]}>
+                  {token.text}
+                </Text>
+              ))}
+              {"\n"}
+            </Text>
+          ))}
+        </View>
+      </ScrollView>
     </View>
   );
 }
