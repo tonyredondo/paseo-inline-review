@@ -61,6 +61,58 @@ function lighten(hex: string, factor: number): string {
   return `#${lifted.join("")}`;
 }
 
+function hexToHsl(hex: string): { h: number; s: number; l: number } {
+  const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (!match) return { h: 0, s: 0, l: 0.5 };
+  const value = parseInt(match[1], 16);
+  const r = ((value >> 16) & 0xff) / 255;
+  const g = ((value >> 8) & 0xff) / 255;
+  const b = (value & 0xff) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l };
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h: number;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return { h: h * 360, s, l };
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const hue = ((h % 360) + 360) / 360;
+  const sat = Math.min(1, Math.max(0, s));
+  const lig = Math.min(1, Math.max(0, l));
+  if (sat === 0) {
+    const gray = Math.round(lig * 255)
+      .toString(16)
+      .padStart(2, "0");
+    return `#${gray}${gray}${gray}`;
+  }
+  const q = lig < 0.5 ? lig * (1 + sat) : lig + sat - lig * sat;
+  const p = 2 * lig - q;
+  function channel(t: number): number {
+    let value = t;
+    if (value < 0) value += 1;
+    if (value > 1) value -= 1;
+    if (value < 1 / 6) return p + (q - p) * 6 * value;
+    if (value < 1 / 2) return q;
+    if (value < 2 / 3) return p + (q - p) * (2 / 3 - value) * 6;
+    return p;
+  }
+  const rgb = [hue + 1 / 3, hue, hue - 1 / 3]
+    .map((t) => Math.round(Math.min(1, Math.max(0, channel(t))) * 255).toString(16).padStart(2, "0"));
+  return `#${rgb.join("")}`;
+}
+
+/** Rotates the hue of a hex color while keeping its saturation/lightness. */
+function rotateHue(hex: string, degrees: number, lightnessBoost = 0): string {
+  const { h, s, l } = hexToHsl(hex);
+  return hslToHex(h + degrees, Math.min(0.9, s + 0.05), Math.min(0.85, Math.max(0.2, l + lightnessBoost)));
+}
+
 function monospaceFont(): { fontFamily?: string } {
   if (Platform.OS === "ios") return { fontFamily: "Menlo" };
   if (Platform.OS === "android") return { fontFamily: "monospace" };
@@ -171,15 +223,18 @@ function CodeBlockView({
     };
   }, []);
   const lines = useMemo(() => highlightCode(code, language), [code, language]);
+  // Full syntax palette derived from the theme accent hue (the host only
+  // gives us accent/status colors, which are too close to each other for a
+  // readable scheme).
   const colors = useMemo(
     () => ({
       plain: theme.colors.foreground,
-      keyword: lighten(theme.colors.accent, 0.15),
-      string: lighten(theme.colors.statusSuccess, 0.25),
+      keyword: rotateHue(theme.colors.accent, 0, 0.08),
+      string: rotateHue(theme.colors.accent, 140, 0.08),
       comment: theme.colors.foregroundMuted,
-      number: lighten(theme.colors.statusWarning, 0.2),
-      function: theme.colors.foreground,
-      type: lighten(theme.colors.accent, 0.45),
+      number: rotateHue(theme.colors.accent, 60, 0.1),
+      function: rotateHue(theme.colors.accent, 190, 0.05),
+      type: rotateHue(theme.colors.accent, 250, 0.08),
       added: theme.colors.statusSuccess,
       removed: theme.colors.statusDanger,
       meta: theme.colors.foregroundMuted,
