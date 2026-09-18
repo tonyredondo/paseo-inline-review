@@ -80,10 +80,16 @@ function CommentCard({
     }),
     [theme],
   );
+  // TEMPORARY DEBUG: identifying fields stay visible until the duplication
+  // report (one comment rendering under every paragraph) is diagnosed.
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>Your comment</Text>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+          {`Your comment \u00b7 #${comment.id.slice(-6)} \u00b7 p:${comment.paragraphIndex} \u00b7 m:${
+            comment.messageId === null ? "null" : comment.messageId.slice(0, 6)
+          }`}
+        </Text>
         <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" onPress={onRemove} hitSlop={8}>
           <Text style={styles.delete}>Delete</Text>
         </Pressable>

@@ -1,3 +1,4 @@
+import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 /** Data carried by the plugin-owned replacement of an assistant message. */
@@ -45,4 +46,20 @@ export function formatReview(comments: readonly ReviewComment[]): string {
     lines.push("");
   });
   return lines.join("\n").trimEnd();
+}
+
+export const openInBrowserRpc = defineRpc({
+  name: "review.openInBrowser",
+  input: z.object({ url: z.string() }),
+  output: z.object({ ok: z.boolean() }),
+});
+
+/** Opens an absolute HTTP(S) URL with the daemon host OS default browser. */
+export function isValidHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }

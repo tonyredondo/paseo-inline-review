@@ -1,8 +1,9 @@
 import type { InlineToken } from "../shared/markdown-parse";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { openExternalUrl } from "@getpaseo/plugin/client";
+import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { useMemo, Fragment, type ReactNode } from "react";
 import { Image, Linking, Platform, Text, View } from "react-native";
+import { isValidHttpUrl, openInBrowserRpc } from "../shared/review";
 import { parseBlocks, parseInline } from "../shared/markdown-parse";
 
 /**
@@ -11,18 +12,30 @@ import { parseBlocks, parseInline } from "../shared/markdown-parse";
  * draws its own (see shared/markdown-parse.ts and test/markdown.test.ts).
  */
 
-async function openLink(url: string): Promise<void> {
-  // Prefer the host external opener (system browser on desktop, new tab on
-  // web). The app injects it at runtime; fall back to React Native's opener
-  // when the running host does not supply it.
+async function openLink(
+  url: string,
+  openUrlViaDaemon: ((input: { url: string }) => Promise<{ ok: boolean }>) | null,
+): Promise<void> {
+  if (!isValidHttpUrl(url)) return;
+  // 1. Host-injected external opener (system browser) when the app provides it.
   if (typeof openExternalUrl === "function") {
     try {
       await openExternalUrl(url);
       return;
     } catch {
-      // fall through to the React Native opener
+      // fall through
     }
   }
+  // 2. Daemon-side OS opener: the default browser with full browser chrome.
+  if (openUrlViaDaemon) {
+    try {
+      const result = await openUrlViaDaemon({ url });
+      if (result.ok) return;
+    } catch {
+      // fall through
+    }
+  }
+  // 3. React Native opener as the last resort.
   await Linking.openURL(url);
 }
 
@@ -41,6 +54,7 @@ function InlineRun({
   theme: PluginTheme;
   styles: ReturnType<typeof useStyles>;
 }): ReactNode {
+  const openUrlViaDaemon = useRpc(openInBrowserRpc);
   return (
     <>
       {tokens.map((token, index) => {
@@ -93,7 +107,7 @@ function InlineRun({
                 key={index}
                 style={{ color: theme.colors.accent }}
                 onPress={() => {
-                  void openLink(token.url);
+                  void openLink(token.url, openUrlViaDaemon);
                 }}
               >
                 {token.text}
