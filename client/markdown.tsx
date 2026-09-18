@@ -39,6 +39,21 @@ async function openLink(
   await Linking.openURL(url);
 }
 
+/**
+ * Lightens a #rrggbb color toward white so accent-colored text stays readable
+ * on muted themes. factor 0 keeps the color, 1 yields white.
+ */
+function lighten(hex: string, factor: number): string {
+  const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (!match) return hex;
+  const value = parseInt(match[1], 16);
+  const channels = [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff];
+  const lifted = channels
+    .map((channel) => Math.round(channel + (255 - channel) * factor))
+    .map((channel) => channel.toString(16).padStart(2, "0"));
+  return `#${lifted.join("")}`;
+}
+
 function monospaceFont(): { fontFamily?: string } {
   if (Platform.OS === "ios") return { fontFamily: "Menlo" };
   if (Platform.OS === "android") return { fontFamily: "monospace" };
@@ -86,12 +101,12 @@ function InlineRun({
               <Text
                 key={index}
                 style={{
-                  color: theme.colors.accent,
+                  color: lighten(theme.colors.accent, 0.35),
                   backgroundColor: theme.colors.surface2,
                   fontSize: styles.codeFontSize,
                   paddingHorizontal: 5,
                   paddingVertical: 2,
-                  borderRadius: 4,
+                  borderRadius: 6,
                   ...monospaceFont(),
                 }}
               >
