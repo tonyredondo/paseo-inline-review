@@ -3,7 +3,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { useMemo, Fragment, type ReactNode } from "react";
 import { Image, Platform, Text, View } from "react-native";
 import { parseBlocks, parseInline } from "../shared/markdown-parse";
-import { openExternal } from "./web";
+import { openExternalUrl } from "@getpaseo/plugin/client";
 
 /**
  * Renders parsed markdown blocks with React Native primitives. Paseo does not
@@ -78,7 +78,10 @@ function InlineRun({
                 key={index}
                 style={{ color: theme.colors.accent }}
                 onPress={() => {
-                  openExternal(token.url).catch(() => {});
+                  // Follow the same link rules as Paseo's own renderer: the
+                  // host opener uses the system browser on desktop, a new tab
+                  // on web, and ignores malformed or non-HTTP(S) URLs.
+                  openExternalUrl(token.url).catch(() => {});
                 }}
               >
                 {token.text}
