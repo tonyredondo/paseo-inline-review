@@ -11,15 +11,13 @@ function emit(): void {
 
 export function subscribe(listener: Listener): () => void {
   listeners.add(listener);
-  return () => listeners.delete(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 export function getComments(): ReviewComment[] {
   return comments;
-}
-
-export function getAgentComments(agentId: string): ReviewComment[] {
-  return comments.filter((comment) => comment.agentId === agentId);
 }
 
 let nextId = 0;

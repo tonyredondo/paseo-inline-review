@@ -1,5 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { getComments, subscribe } from "./review-store";
+import { clearAgent, getComments, subscribe } from "./review-store";
 
 /**
  * Adds one composer pill per agent that opens the review panel for that agent,
@@ -23,6 +23,12 @@ export function registerPills(client: PluginClientContext): () => void {
   const unsubscribeComments = subscribe(refreshLabels);
 
   const unsubscribeAgents = client.paseo.agents.subscribe((update) => {
+    if (update.kind === "remove") {
+      pills.get(update.agentId)?.remove();
+      pills.delete(update.agentId);
+      clearAgent(update.agentId);
+      return;
+    }
     if (update.kind !== "upsert" || !update.agent.workspaceId) return;
     const { id: agentId, workspaceId } = update.agent;
     if (pills.has(agentId)) return;

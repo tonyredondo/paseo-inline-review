@@ -21,14 +21,19 @@ type EditingTarget = {
   draft: string;
 };
 
+function commentBelongsToMessage(data: ReviewItemData, comment: ReviewComment): boolean {
+  if (comment.messageId !== null) return comment.messageId === data.messageId;
+  // Unknown message id: fall back to the paragraph snapshot being a prefix of the
+  // message text. Streaming only appends, so the snapshot stays a prefix.
+  return data.text.includes(comment.paragraphText);
+}
+
 function useMessageComments(agentId: string, data: ReviewItemData) {
   const all = useSyncExternalStore(subscribe, getComments);
   return useMemo(
-    () =>
-      all.filter(
-        (comment) => comment.agentId === agentId && comment.messageId === data.messageId,
-      ),
-    [all, agentId, data.messageId],
+    () => all.filter((comment) => comment.agentId === agentId && commentBelongsToMessage(data, comment)),
+    // data.text changes while streaming; recompute so orphan recovery stays correct.
+    [all, agentId, data.text, data.messageId],
   );
 }
 
@@ -133,7 +138,8 @@ function ReviewAssistantMessage({
         const anchored = comments.filter(
           (comment) =>
             comment.paragraphIndex === index &&
-            (data.messageId !== null || comment.paragraphText === paragraph),
+            // Accept prefix matches: comments saved mid-stream snapshot a shorter paragraph.
+            (comment.messageId === data.messageId || paragraph.startsWith(comment.paragraphText)),
         );
         return (
           <View key={`${index}-${paragraph.slice(0, 24)}`} style={styles.comments}>

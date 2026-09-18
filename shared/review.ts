@@ -41,8 +41,6 @@ export function formatReview(comments: readonly ReviewComment[]): string {
   const lines: string[] = ["Review:", ""];
   comments.forEach((comment, index) => {
     lines.push(`[${index + 1}] On: "${shortenQuote(comment.paragraphText)}"`);
-    lines.push(`> ${shortenQuote(comment.paragraphText)}`);
-    lines.push("");
     lines.push(`Comment: ${comment.text.trim()}`);
     lines.push("");
   });

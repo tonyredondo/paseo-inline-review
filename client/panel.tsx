@@ -20,7 +20,7 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
       root: { flex: 1, padding: layout.compact ? 16 : 24, gap: 12, backgroundColor: theme.colors.surface0 } as const,
       title: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 22, fontWeight: "600" } as const,
       empty: { color: theme.colors.foregroundMuted, fontSize: 14 } as const,
-      list: { flex: 0 } as const,
+      list: { flex: 1 } as const,
       card: {
         borderRadius: 10,
         backgroundColor: theme.colors.surface1,
@@ -51,14 +51,23 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
     [theme, layout.compact],
   );
 
-  async function copy() {
+  function composeMessage(): string {
+    const note = draft.trim();
     const formatted = formatReview(comments);
-    if (formatted.length === 0) {
+    return note.length > 0 && formatted.length > 0
+      ? `${note}\n\n${formatted}`
+      : note.length > 0
+        ? note
+        : formatted;
+  }
+
+  async function copy() {
+    if (comments.length === 0 && draft.trim().length === 0) {
       toast.error("No comments yet.");
       return;
     }
     try {
-      await copyText(formatted);
+      await copyText(composeMessage());
       toast.show("Review copied. Paste it into the composer.", { variant: "success" });
     } catch {
       toast.error("Could not copy to the clipboard.");
@@ -66,12 +75,11 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
   }
 
   async function send() {
-    const formatted = formatReview(comments);
-    if (formatted.length === 0) {
+    if (comments.length === 0 && draft.trim().length === 0) {
       toast.error("Nothing to send yet.");
       return;
     }
-    const message = draft.trim().length > 0 ? `${draft.trim()}\n\n${formatted}` : formatted;
+    const message = composeMessage();
     setBusy(true);
     try {
       await paseo.agents.ref(agentId).send(message);
