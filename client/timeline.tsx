@@ -1,7 +1,6 @@
 import type { PluginClientContext, PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import type { PluginTheme } from "@getpaseo/plugin";
 import {
-  Modal,
   TextInput,
   useRevealedText,
 } from "@getpaseo/plugin/client/react-native";
@@ -91,9 +90,16 @@ function ReviewAssistantMessage({
   const styles = useMemo(
     () => ({
       root: { gap: layout.compact ? 6 : 8 } as const,
-      hint: { color: theme.colors.foregroundMuted, fontSize: 11 } as const,
       comments: { gap: 4, marginTop: 2 } as const,
-      quote: { color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic" } as const,
+      editor: {
+        backgroundColor: theme.colors.surface1,
+        borderColor: theme.colors.border,
+        borderWidth: 1,
+        borderRadius: 8,
+        padding: 10,
+        gap: 8,
+      } as const,
+      actions: { flexDirection: "row", gap: 8 } as const,
       input: {
         color: theme.colors.foreground,
         backgroundColor: theme.colors.surface2,
@@ -145,17 +151,53 @@ function ReviewAssistantMessage({
                 // matches, since streaming only appends to the paragraph text.
                 paragraph.startsWith(comment.paragraphText)),
         );
+        const isEditing = editing !== null && editing.paragraphIndex === index;
         return (
           <View key={index} style={styles.comments}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Comment on paragraph ${index + 1}`}
-              onPress={() =>
-                setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })
+              accessibilityLabel={`Comment on paragraph ${index + 1} with the platform modifier key`}
+              onPress={(event) => {
+                // Plain clicks stay free for text selection; only the
+                // platform modifier opens the inline comment editor.
+                const native = event.nativeEvent as unknown as {
+                  metaKey?: boolean;
+                  ctrlKey?: boolean;
+                };
+                if (native.metaKey || native.ctrlKey) {
+                  setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" });
+                }
+              }}
+              // Native fallback: desktop builds are web; use long-press there.
+              onLongPress={
+                layout.platform !== "web"
+                  ? () =>
+                      setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })
+                  : undefined
               }
             >
               <MarkdownText text={paragraph} theme={theme} compact={layout.compact} />
             </Pressable>
+            {isEditing && (
+              <View style={styles.editor}>
+                <TextInput
+                  value={editing.draft}
+                  onChangeText={(draft) => setEditing({ ...editing, draft })}
+                  placeholder="Write your comment about this passage..."
+                  multiline
+                  autoFocus
+                  style={styles.input}
+                />
+                <View style={styles.actions}>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Save comment" style={styles.save} onPress={save}>
+                    <Text style={styles.saveText}>Save</Text>
+                  </Pressable>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Cancel comment" style={styles.cancel} onPress={() => setEditing(null)}>
+                    <Text style={styles.cancelText}>Cancel</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
             {anchored.map((comment) => (
               <CommentCard
                 key={comment.id}
@@ -167,32 +209,6 @@ function ReviewAssistantMessage({
           </View>
         );
       })}
-      <Text style={styles.hint}>
-        Tap a paragraph to comment on it.{" "}
-        {comments.length > 0 ? `${comments.length} comment(s) on this response.` : ""}
-      </Text>
-      <Modal title="Comment on paragraph" open={editing !== null} onOpenChange={(open) => { if (!open) setEditing(null); }}>
-        <Modal.Content>
-          {editing !== null && (
-            <View style={{ gap: 10 }}>
-              <Text style={styles.quote}>"{editing.paragraphText.slice(0, 200)}"</Text>
-              <TextInput
-                value={editing.draft}
-                onChangeText={(draft) => setEditing({ ...editing, draft })}
-                placeholder="Write your comment about this passage..."
-                multiline
-                style={styles.input}
-              />
-              <Pressable accessibilityRole="button" accessibilityLabel="Save comment" style={styles.save} onPress={save}>
-                <Text style={styles.saveText}>Save comment</Text>
-              </Pressable>
-              <Pressable accessibilityRole="button" accessibilityLabel="Cancel comment" style={styles.cancel} onPress={() => setEditing(null)}>
-                <Text style={styles.cancelText}>Cancel</Text>
-              </Pressable>
-            </View>
-          )}
-        </Modal.Content>
-      </Modal>
     </View>
   );
 }
