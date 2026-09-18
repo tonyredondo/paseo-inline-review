@@ -1,12 +1,14 @@
-import {
-  type CodegenTypes,
-  type ColorValue,
-  type ViewProps,
-  codegenNativeComponent,
-} from 'react-native'
+import type {ColorValue, ViewProps} from 'react-native'
+import type {
+  BubblingEventHandler,
+  Float,
+  Int32,
+  WithDefault,
+} from 'react-native/Libraries/Types/CodegenTypes'
+import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNativeComponent'
 
 interface TargetedEvent {
-  target: CodegenTypes.Int32
+  target: Int32
 }
 
 type TextDecorationLine = 'none' | 'underline' | 'line-through'
@@ -29,28 +31,19 @@ type TextAlign = 'auto' | 'left' | 'right' | 'center' | 'justify'
 interface NativeProps extends ViewProps {
   text: string
   color?: ColorValue
-  fontSize?: CodegenTypes.Float
-  fontStyle?: CodegenTypes.WithDefault<FontStyle, 'normal'>
-  fontWeight?: CodegenTypes.WithDefault<NativeFontWeight, 'normal'>
+  fontSize?: Float
+  fontStyle?: WithDefault<FontStyle, 'normal'>
+  fontWeight?: WithDefault<NativeFontWeight, 'normal'>
   fontFamily?: string
-  letterSpacing?: CodegenTypes.Float
-  lineHeight?: CodegenTypes.Float
-  textDecorationLine?: CodegenTypes.WithDefault<TextDecorationLine, 'none'>
-  textDecorationStyle?: CodegenTypes.WithDefault<TextDecorationStyle, 'solid'>
+  letterSpacing?: Float
+  lineHeight?: Float
+  textDecorationLine?: WithDefault<TextDecorationLine, 'none'>
+  textDecorationStyle?: WithDefault<TextDecorationStyle, 'solid'>
   textDecorationColor?: ColorValue
-  textAlign?: CodegenTypes.WithDefault<TextAlign, 'auto'>
-  shadowRadius?: CodegenTypes.WithDefault<CodegenTypes.Float, 0>
-  /** Internal identifier used to highlight all fragments in a pressable Text. */
-  highlightGroup?: string
-  /** Internal copy of Text's suppressHighlighting prop. */
-  suppressHighlighting?: boolean
-  /** Internal expansion of the owning Text's press-retention rectangle. */
-  pressRetentionOffsetTop?: CodegenTypes.WithDefault<CodegenTypes.Float, 20>
-  pressRetentionOffsetRight?: CodegenTypes.WithDefault<CodegenTypes.Float, 20>
-  pressRetentionOffsetBottom?: CodegenTypes.WithDefault<CodegenTypes.Float, 30>
-  pressRetentionOffsetLeft?: CodegenTypes.WithDefault<CodegenTypes.Float, 20>
-  onPress?: CodegenTypes.BubblingEventHandler<TargetedEvent>
-  onLongPress?: CodegenTypes.BubblingEventHandler<TargetedEvent>
+  textAlign?: WithDefault<TextAlign, 'auto'>
+  shadowRadius?: WithDefault<Float, 0>
+  onPress?: BubblingEventHandler<TargetedEvent>
+  onLongPress?: BubblingEventHandler<TargetedEvent>
 }
 
 export default codegenNativeComponent<NativeProps>('RNUITextViewChild', {
