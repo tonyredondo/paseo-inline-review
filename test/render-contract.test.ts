@@ -48,3 +48,13 @@ test("paragraph pressables never register onLongPress (native selection stays na
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
   assert.ok(!timelineSource.includes("onLongPress"));
 });
+
+test("native paragraphs are selectable and double-tap driven (no Pressable wrapper)", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  // The native branch renders without a Pressable (a Pressable cancels the
+  // platform selection on long-press) and wires the double-tap handler.
+  assert.ok(timelineSource.includes('layout.platform === "web"'));
+  assert.ok(timelineSource.includes("onChunkPress"));
+  assert.ok(timelineSource.includes("selectable"));
+  assert.ok(timelineSource.includes("handleChunkTap"));
+});

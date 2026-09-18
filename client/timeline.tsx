@@ -143,6 +143,7 @@ function ReviewAssistantMessage({
   }, [agentId, load, persistComments]);
   const revealed = useRevealedText(data.text, data.phase);
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
+  const paragraphTexts = paragraphs;
   const comments = useMessageComments(agentId, data);
   const [editing, setEditing] = useState<EditingTarget | null>(null);
   // Double-tap detection for touch devices (web uses modifier-click).
@@ -184,6 +185,23 @@ function ReviewAssistantMessage({
     [theme, layout.compact],
   );
 
+  function handleChunkTap(chunkIndex: number): void {
+    // Touch: a double-tap on the same chunk opens the editor, so single taps
+    // and long-presses stay free for scroll and native text selection.
+    const now = Date.now();
+    const last = lastTapRef.current;
+    if (last && last.index === chunkIndex && now - last.at < 350) {
+      lastTapRef.current = null;
+      setEditing({
+        paragraphIndex: chunkIndex,
+        paragraphText: paragraphs[chunkIndex] ?? "",
+        draft: "",
+      });
+      return;
+    }
+    lastTapRef.current = { index: chunkIndex, at: now };
+  }
+
   function save() {
     if (!editing || editing.draft.trim().length === 0) {
       setEditing(null);
@@ -212,18 +230,13 @@ function ReviewAssistantMessage({
         const isEditing = editing !== null && editing.paragraphIndex === index;
         return (
           <View key={index} style={styles.comments}>
-            <Pressable
-              // Web: keep the text cursor and selectable text; only the
-              // modifier click is interactive, so a normal drag selects text.
-              style={
-                layout.platform === "web"
-                  ? ({ cursor: "text", userSelect: "text" } as object)
-                  : undefined
-              }
-              onPress={(event) => {
-                if (layout.platform === "web") {
-                  // Web: plain clicks stay free for text selection; only the
-                  // platform modifier opens the inline comment editor.
+            {layout.platform === "web" ? (
+              <Pressable
+                // Web: keep the text cursor and selectable text; only the
+                // platform modifier opens the inline comment editor, so a
+                // normal drag selects text.
+                style={{ cursor: "text", userSelect: "text" } as object}
+                onPress={(event) => {
                   const native = event.nativeEvent as unknown as {
                     metaKey?: boolean;
                     ctrlKey?: boolean;
@@ -231,23 +244,24 @@ function ReviewAssistantMessage({
                   if (native.metaKey || native.ctrlKey) {
                     setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" });
                   }
-                  return;
-                }
-                // Touch: a double-tap on the same paragraph opens the editor,
-                // so single taps keep scroll/selection gestures free.
-                const now = Date.now();
-                const last = lastTapRef.current;
-                if (last && last.index === index && now - last.at < 350) {
-                  lastTapRef.current = null;
-                  setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" });
-                  return;
-                }
-                lastTapRef.current = { index, at: now };
-              }}
-
-            >
-              <MarkdownText text={paragraph} theme={theme} compact={layout.compact} refs={refs} />
-            </Pressable>
+                }}
+              >
+                <MarkdownText text={paragraph} theme={theme} compact={layout.compact} refs={refs} />
+              </Pressable>
+            ) : (
+              // Native: no Pressable (it cancels text selection). Texts are
+              // selectable and the double-tap opens the comment editor.
+              <View>
+                <MarkdownText
+                  text={paragraph}
+                  theme={theme}
+                  compact={layout.compact}
+                  refs={refs}
+                  selectable
+                  onChunkPress={() => handleChunkTap(index)}
+                />
+              </View>
+            )}
             {isEditing && (
               <View style={styles.editor}>
                 <TextInput

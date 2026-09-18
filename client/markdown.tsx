@@ -352,12 +352,18 @@ export function MarkdownText({
   theme,
   compact,
   refs,
+  selectable,
+  onChunkPress,
 }: {
   text: string;
   theme: PluginTheme;
   compact: boolean;
   /** Reference link definitions extracted from the full message. */
   refs?: Map<string, string>;
+  /** Native only: enables the platform text selection on rendered text. */
+  selectable?: boolean;
+  /** Native only: called when the user taps the chunk (used for double-tap). */
+  onChunkPress?: () => void;
 }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   const styles = useStyles(theme, compact);
@@ -365,7 +371,12 @@ export function MarkdownText({
 
   function renderTextLines(lines: string[], style: object): ReactNode {
     return lines.map((line, index) => (
-      <Text key={index} style={style}>
+      <Text
+        key={index}
+        style={style}
+        selectable={selectable}
+        onPress={onChunkPress}
+      >
         <InlineRun tokens={parseInline(line, refs)} theme={theme} styles={styles} refs={refs} />
       </Text>
     ));
