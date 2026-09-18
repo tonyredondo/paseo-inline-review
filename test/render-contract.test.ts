@@ -1,0 +1,45 @@
+/**
+ * Render-contract tests. The plugin code blocks render with React Native at
+ * runtime (not unit-testable in Node), so these tests pin the CONTRACTS in the
+ * renderer source that keep regressing: explicit monospace on every code token
+ * (nested react-native-web Texts do not inherit fontFamily), no-wrap code with
+ * horizontal scroll, and the solid black code background.
+ */
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+
+import * as path from "node:path";
+const rendererSource = String(readFileSync(path.resolve("client/markdown.tsx"), "utf8"));
+
+test("every code token Text carries the monospace family explicitly", () => {
+  // react-native-web nested Texts do NOT inherit fontFamily: each token must
+  // set it or the code block silently renders proportional again.
+  assert.match(rendererSource, /<Text key=\{tokenIndex\} style=\{\[mono, \{ color: darkPalette/);
+  assert.match(rendererSource, /\[\s*mono,\s*nowrap,/);
+});
+
+test("code blocks scroll horizontally and never wrap", () => {
+  assert.match(rendererSource, /<ScrollView horizontal showsHorizontalScrollIndicator>/);
+  assert.match(rendererSource, /flexDirection: "row"/);
+  assert.match(rendererSource, /whiteSpace: "pre"/);
+});
+
+test("code blocks render on a solid black background with the custom palette", () => {
+  assert.match(rendererSource, /backgroundColor: "#000000"/);
+  assert.match(rendererSource, /const darkPalette = \{/);
+  for (const token of ["plain", "keyword", "string", "comment", "number", "function", "type", "added", "removed", "meta"]) {
+    assert.match(rendererSource, new RegExp(token + ": \"#"));
+  }
+});
+
+test("inline code chips keep accent color, padding and monospace", () => {
+  // the inline code case must include the monospace stack and surface2 chip
+  const codeCase = String(rendererSource).slice(
+    rendererSource.indexOf('case "code"'),
+    rendererSource.indexOf('case "break"'),
+  );
+  assert.match(codeCase, /monospaceFont\(\)/);
+  assert.match(codeCase, /paddingHorizontal: 5/);
+  assert.match(codeCase, /theme\.colors\.accent/);
+});

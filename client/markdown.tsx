@@ -274,7 +274,7 @@ function CodeBlockView({
             {lines.map((line, lineIndex) => (
               <Fragment key={lineIndex}>
                 {line.map((token: CodeToken, tokenIndex: number) => (
-                  <Text key={tokenIndex} style={{ color: darkPalette[token.type as keyof typeof darkPalette] }}>
+                  <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type as keyof typeof darkPalette] }]}>
                     {token.text}
                   </Text>
                 ))}

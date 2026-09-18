@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types test/markdown.test.ts && node --experimental-strip-types test/review.test.ts"
+    "test": "node --experimental-strip-types test/markdown.test.ts && node --experimental-strip-types test/review.test.ts && node --experimental-strip-types test/render-contract.test.ts"
   },
   "devDependencies": {
     "@getpaseo/plugin": "^0.9.0-beta.2",
