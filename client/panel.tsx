@@ -9,6 +9,7 @@ import {
   clearAgent,
   getComments,
   hydrateFromServer,
+  registerPersist,
   removeComment,
   scheduleSave,
   subscribe,
@@ -20,6 +21,9 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
   const toast = useToast();
   const load = useRpc(loadCommentsRpc);
   const persistComments = useRpc(saveCommentsRpc);
+  useEffect(() => {
+    registerPersist(persistComments);
+  }, [persistComments]);
   const all = useSyncExternalStore(subscribe, getComments).filter(
     (comment) => comment.agentId === agentId,
   );

@@ -1,9 +1,10 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { formatReview } from "../shared/review";
+import { formatReview, saveCommentsRpc } from "../shared/review";
 import {
   clearAgent,
   getComments,
   markAgentCommentsSent,
+  registerPersist,
   subscribe,
 } from "./review-store";
 
@@ -18,6 +19,10 @@ type PillHandle = { remove(): void; update(patch: { label?: string; disabled?: b
 export function registerPills(client: PluginClientContext): () => void {
   const pills = new Map<string, PillHandle>();
   const sendPills = new Map<string, PillHandle>();
+
+  // Store-owned persistence: every mutation saves through the client context,
+  // so sent statuses reach the daemon even when the panel is not open.
+  registerPersist((input) => client.rpc(saveCommentsRpc, input));
 
   function refreshLabels(): void {
     const counts = new Map<string, number>();
@@ -82,6 +87,14 @@ export function registerPills(client: PluginClientContext): () => void {
                 .send(formatReview(pending))
                 .then(() => {
                   markAgentCommentsSent(agentId);
+                  // The store auto-saves on mutation; keep a direct save too so
+                  // the status lands on the daemon immediately after a send.
+                  void client
+                    .rpc(saveCommentsRpc, {
+                      agentId,
+                      comments: getComments().filter((comment) => comment.agentId === agentId),
+                    })
+                    .catch(() => {});
                 })
                 .catch(() => {});
             },

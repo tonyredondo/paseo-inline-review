@@ -50,6 +50,7 @@ export function addComment(input: {
   if (duplicate) return duplicate;
   comments = [...comments, comment];
   emit();
+  autoSave(comment.agentId);
   return comment;
 }
 
@@ -65,6 +66,7 @@ export function updateComment(id: string, text: string): ReviewComment | null {
   const updated: ReviewComment = { ...existing, text: trimmed, status: "pending" };
   comments = comments.map((comment) => (comment.id === id ? updated : comment));
   emit();
+  autoSave(existing.agentId);
   return updated;
 }
 
@@ -76,17 +78,42 @@ export function markAgentCommentsSent(agentId: string): void {
     changed = true;
     return { ...comment, status: "sent" as const };
   });
-  if (changed) emit();
+  if (changed) {
+    emit();
+    autoSave(agentId);
+  }
 }
 
 export function removeComment(id: string): void {
+  const removed = comments.find((comment) => comment.id === id);
   comments = comments.filter((comment) => comment.id !== id);
   emit();
+  if (removed) autoSave(removed.agentId);
 }
 
 export function clearAgent(agentId: string): void {
   comments = comments.filter((comment) => comment.agentId !== agentId);
   emit();
+  autoSave(agentId);
+}
+
+// --- Cross-process persistence ----------------------------------------------
+
+type PersistFn = (input: { agentId: string; comments: ReviewComment[] }) => Promise<unknown>;
+
+/**
+ * Save function registered by the app shell (client.rpc is only available on
+ * the client context, not inside React). Every mutation auto-saves so statuses
+ * survive device switches even when the panel is not open.
+ */
+let persistFn: PersistFn | null = null;
+
+export function registerPersist(fn: PersistFn): void {
+  persistFn = fn;
+}
+
+function autoSave(agentId: string): void {
+  if (persistFn) scheduleSave(agentId, persistFn);
 }
 
 // --- Server sync ------------------------------------------------------------
