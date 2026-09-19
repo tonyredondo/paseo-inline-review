@@ -616,3 +616,44 @@ test("footnote defs and paragraphs interleave", () => {
   const blocks = parseBlocks("body text[^1]\n\n[^1]: definition");
   assert.deepEqual(kinds(blocks), ["p", "footnote"]);
 });
+
+// --- new syntax families ---
+
+test("syntax: swift keywords, types and builtins", () => {
+  const tokens = syntax.highlightCode('class Foo { func greet() { print("hi") } }', "swift").flat();
+  assert.ok(tokens.some((tk) => tk.type === "keyword" && tk.text === "func"));
+  assert.ok(tokens.some((tk) => tk.type === "type" && tk.text === "Foo"));
+  assert.ok(tokens.some((tk) => tk.type === "function" && tk.text === "print"));
+});
+
+test("syntax: php keywords and functions", () => {
+  const tokens = syntax.highlightCode('function x(): string { return "a"; }', "php").flat();
+  assert.ok(tokens.some((tk) => tk.type === "keyword" && tk.text === "function"));
+  assert.ok(tokens.some((tk) => tk.type === "function" && tk.text === "x"));
+  assert.ok(tokens.some((tk) => tk.type === "string" && tk.text.includes("a")));
+});
+
+test("syntax: dart keywords and types", () => {
+  const tokens = syntax.highlightCode("void main() { final x = List<int>.filled(3, 0); }", "dart").flat();
+  assert.ok(tokens.some((tk) => tk.type === "keyword" && tk.text === "final"));
+  assert.ok(tokens.some((tk) => tk.type === "keyword" && tk.text === "List"));
+  assert.ok(tokens.some((tk) => tk.type === "function" && tk.text === "main"));
+});
+
+test("syntax: toml and ini keys, comments, booleans", () => {
+  assert.ok(syntax.highlightCode('key = "v"', "toml").flat().some((tk) => tk.type === "string"));
+  assert.ok(syntax.highlightCode("flag = true", "toml").flat().some((tk) => tk.type === "keyword" && tk.text === "true"));
+  assert.ok(syntax.highlightCode("; note\nkey=value", "ini").flat().some((tk) => tk.type === "comment" && tk.text.startsWith(";")));
+});
+
+test("syntax: dockerfile instructions and flags", () => {
+  const tokens = syntax.highlightCode("FROM golang:1.22\nRUN go build .", "dockerfile").flat();
+  assert.ok(tokens.some((tk) => tk.type === "keyword" && tk.text === "FROM"));
+  assert.ok(tokens.some((tk) => tk.type === "keyword" && tk.text === "RUN"));
+});
+
+test("syntax: aliases resolve for new families", () => {
+  for (const [alias, expected] of [["flutter", "dart"], ["containerfile", "dockerfile"], ["conf", "ini"], ["properties", "ini"]] as const) {
+    assert.equal(syntax.normalizeLanguage(alias), expected);
+  }
+});
