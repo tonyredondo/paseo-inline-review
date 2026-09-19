@@ -400,6 +400,10 @@ export function MarkdownText({
   return (
     <View style={styles.blockGap}>
       {blocks.map((block, index) => {
+        const startsNumbered =
+          (block.kind === "p" && /^\s*\d+[.)]\s/.test(block.lines[0] ?? "")) ||
+          block.kind === "ordered" || block.kind === "bullet";
+        const blockSpacing = startsNumbered ? { marginTop: 10 } : null;
         const weights =
           block.kind === "table"
             ? block.header.map((cell, columnIndex) => {
@@ -431,7 +435,7 @@ export function MarkdownText({
                   color: theme.colors.foreground,
                   fontWeight: "700",
                   marginTop: block.level === 1 ? 16 : 12,
-                  marginBottom: 6,
+                  marginBottom: 8,
                   fontSize: compact
                     ? block.level === 1 ? 20 : block.level === 2 ? 17 : block.level === 3 ? 16 : 15
                     : block.level === 1 ? 22 : block.level === 2 ? 19 : block.level === 3 ? 17 : 16,
@@ -442,7 +446,7 @@ export function MarkdownText({
             );
           case "bullet":
             return (
-              <View key={index} style={{ gap: 6 }}>
+              <View key={index} style={{ gap: 6, marginTop: 10 }}>
                 {block.items.map((item, itemIndex) => (
                   <View key={itemIndex} style={[styles.listRow, { paddingLeft: 14 * item.level }]}>
                     {item.task ? (
@@ -461,7 +465,7 @@ export function MarkdownText({
             );
           case "ordered":
             return (
-              <View key={index} style={{ gap: 6 }}>
+              <View key={index} style={{ gap: 6, marginTop: 10 }}>
                 {block.items.map((item, itemIndex) => (
                   <View key={itemIndex} style={[styles.listRow, { paddingLeft: 14 * item.level }]}>
                     <Text style={styles.marker}>{item.marker}.</Text>
@@ -517,7 +521,7 @@ export function MarkdownText({
                   <Image
                     key={index}
                     source={{ uri: token.url }}
-                    style={styles.image}
+                    style={[styles.image, blockSpacing ?? null]}
                     resizeMode="contain"
                     accessibilityLabel={token.alt}
                   />
@@ -525,7 +529,7 @@ export function MarkdownText({
               }
             }
             return (
-              <View key={index} style={styles.paragraphGap}>
+              <View key={index} style={[styles.paragraphGap, blockSpacing]}>
                 {renderTextLines(block.lines, styles.paragraphLine)}
               </View>
             );
