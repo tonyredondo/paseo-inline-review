@@ -36,6 +36,7 @@ export type Block =
   | { kind: "bullet"; items: ListItem[] }
   | { kind: "ordered"; items: { marker: string; level: number; spans: InlineToken[] }[] }
   | { kind: "quote"; depth: number; text: string }
+  | { kind: "alert"; alertType: "note" | "tip" | "important" | "warning" | "caution"; lines: string[] }
   | { kind: "table"; header: TableCell[]; rows: TableCell[][] }
   | { kind: "hr" };
 
@@ -149,7 +150,18 @@ export function parseBlocks(text: string): Block[] {
         parts.push(match[3]);
         index += 1;
       }
-      blocks.push({ kind: "quote", depth, text: parts.join(" ") });
+      // GitHub alerts: "> [!NOTE]" etc. become their own block with an icon.
+      const alertMatch = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$/i.exec(parts[0].trim());
+      if (alertMatch) {
+        const alertLines = [alertMatch[2], ...parts.slice(1)].filter((part) => part.length > 0);
+        blocks.push({
+          kind: "alert",
+          alertType: alertMatch[1].toLowerCase() as "note" | "tip" | "important" | "warning" | "caution",
+          lines: alertLines,
+        });
+      } else {
+        blocks.push({ kind: "quote", depth, text: parts.join(" ") });
+      }
       continue;
     }
     const bullet = bulletPattern.exec(line);

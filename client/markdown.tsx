@@ -586,6 +586,55 @@ export function MarkdownText({
                 ))}
               </View>
             );
+          case "alert": {
+            const alertColors: Record<string, string> = {
+              note: "#58a6ff",
+              tip: "#3fb950",
+              important: "#ab7df8",
+              warning: "#d29922",
+              caution: "#f85149",
+            };
+            const alertLabels: Record<string, string> = {
+              note: "Note",
+              tip: "Tip",
+              important: "Important",
+              warning: "Warning",
+              caution: "Caution",
+            };
+            const alertColor = alertColors[block.alertType] ?? "#58a6ff";
+            return (
+              <View
+                key={index}
+                style={{
+                  borderLeftWidth: 3,
+                  borderLeftColor: alertColor,
+                  backgroundColor: theme.colors.surface2,
+                  borderRadius: 6,
+                  paddingHorizontal: 10,
+                  paddingVertical: 8,
+                  gap: 4,
+                }}
+              >
+                <MarkdownSpan style={{ color: alertColor, fontWeight: "700", fontSize: compact ? 13 : 14 }}>
+                  {alertLabels[block.alertType]}
+                </MarkdownSpan>
+                {block.lines.map((alertLine, alertIndex) => (
+                  <MarkdownSpan key={alertIndex} style={styles.paragraphLine} selectable={selectable}>
+                    {parseInline(alertLine, refs).map((token, tokenIndex) => (
+                      <InlineRun
+                        key={tokenIndex}
+                        tokens={[token]}
+                        theme={theme}
+                        styles={styles}
+                        refs={refs}
+                        selectable={selectable}
+                      />
+                    ))}
+                  </MarkdownSpan>
+                ))}
+              </View>
+            );
+          }
           case "quote":
             return (
               <View

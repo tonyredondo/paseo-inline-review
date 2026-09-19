@@ -470,3 +470,44 @@ test("paragraph lines render as separate lines (hard-break design)", () => {
 test("br tag still produces a break token", () => {
   assert.deepEqual(inlineTypes(parseInline("one<br>two")), ["text", "break", "text"]);
 });
+
+// --- GitHub alerts ---
+
+test("alert block parses [!NOTE] quotes", () => {
+  const blocks = parseBlocks("> [!NOTE]\n> Useful information.");
+  assert.deepEqual(kinds(blocks), ["alert"]);
+  const alert = blocks[0];
+  assert.ok(alert.kind === "alert" && alert.alertType === "note");
+  assert.ok(alert.kind === "alert" && alert.lines.join(" ").includes("Useful information."));
+});
+
+test("all five alert types parse case-insensitively", () => {
+  for (const [marker, expected] of [
+    ["[!TIP]", "tip"],
+    ["[!IMPORTANT]", "important"],
+    ["[!WARNING]", "warning"],
+    ["[!CAUTION]", "caution"],
+    ["[!note]", "note"],
+  ] as const) {
+    const blocks = parseBlocks(`> ${marker}\n> body`);
+    assert.equal(blocks[0].kind, "alert");
+    assert.ok(blocks[0].kind === "alert" && blocks[0].alertType === expected);
+  }
+});
+
+test("alert with same-line content keeps it", () => {
+  const blocks = parseBlocks("> [!WARNING] be careful here");
+  assert.ok(blocks[0].kind === "alert");
+  assert.ok(blocks[0].kind === "alert" && blocks[0].lines[0] === "be careful here");
+});
+
+test("alert keeps multi-line content", () => {
+  const blocks = parseBlocks("> [!TIP]\n> first line\n> second line");
+  assert.ok(blocks[0].kind === "alert");
+  assert.ok(blocks[0].kind === "alert" && blocks[0].lines.join(" ") === "first line second line");
+});
+
+test("regular quotes without markers stay quotes", () => {
+  assert.deepEqual(kinds(parseBlocks("> just a quote")), ["quote"]);
+  assert.deepEqual(kinds(parseBlocks("> [!NOTREAL] nope")), ["quote"]);
+});
