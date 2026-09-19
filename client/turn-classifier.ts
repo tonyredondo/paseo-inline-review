@@ -92,6 +92,14 @@ class TurnClassifier {
     };
   }
 
+  /** Last turn key that saw an assistant message (streaming fallback). */
+  private currentTurn(agentId: string): string {
+    for (const [turnKey] of [...this.state(agentId).lastAssistant].reverse()) {
+      return turnKey;
+    }
+    return "";
+  }
+
   /** Version counter usable as a useSyncExternalStore snapshot. */
   roleVersion(agentId: string): number {
     return this.state(agentId).version;
@@ -113,6 +121,23 @@ class TurnClassifier {
     turnId?: string | null,
   ): void {
     const state = this.state(agentId);
+    // Projected timelines replace raw items with our own plugin items: a sent
+    // review card closes the turn (like a user message); an assistant overlay
+    // counts as an assistant message.
+    if (item.type === "plugin") {
+      const kind = (item as { kind?: string }).kind;
+      if (kind === "inline-review-sent") {
+        const turnKey = turnId ?? this.currentTurn(agentId);
+        const previous = state.lastAssistant.get(turnKey);
+        if (previous) {
+          // The review closes the turn: the last assistant message is final,
+          // and the next assistant message starts fresh even with the same id.
+          state.finalIds.add(previous);
+          state.lastAssistant.delete(turnKey);
+        }
+      }
+      return;
+    }
     if (item.type !== "assistant_message") return;
     if (item.text) state.texts.set(item.messageId ?? "", item.text);
     const key = turnId ?? "";
@@ -190,7 +215,10 @@ class TurnClassifier {
       agents: {
         ref: (agent: string) => {
           timeline: {
-            refetch(options?: { direction?: string }): Promise<{
+            refetch(options?: {
+              direction?: string;
+              projection?: string;
+            }): Promise<{
               entries: TimelineEntryLike[];
             }>;
             subscribe(handler: (event: unknown) => void): (() => void) & {
@@ -207,7 +235,11 @@ class TurnClassifier {
     if (state.ready || this.loading.has(agentId)) return;
     this.loading.add(agentId);
     try {
-      const payload = await client.agents.ref(agentId).timeline.refetch({ direction: "tail" });
+      // Canonical projection: raw timeline items, so user_message turn
+      // boundaries survive even when plugin renderers replace items.
+      const payload = await client.agents
+        .ref(agentId)
+        .timeline.refetch({ direction: "tail", projection: "canonical" });
       const entries = [...payload.entries].reverse(); // refetch tail = oldest last
       // Rebuild: a turn starts at each user message (fallback when entries
       // carry no turnId).
@@ -221,11 +253,20 @@ class TurnClassifier {
       const texts = new Map<string, string>();
       for (const entry of entries) {
         const item = entry.item;
-        if (item.type === "user_message") {
+        // Projected timelines can carry our own plugin items instead of raw
+        // ones: a sent-review card is a user message; an assistant overlay is
+        // an assistant message.
+        const pluginKind = item.type === "plugin" ? (item as { kind?: string }).kind : null;
+        const effectiveType = pluginKind === "inline-review-sent"
+          ? "user_message"
+          : pluginKind === "inline-review"
+            ? "assistant_message"
+            : item.type;
+        if (effectiveType === "user_message") {
           currentKey = `turn-${Number(currentKey.replace("turn-", "")) + 1}`;
           continue;
         }
-        if (item.type !== "assistant_message" || !item.messageId) continue;
+        if (effectiveType !== "assistant_message" || !item.messageId) continue;
         const key = entry.turnId ?? currentKey;
         const previous = lastByTurn.get(key);
         if (previous && previous !== item.messageId) {

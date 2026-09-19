@@ -789,3 +789,14 @@ test("turn classifier: intermediate messages with no useful text preview to empt
   assert.equal(preview(["---", "real text here"]), "real text here");
   assert.equal(preview(["---", ""]), "");
 });
+
+test("turn classifier: a sent-review plugin item acts as a turn boundary", () => {
+  const agent = "cls-plugin-boundary";
+  // Projected timelines replace the user message with our plugin item.
+  turnClassifier.observe(agent, { type: "assistant_message", messageId: "p1" }, "t1");
+  turnClassifier.observe(agent, { type: "plugin", kind: "inline-review-sent", messageId: "p2" }, "t1");
+  turnClassifier.observe(agent, { type: "assistant_message", messageId: "p3" }, "t1");
+  // p1 stays final of its own turn; p3 is final of the next turn.
+  assert.equal(turnClassifier.role(agent, "p1"), "final");
+  assert.equal(turnClassifier.role(agent, "p3"), "final");
+});

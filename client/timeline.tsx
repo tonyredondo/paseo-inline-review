@@ -49,10 +49,15 @@ type EditingTarget = {
  * - Without one (id-less messages): the saved paragraph snapshot must equal
  *   the paragraph exactly, in a message that has no id either.
  */
-/** A captured streaming snapshot may be a prefix of the completed paragraph. */
+/**
+ * A captured streaming snapshot may be a prefix of the completed paragraph.
+ * Prefix matching requires a substantial capture so short quotes cannot steal
+ * anchors across messages (exact matches are always accepted).
+ */
 function matchesCapturedText(captured: string, paragraph: string | undefined): boolean {
   if (paragraph === undefined) return false;
-  return paragraph === captured || paragraph.startsWith(captured);
+  if (paragraph === captured) return true;
+  return captured.length >= 40 && paragraph.startsWith(captured);
 }
 
 function commentAnchorsHere(
@@ -249,14 +254,19 @@ function ReviewAssistantMessage({
     for (const comment of comments) {
       const storedParagraph = paragraphs[comment.paragraphIndex];
       const storedMatches = matchesCapturedText(comment.paragraphText, storedParagraph);
-      if (comment.messageId === null || !storedMatches) {
+      if (comment.messageId === null) {
+        // Adoption across messages requires an exact paragraph match: fuzzy
+        // prefixes would let one message steal another message's comment.
+        const exact = paragraphs.indexOf(comment.paragraphText);
+        if (exact !== -1) relocateComment(comment.id, data.messageId, exact);
+      } else if (!storedMatches) {
+        // Heal index drift inside the same message: prefer exact, then a long
+        // prefix (streaming snapshot).
         let index = paragraphs.indexOf(comment.paragraphText);
         if (index === -1) {
           index = paragraphs.findIndex((paragraph) => matchesCapturedText(comment.paragraphText, paragraph));
         }
-        if (index !== -1) {
-          relocateComment(comment.id, data.messageId, index);
-        }
+        if (index !== -1) relocateComment(comment.id, data.messageId, index);
       }
     }
   }, [comments, paragraphs, data.messageId]);
