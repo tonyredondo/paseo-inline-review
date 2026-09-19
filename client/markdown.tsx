@@ -379,7 +379,7 @@ function CodeBlockView({
         const gutterWidth = Math.max(2, digits) * styles.codeFontSize * 0.6 + 8;
         const gutterColor = "#565e69";
         const gutterRule = "rgba(139,148,158,0.25)";
-        if (Platform.OS === "web" && !wrapMode) {
+        if (!wrapMode) {
           return (
             <View style={{ flexDirection: "row", alignItems: "stretch" }}>
               <View
@@ -471,16 +471,14 @@ function CodeBlockView({
           </Text>
         </Pressable>
       ) : null}
-      {Platform.OS === "web" ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={wrapMode ? "Scroll long lines" : "Wrap long lines"}
-          onPress={() => setWrapMode((value) => !value)}
-          style={{ paddingTop: 6 }}
-        >
-          <Text style={{ color: "#8b949e", fontSize: 11 }}>{wrapMode ? "Scroll" : "Wrap"}</Text>
-        </Pressable>
-      ) : null}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={wrapMode ? "Scroll long lines" : "Wrap long lines"}
+        onPress={() => setWrapMode((value) => !value)}
+        style={{ paddingTop: 6 }}
+      >
+        <Text style={{ color: "#8b949e", fontSize: 11 }}>{wrapMode ? "Scroll" : "Wrap"}</Text>
+      </Pressable>
     </View>
   );
 }
