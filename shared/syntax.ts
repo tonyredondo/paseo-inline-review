@@ -4,7 +4,7 @@
  * a small scanner over language families rather than a full grammar.
  */
 
-export type CodeTokenType = "plain" | "keyword" | "string" | "comment" | "number" | "function" | "type" | "added" | "removed" | "meta";
+export type CodeTokenType = "plain" | "keyword" | "string" | "comment" | "number" | "function" | "type" | "added" | "removed" | "meta" | "tag";
 export type CodeToken = { type: CodeTokenType; text: string };
 
 type Family = {
@@ -32,6 +32,8 @@ const FAMILIES: Record<string, Family> = {
   "yaml": { keywords: ["true", "false", "null", "yes", "no", "on", "off"], lineComments: ["#"], stringDelims: ["\"", "'"] },
   "sql": { keywords: ["SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON", "GROUP", "BY", "ORDER", "HAVING", "LIMIT", "CREATE", "TABLE", "ALTER", "DROP", "AND", "OR", "NOT", "NULL", "AS", "DISTINCT", "UNION", "CASE", "WHEN", "THEN", "ELSE", "END", "PRIMARY", "KEY", "WITH", "RETURNING", "TRUE", "FALSE"], lineComments: ["--"], blockComments: [["/*", "*/"]], caseInsensitive: true },
   "diff": { keywords: [] },
+  "html": { keywords: [], lineComments: [], blockComments: [["<!--", "-->"]], stringDelims: ["\"", "'"] },
+  "css": { keywords: [], lineComments: [], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
 };
 
 const ALIASES: Record<string, string> = {
@@ -78,6 +80,14 @@ const ALIASES: Record<string, string> = {
   "sql": "sql",
   "diff": "diff",
   "patch": "diff",
+  "html": "html",
+  "xml": "html",
+  "svg": "html",
+  "xhtml": "html",
+  "vue": "html",
+  "css": "css",
+  "scss": "css",
+  "less": "css",
 };
 
 export function normalizeLanguage(language: string): string {
@@ -92,6 +102,12 @@ type Scanner = {
   stringDelims: string[];
   tripleStringDelims?: [string, string][];
   caseInsensitive: boolean;
+  /** HTML mode: tag names, attributes and text need structural context. */
+  isHtml?: boolean;
+  /** CSS mode: brace depth separates selectors from properties. */
+  isCss?: boolean;
+  inTag?: boolean;
+  firstWordInTag?: boolean;
 };
 
 function buildScanner(family: Family): Scanner {
@@ -102,7 +118,19 @@ function buildScanner(family: Family): Scanner {
     stringDelims: family.stringDelims ?? [],
     tripleStringDelims: family.tripleStringDelims,
     caseInsensitive: family.caseInsensitive ?? false,
+    isHtml: normalizedHtml(family),
+    isCss: normalizedCss(family),
+    inTag: false,
+    firstWordInTag: false,
   };
+}
+
+function normalizedHtml(family: Family): boolean {
+  return family.keywords.length === 0 && family.blockComments?.[0]?.[0] === "<!--";
+}
+
+function normalizedCss(family: Family): boolean {
+  return family.keywords.length === 0 && family.blockComments?.[0]?.[0] === "/*";
 }
 
 function isKeyword(scanner: Scanner, word: string): boolean {
@@ -130,6 +158,7 @@ export function highlightCode(code: string, language: string): CodeToken[][] {
   const lines: CodeToken[][] = [];
   let current: CodeToken[] = [];
   let inBlockComment: [string, string] | null = null;
+  let braceDepth = 0;
 
   const push = (type: CodeTokenType, text: string): void => {
     if (text.length === 0) return;
@@ -177,7 +206,9 @@ export function highlightCode(code: string, language: string): CodeToken[][] {
         else j += 1;
       }
       const consumed = j < code.length ? code.slice(i, j + openDelim.length) : rest;
-      push("string", consumed);
+      // JSON object keys read better in the type color than as plain strings.
+      const isJsonKey = normalized === "json" && /^\s*:/.test(code.slice(i + consumed.length));
+      push(isJsonKey ? "type" : "string", consumed);
       i += consumed.length;
       continue;
     }
@@ -207,12 +238,35 @@ export function highlightCode(code: string, language: string): CodeToken[][] {
       i += numberMatch[0].length;
       continue;
     }
-    const wordMatch = /^[A-Za-z_#$][A-Za-z0-9_#$]*/.exec(rest);
+    // CSS names contain hyphens (max-width, font-family): match them whole.
+    const wordMatch = scanner.isCss
+      ? /^[A-Za-z-][A-Za-z0-9-]*/.exec(rest)
+      : /^[A-Za-z_#$][A-Za-z0-9_#$]*/.exec(rest);
     if (wordMatch) {
       const word = wordMatch[0];
       const probe = scanner.caseInsensitive ? word.toLowerCase() : word;
       const isCall = /^\s*\(/.test(code.slice(i + word.length));
-      if (isKeyword(scanner, word)) {
+      if (scanner.isHtml) {
+        if (!scanner.inTag) {
+          push("plain", word);
+        } else if (scanner.firstWordInTag) {
+          push("tag", word);
+          scanner.firstWordInTag = false;
+        } else if (/^\s*=/.test(code.slice(i + word.length))) {
+          push("type", word);
+        } else {
+          push("plain", word);
+        }
+      } else if (scanner.isCss) {
+        if (/^\s*:/.test(code.slice(i + word.length))) {
+          // Property name inside a rule.
+          push("function", word);
+        } else if (braceDepth === 0) {
+          push("type", word);
+        } else {
+          push("plain", word);
+        }
+      } else if (isKeyword(scanner, word)) {
         push("keyword", word);
       } else if (isCall) {
         push("function", word);
@@ -224,6 +278,45 @@ export function highlightCode(code: string, language: string): CodeToken[][] {
         push("plain", word);
       }
       i += word.length;
+      continue;
+    }
+    // Shell/PowerShell flags (-v, --force) get their own accent.
+    if ((normalized === "sh" || normalized === "ps") && /^-{1,2}[A-Za-z]/.test(rest)) {
+      const flagMatch = /^-{1,2}[A-Za-z][\w-]*/.exec(rest)!;
+      push("meta", flagMatch[0]);
+      i += flagMatch[0].length;
+      continue;
+    }
+    if (scanner.isHtml && rest.startsWith("<")) {
+      if (rest.startsWith("<!")) {
+        const end = rest.indexOf(">");
+        const consumed = end === -1 ? rest : rest.slice(0, end + 1);
+        push("meta", consumed);
+        i += consumed.length;
+        continue;
+      }
+      push("plain", "<");
+      scanner.inTag = true;
+      scanner.firstWordInTag = true;
+      i += 1;
+      continue;
+    }
+    if (scanner.isHtml && rest.startsWith(">")) {
+      push("plain", ">");
+      scanner.inTag = false;
+      i += 1;
+      continue;
+    }
+    if (scanner.isCss && rest[0] === "{") {
+      braceDepth += 1;
+      push("plain", "{");
+      i += 1;
+      continue;
+    }
+    if (scanner.isCss && rest[0] === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      push("plain", "}");
+      i += 1;
       continue;
     }
     push("plain", rest[0]);

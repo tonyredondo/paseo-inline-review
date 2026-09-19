@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseBlocks, parseInline, type Block, type InlineToken } from "../shared/markdown-parse.ts";
+import * as syntax from "../shared/syntax.ts";
 
 function first(blocks: Block[]): Block {
   assert.ok(blocks.length > 0, "expected at least one block");
@@ -366,4 +367,23 @@ test("link inside bold keeps its url", () => {
   assert.ok(tokens[0].type === "bold");
   const link = tokens[0].tokens.find((token) => token.type === "link");
   assert.ok(link && link.type === "link" && link.url === "https://paseo.sh");
+});
+
+test("syntax: html tags, attributes and strings get color", () => {
+  const tokens = syntax.highlightCode('<div class="a"><span>hi</span></div>', "html").flat();
+  assert.ok(tokens.some((tk) => tk.type === "tag" && tk.text === "div"));
+  assert.ok(tokens.some((tk) => tk.type === "type" && tk.text === "class"));
+  assert.ok(tokens.some((tk) => tk.type === "string" && tk.text.includes("a")));
+});
+
+test("syntax: css properties, selectors and numbers get color", () => {
+  const tokens = syntax.highlightCode(".a { max-width: 40rem; }", "css").flat();
+  assert.ok(tokens.some((tk) => tk.type === "function" && tk.text === "max-width"));
+  assert.ok(tokens.some((tk) => tk.type === "type" && tk.text === "a"));
+  assert.ok(tokens.some((tk) => tk.type === "number" && tk.text === "40rem"));
+});
+
+test("syntax: shell flags and json keys get color", () => {
+  assert.ok(syntax.highlightCode("git diff --check", "sh").flat().some((tk) => tk.type === "meta" && tk.text === "--check"));
+  assert.ok(syntax.highlightCode('{ "a": 1 }', "json").flat().some((tk) => tk.type === "type" && tk.text === "\"a\""));
 });
