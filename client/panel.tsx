@@ -251,9 +251,13 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
                     <Pressable accessibilityRole="button" accessibilityLabel="Edit comment" hitSlop={8} onPress={() => { setEditingId(comment.id); setEditDraft(comment.text); }}>
                       <Text style={styles.reopen}>Edit</Text>
                     </Pressable>
-                    <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" hitSlop={8} onPress={() => removeComment(comment.id)}>
-                      <Text style={styles.remove}>Delete</Text>
-                    </Pressable>
+                    {/* Sent comments are part of the conversation: no delete.
+                        Re-open first if you really want to remove one. */}
+                    {comment.status !== "sent" ? (
+                      <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" hitSlop={8} onPress={() => removeComment(comment.id)}>
+                        <Text style={styles.remove}>Delete</Text>
+                      </Pressable>
+                    ) : null}
                     {comment.status === "sent" ? (
                       <Pressable accessibilityRole="button" accessibilityLabel="Re-open comment" hitSlop={8} onPress={() => setStatus(comment, "pending")}>
                         <Text style={styles.reopen}>Re-open</Text>

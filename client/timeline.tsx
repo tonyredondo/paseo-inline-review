@@ -124,9 +124,12 @@ function CommentCard({
           <Pressable accessibilityRole="button" accessibilityLabel="Edit comment" onPress={() => onEdit(comment)} hitSlop={6}>
             <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Edit</Text>
           </Pressable>
-          <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" onPress={onRemove} hitSlop={6}>
-            <Text style={styles.delete}>Delete</Text>
-          </Pressable>
+          {/* Sent comments are part of the conversation: no delete. */}
+          {!sent ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="Delete comment" onPress={onRemove} hitSlop={6}>
+              <Text style={styles.delete}>Delete</Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
       <Text style={styles.text}>{comment.text}</Text>
