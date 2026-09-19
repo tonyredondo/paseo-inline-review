@@ -394,3 +394,79 @@ test("syntax: go and java builtins, java family, constants", () => {
   assert.ok(syntax.highlightCode("int MAX = 1;", "java").flat().some((tk) => tk.type === "number" && tk.text === "MAX"));
   assert.ok(syntax.highlightCode("var xs = new List<int>();", "cs").flat().some((tk) => tk.type === "function" && tk.text === "List"));
 });
+
+// --- intraword underscore (CommonMark left/right-flanking rule) ---
+
+test("snake_case_word does not italicize", () => {
+  assert.ok(parseInline("snake_case_word stays").every((tk) => tk.type !== "italic" && tk.type !== "bold"));
+});
+
+test("trailing underscore emphasis stays plain (my_var_)", () => {
+  assert.ok(parseInline("value my_var_ here").every((tk) => tk.type !== "italic" && tk.type !== "bold"));
+});
+
+test("standalone _italic_ still works", () => {
+  const tokens = parseInline("use _italics_ here");
+  assert.deepEqual(inlineTypes(tokens), ["text", "italic", "text"]);
+});
+
+test("leading underscore variable does not italicize (_private)", () => {
+  assert.ok(parseInline("field _private_thing_ ok").every((tk) => tk.type !== "italic" && tk.type !== "bold"));
+});
+
+test("intraword double underscore stays plain (foo__bar__baz)", () => {
+  assert.ok(parseInline("foo__bar__baz").every((tk) => tk.type !== "bold"));
+  assert.ok(parseInline("foo__bar__baz").every((tk) => tk.type !== "italic"));
+});
+
+test("star emphasis works intraword (a*b*c)", () => {
+  assert.deepEqual(inlineTypes(parseInline("a*b*c")), ["text", "italic", "text"]);
+});
+
+test("underscore emphasis at punctuation boundaries still works", () => {
+  assert.deepEqual(inlineTypes(parseInline("(_note_)")), ["text", "italic", "text"]);
+});
+
+test("bold containing snake_case keeps underscores plain", () => {
+  const tokens = parseInline("**see snake_case_word now**");
+  assert.ok(tokens[0].type === "bold");
+  assert.ok(tokens[0].tokens.every((tk) => tk.type !== "italic"));
+});
+
+// --- www autolinks ---
+
+test("www urls autolink with https", () => {
+  const tokens = parseInline("go to www.example.com now");
+  assert.deepEqual(inlineTypes(tokens), ["text", "link", "text"]);
+  const link = tokens.find((tk) => tk.type === "link");
+  assert.ok(link && link.type === "link" && link.url === "https://www.example.com");
+});
+
+test("www urls with paths autolink", () => {
+  const link = parseInline("see www.paseo.sh/docs for more").find((tk) => tk.type === "link");
+  assert.ok(link && link.type === "link" && link.url === "https://www.paseo.sh/docs");
+});
+
+test("existing http urls do not double-match", () => {
+  const tokens = parseInline("visit https://www.example.com now");
+  assert.deepEqual(inlineTypes(tokens), ["text", "link", "text"]);
+  const link = tokens.find((tk) => tk.type === "link");
+  assert.ok(link && link.type === "link" && link.url === "https://www.example.com");
+});
+
+test("bare domains without www stay plain", () => {
+  assert.deepEqual(inlineTypes(parseInline("file example.com here")), ["text"]);
+});
+
+// --- hard line breaks ---
+
+test("paragraph lines render as separate lines (hard-break design)", () => {
+  const blocks = parseBlocks("trailing two spaces  \nnext line");
+  assert.equal(blocks[0].kind, "p");
+  assert.ok(blocks[0].kind === "p" && blocks[0].lines.length === 2);
+  assert.equal(blocks[0].kind === "p" ? blocks[0].lines[0].trimEnd() : "", "trailing two spaces");
+});
+
+test("br tag still produces a break token", () => {
+  assert.deepEqual(inlineTypes(parseInline("one<br>two")), ["text", "break", "text"]);
+});

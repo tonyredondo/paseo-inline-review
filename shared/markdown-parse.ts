@@ -257,7 +257,7 @@ export function parseBlocks(text: string): Block[] {
 }
 
 const inlinePattern =
-  /(\*\*(?:[^*]|\*(?!\*))+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+)/g;
+  /(\*\*(?:[^*]|\*(?!\*))+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+|www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s)]*)?)/g;
 
 /**
  * Consumes wrapped and indented continuation lines of a list item:
@@ -368,6 +368,17 @@ function replaceShortcodes(value: string): string {
   });
 }
 
+/**
+ * CommonMark rule: intraword underscores do not emphasize. `snake_case_word`
+ * stays plain; `_word_` surrounded by non-word characters still italicizes.
+ * `*` keeps intraword emphasis, matching CommonMark.
+ */
+function isIntrawordUnderscore(text: string, start: number, length: number): boolean {
+  const before = start > 0 ? text[start - 1] : "";
+  const after = text[start + length] ?? "";
+  return /[A-Za-z0-9]/.test(before) || /[A-Za-z0-9]/.test(after);
+}
+
 export function parseInline(raw: string, refs?: Map<string, string>): InlineToken[] {
   const { masked, restore } = maskEscapes(raw);
   const tokens: InlineToken[] = [];
@@ -381,7 +392,12 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
     if (token.startsWith("**") && token.endsWith("**")) {
       tokens.push({ type: "bold", text: token.slice(2, -2), tokens: parseInline(token.slice(2, -2), refs) });
     } else if (token.startsWith("__") && token.endsWith("__")) {
-      tokens.push({ type: "bold", text: token.slice(2, -2), tokens: parseInline(token.slice(2, -2), refs) });
+      if (isIntrawordUnderscore(masked, start, token.length)) {
+        // CommonMark: __ inside a word (snake__case) does not emphasize.
+        tokens.push({ type: "text", text: token });
+      } else {
+        tokens.push({ type: "bold", text: token.slice(2, -2), tokens: parseInline(token.slice(2, -2), refs) });
+      }
     } else if (token.startsWith("~~") && token.endsWith("~~")) {
       tokens.push({ type: "strike", text: token.slice(2, -2), tokens: parseInline(token.slice(2, -2), refs) });
     } else if (token.startsWith("`") && token.endsWith("`")) {
@@ -389,7 +405,11 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
     } else if (token.startsWith("*") && token.endsWith("*")) {
       tokens.push({ type: "italic", text: token.slice(1, -1), tokens: parseInline(token.slice(1, -1), refs) });
     } else if (token.startsWith("_") && token.endsWith("_")) {
-      tokens.push({ type: "italic", text: token.slice(1, -1), tokens: parseInline(token.slice(1, -1), refs) });
+      if (isIntrawordUnderscore(masked, start, token.length)) {
+        tokens.push({ type: "text", text: token });
+      } else {
+        tokens.push({ type: "italic", text: token.slice(1, -1), tokens: parseInline(token.slice(1, -1), refs) });
+      }
     } else if (token.startsWith("![")) {
       const image = /^!\[([^\]]*)\]\(([^)\s]+)\)$/.exec(token);
       if (image) {
@@ -431,7 +451,8 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
         }
       }
     } else {
-      tokens.push({ type: "link", text: token, url: token });
+      // www.example.com autolinks through https.
+      tokens.push({ type: "link", text: token, url: token.startsWith("www.") ? `https://${token}` : token });
     }
     lastIndex = start + token.length;
   }
