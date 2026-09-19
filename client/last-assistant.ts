@@ -92,6 +92,22 @@ class LastAssistantTracker {
   ): Promise<void> {
     if (this.loading.has(agentId)) return;
     if (this.subscriptions.has(agentId)) return;
+    // Subscribe BEFORE refetching: events that arrive while the refetch is in
+    // flight would otherwise fall into the gap between the two and be missed.
+    const subscription = client.agents.ref(agentId).timeline.subscribe((raw: unknown) => {
+      const event = raw as {
+        event?: {
+          type?: string;
+          item?: { type?: string; messageId?: string | null };
+        };
+      };
+      if (event.event?.type !== "timeline") return;
+      this.observe(agentId, event.event.item ?? {});
+    });
+    this.subscriptions.set(agentId, () => {
+      void subscription.release();
+    });
+    await subscription.ready.catch(() => {});
     this.loading.add(agentId);
     try {
       // Canonical projection: raw items, so ids are the real ones.
@@ -113,22 +129,6 @@ class LastAssistantTracker {
       // Unknown until a live event arrives; the renderer renders normally.
     } finally {
       this.loading.delete(agentId);
-    }
-    if (!this.subscriptions.has(agentId)) {
-      const subscription = client.agents.ref(agentId).timeline.subscribe((raw: unknown) => {
-        const event = raw as {
-          event?: {
-            type?: string;
-            item?: { type?: string; messageId?: string | null };
-          };
-        };
-        if (event.event?.type !== "timeline") return;
-        this.observe(agentId, event.event.item ?? {});
-      });
-      await subscription.ready.catch(() => {});
-      this.subscriptions.set(agentId, () => {
-        void subscription.release();
-      });
     }
   }
 }
