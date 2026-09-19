@@ -246,6 +246,19 @@ function ReviewAssistantMessage({
     }
   }, [comments, paragraphs, data.messageId]);
   const [editing, setEditing] = useState<EditingTarget | null>(null);
+  // Web: scroll the open editor into the viewport (DOM scrollIntoView). On
+  // native the timeline ScrollView is host-owned and the SDK exposes no scroll
+  // API, so this is web-only.
+  const editorRef = useRef<View>(null);
+  const editingOpen = editing !== null;
+  useEffect(() => {
+    if (!editingOpen || layout.platform !== "web") return;
+    const timer = setTimeout(() => {
+      const node = editorRef.current as unknown as { scrollIntoView?: (options?: { block?: string; behavior?: string }) => void };
+      node?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [editingOpen, layout.platform]);
   // Double-tap detection for touch devices (web uses modifier-click).
   const lastTapRef = useRef<{ index: number; at: number } | null>(null);
 
@@ -372,7 +385,7 @@ function ReviewAssistantMessage({
               </View>
             )}
             {isEditing && (
-              <View style={styles.editor}>
+              <View ref={editorRef} style={styles.editor}>
                 <TextInput
                   value={editing.draft}
                   onChangeText={(draft) => setEditing({ ...editing, draft })}
