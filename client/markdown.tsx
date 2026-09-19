@@ -306,11 +306,14 @@ function CodeBlockView({
   language,
   theme,
   styles,
+  onComment,
 }: {
   code: string;
   language: string;
   theme: PluginTheme;
   styles: ReturnType<typeof useStyles>;
+  /** Opens the inline review editor for the code block's paragraph. */
+  onComment?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<number | null>(null);
@@ -471,14 +474,27 @@ function CodeBlockView({
           </Text>
         </Pressable>
       ) : null}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={wrapMode ? "Scroll long lines" : "Wrap long lines"}
-        onPress={() => setWrapMode((value) => !value)}
-        style={{ paddingTop: 6 }}
-      >
-        <Text style={{ color: "#8b949e", fontSize: 11 }}>{wrapMode ? "Scroll" : "Wrap"}</Text>
-      </Pressable>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingTop: 6 }}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={wrapMode ? "Scroll long lines" : "Wrap long lines"}
+          onPress={() => setWrapMode((value) => !value)}
+        >
+          <Text style={{ color: "#8b949e", fontSize: 11 }}>{wrapMode ? "Scroll" : "Wrap"}</Text>
+        </Pressable>
+        {onComment ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Comment on this code block"
+            onPress={onComment}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+              <Icon name="MessageSquareQuote" size={11} color="#8b949e" />
+              <Text style={{ color: "#8b949e", fontSize: 11 }}>Comment</Text>
+            </View>
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -562,6 +578,7 @@ export function MarkdownText({
   refs,
   selectable,
   onChunkPress,
+  onCommentRequest,
 }: {
   text: string;
   theme: PluginTheme;
@@ -572,6 +589,8 @@ export function MarkdownText({
   selectable?: boolean;
   /** Native only: called when the user taps the chunk (used for double-tap). */
   onChunkPress?: () => void;
+  /** Rendered as a Comment control on code blocks; opens the review editor. */
+  onCommentRequest?: () => void;
 }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   const styles = useStyles(theme, compact);
@@ -612,6 +631,7 @@ export function MarkdownText({
                 language={block.language ?? ""}
                 theme={theme}
                 styles={styles}
+                onComment={onCommentRequest}
               />
             );
           case "heading":

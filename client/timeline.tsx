@@ -346,7 +346,13 @@ function ReviewAssistantMessage({
                   }
                 }}
               >
-                <MarkdownText text={paragraph} theme={theme} compact={layout.compact} refs={refs} />
+                <MarkdownText
+                  text={paragraph}
+                  theme={theme}
+                  compact={layout.compact}
+                  refs={refs}
+                  onCommentRequest={() => setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })}
+                />
               </Pressable>
             ) : (
               // Native: no Pressable (it cancels text selection). Texts are
@@ -361,6 +367,7 @@ function ReviewAssistantMessage({
                   // disable selection there entirely per user decision.
                   selectable={layout.platform !== "ios"}
                   onChunkPress={() => handleChunkTap(index)}
+                  onCommentRequest={() => setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })}
                 />
               </View>
             )}
