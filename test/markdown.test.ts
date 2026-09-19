@@ -732,27 +732,36 @@ function syntaxLooks(text: string): boolean {
   return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: "/.test(text);
 }
 
-// --- last assistant tracker ---
+// --- last assistant per turn: border on the answered final of each turn ---
 
-test("last-assistant tracker: latest assistant message wins, others unchanged", () => {
-  const agent = "last-agent-1";
-  const tracker = lastAssistantTracker;
-  tracker.observe(agent, { type: "assistant_message", messageId: "l1" });
-  assert.equal(tracker.isLast(agent, "l1"), true);
-  tracker.observe(agent, { type: "assistant_message", messageId: "l2" });
-  assert.equal(tracker.isLast(agent, "l1"), false);
-  assert.equal(tracker.isLast(agent, "l2"), true);
+test("turn tracker: a user message completes the turn; its final gets the mark", () => {
+  const agent = "turn-agent-1";
+  lastAssistantTracker.observe(agent, { type: "assistant_message", messageId: "t1a" }, "turnA");
+  lastAssistantTracker.observe(agent, { type: "assistant_message", messageId: "t1b" }, "turnA");
+  // Turn still running: nothing is marked final yet.
+  assert.equal(lastAssistantTracker.isFinal(agent, "t1b"), false);
+  // The user replies: the turn completes and t1b (its last message) is final.
+  lastAssistantTracker.observe(agent, { type: "user_message", messageId: "u1" }, "turnB");
+  assert.equal(lastAssistantTracker.isFinal(agent, "t1b"), true);
+  assert.equal(lastAssistantTracker.isFinal(agent, "t1a"), false);
 });
 
-test("last-assistant tracker: user messages and id-less items are ignored", () => {
-  const agent = "last-agent-2";
-  lastAssistantTracker.observe(agent, { type: "assistant_message", messageId: "keep" });
-  lastAssistantTracker.observe(agent, { type: "user_message", messageId: "u1" });
-  lastAssistantTracker.observe(agent, { type: "assistant_message", messageId: null });
-  assert.equal(lastAssistantTracker.isLast(agent, "keep"), true);
-  assert.equal(lastAssistantTracker.isLast(agent, null), false);
+test("turn tracker: an intermediate message never gets the border", () => {
+  const agent = "turn-agent-2";
+  lastAssistantTracker.observe(agent, { type: "assistant_message", messageId: "n1" }, "turnX");
+  lastAssistantTracker.observe(agent, { type: "assistant_message", messageId: "n2" }, "turnX");
+  lastAssistantTracker.turnCompleted(agent, "turnX");
+  assert.equal(lastAssistantTracker.isFinal(agent, "n1"), false);
+  assert.equal(lastAssistantTracker.isFinal(agent, "n2"), true);
 });
 
-test("last-assistant tracker: unknown agent is never last", () => {
-  assert.equal(lastAssistantTracker.isLast("last-agent-unknown", "m"), false);
+test("turn tracker: a sent-review plugin item completes the turn", () => {
+  const agent = "turn-agent-3";
+  lastAssistantTracker.observe(agent, { type: "assistant_message", messageId: "s1" }, "turnS");
+  lastAssistantTracker.observe(agent, { type: "plugin", kind: "inline-review-sent", messageId: "card1" }, "turnS");
+  assert.equal(lastAssistantTracker.isFinal(agent, "s1"), true);
+});
+
+test("turn tracker: unknown agent is never final", () => {
+  assert.equal(lastAssistantTracker.isFinal("turn-agent-unknown", "m"), false);
 });

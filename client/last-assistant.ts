@@ -1,17 +1,46 @@
 /**
- * Tracks the id of the LAST assistant message seen per agent, in timeline
- * order. Rebuilt from timeline.refetch (canonical projection, ordered) and
- * kept current with live timeline events. The renderer uses it to mark the
- * latest assistant message (e.g. with a border) without touching the rest.
+ * Marks the FINAL assistant message of every COMPLETED turn: the border goes
+ * on the message that answered each user interaction, never on intermediate
+ * narration and never on a turn that is still running.
+ *
+ * Sources: canonical timeline refetch (ordered; entries carry turnId, or turn
+ * boundaries are derived from user_message items) plus live events (timeline
+ * items with turnId, turn_started/turn_completed). A sent-review plugin item
+ * closes the turn like a user message does.
  */
 
 type Listener = () => void;
 
+type AgentTurns = {
+  /** turnKey -> latest assistant messageId seen for that turn. */
+  lastByTurn: Map<string, string>;
+  /** Turns known to have completed (user reply, sent review, turn_completed). */
+  completedTurns: Set<string>;
+  /** messageId -> turnKey. */
+  turnOfMessage: Map<string, string>;
+  /** Turn key currently streaming, if any. */
+  activeTurnKey: string;
+};
+
 class LastAssistantTracker {
-  private lastIds = new Map<string, string>();
+  private agents = new Map<string, AgentTurns>();
   private listeners = new Map<string, Set<Listener>>();
   private subscriptions = new Map<string, () => void>();
   private loading = new Set<string>();
+
+  private state(agentId: string): AgentTurns {
+    let state = this.agents.get(agentId);
+    if (!state) {
+      state = {
+        lastByTurn: new Map(),
+        completedTurns: new Set(),
+        turnOfMessage: new Map(),
+        activeTurnKey: "",
+      };
+      this.agents.set(agentId, state);
+    }
+    return state;
+  }
 
   private listenersFor(agentId: string): Set<Listener> {
     let set = this.listeners.get(agentId);
@@ -23,51 +52,99 @@ class LastAssistantTracker {
   }
 
   private notify(agentId: string): void {
-    for (const listener of this.listenersFor(agentId)) listener();
+    const set = this.listeners.get(agentId);
+    if (!set) return;
+    for (const listener of set) listener();
   }
 
   subscribe(agentId: string, listener: Listener): () => void {
-    this.listenersFor(agentId).add(listener);
+    const set = this.listenersFor(agentId);
+    set.add(listener);
     return () => {
-      const set = this.listeners.get(agentId);
-      if (!set) return;
-      set.delete(listener);
-      if (set.size === 0) this.listeners.delete(agentId);
+      const current = this.listeners.get(agentId);
+      if (!current) return;
+      current.delete(listener);
+      if (current.size === 0) this.listeners.delete(agentId);
     };
   }
 
-  /** Snapshot for useSyncExternalStore: the id itself (null-safe). */
+  /** Snapshot for useSyncExternalStore: the final ids as one string. */
   version(agentId: string): string {
-    return this.lastIds.get(agentId) ?? "";
+    const state = this.agents.get(agentId);
+    if (!state) return "";
+    const finals: string[] = [];
+    for (const [turnKey, messageId] of state.lastByTurn) {
+      if (state.completedTurns.has(turnKey)) finals.push(messageId);
+    }
+    return finals.sort().join(",");
   }
 
-  get(agentId: string): string | null {
-    return this.lastIds.get(agentId) ?? null;
+  /** Is this message the answered final of a completed turn? */
+  isFinal(agentId: string, messageId: string | null): boolean {
+    if (!messageId) return false;
+    const state = this.agents.get(agentId);
+    if (!state) return false;
+    const turnKey = state.turnOfMessage.get(messageId);
+    if (!turnKey) return false;
+    if (!state.completedTurns.has(turnKey)) return false;
+    return state.lastByTurn.get(turnKey) === messageId;
   }
 
-  /** Is this messageId the latest assistant message of the agent? */
-  isLast(agentId: string, messageId: string | null): boolean {
-    if (messageId === null || messageId === undefined) return false;
-    return this.lastIds.get(agentId) === messageId;
-  }
-
-  /** Feeds one item in timeline order (live event). */
-  observe(agentId: string, item: { type?: string; messageId?: string | null }): void {
+  /** Feeds one timeline item in arrival order (live path). */
+  observe(
+    agentId: string,
+    item: { type?: string; kind?: string; messageId?: string | null },
+    turnId?: string | null,
+  ): void {
+    const state = this.state(agentId);
+    if (item.type === "plugin") {
+      if (item.kind === "inline-review-sent") {
+        this.completeTurn(agentId, state);
+      }
+      return;
+    }
+    if (item.type === "user_message") {
+      this.completeTurn(agentId, state);
+      return;
+    }
     if (item.type !== "assistant_message") return;
     const messageId = item.messageId ?? null;
-    if (messageId === null || this.lastIds.get(agentId) === messageId) return;
-    this.lastIds.set(agentId, messageId);
+    if (messageId === null) return;
+    const turnKey = turnId ?? state.activeTurnKey;
+    state.lastByTurn.set(turnKey, messageId);
+    state.turnOfMessage.set(messageId, turnKey);
+    state.activeTurnKey = turnKey;
     this.notify(agentId);
   }
 
+  /** Live: the turn with this id completed; its last assistant gets the mark. */
+  turnCompleted(agentId: string, turnId?: string | null): void {
+    const state = this.state(agentId);
+    const turnKey = turnId ?? state.activeTurnKey;
+    if (turnKey) {
+      state.completedTurns.add(turnKey);
+      this.notify(agentId);
+    }
+  }
+
+  private completeTurn(agentId: string, state: AgentTurns): void {
+    const turnKey = state.activeTurnKey || [...state.lastByTurn.keys()].pop() || "";
+    if (turnKey) {
+      state.completedTurns.add(turnKey);
+      this.notify(agentId);
+    }
+    state.activeTurnKey = "";
+  }
+
   /**
-   * Rebuilds from the full ordered timeline and starts the live subscription.
+   * Rebuilds from the canonical timeline and starts the live subscription.
    * Idempotent per agent.
    */
   async ensure(
     client: {
       agents: {
         ref: (agent: string) => {
+          status: string | null;
           timeline: {
             refetch(options?: {
               direction?: string;
@@ -76,8 +153,10 @@ class LastAssistantTracker {
               entries: {
                 item: {
                   type?: string;
+                  kind?: string;
                   messageId?: string | null;
                 };
+                turnId?: string | null;
               }[];
             }>;
             subscribe(handler: (event: unknown) => void): (() => void) & {
@@ -92,17 +171,24 @@ class LastAssistantTracker {
   ): Promise<void> {
     if (this.loading.has(agentId)) return;
     if (this.subscriptions.has(agentId)) return;
-    // Subscribe BEFORE refetching: events that arrive while the refetch is in
-    // flight would otherwise fall into the gap between the two and be missed.
+    // Subscribe BEFORE refetching: no gap for events during the fetch.
     const subscription = client.agents.ref(agentId).timeline.subscribe((raw: unknown) => {
       const event = raw as {
         event?: {
           type?: string;
-          item?: { type?: string; messageId?: string | null };
+          item?: { type?: string; kind?: string; messageId?: string | null };
+          turnId?: string | null;
         };
       };
-      if (event.event?.type !== "timeline") return;
-      this.observe(agentId, event.event.item ?? {});
+      const streamEvent = event.event;
+      if (!streamEvent) return;
+      if (streamEvent.type === "timeline") {
+        this.observe(agentId, streamEvent.item ?? {}, streamEvent.turnId ?? null);
+      } else if (streamEvent.type === "turn_completed") {
+        this.turnCompleted(agentId, streamEvent.turnId ?? null);
+      } else if (streamEvent.type === "turn_started") {
+        this.state(agentId).activeTurnKey = streamEvent.turnId ?? "";
+      }
     });
     this.subscriptions.set(agentId, () => {
       void subscription.release();
@@ -110,23 +196,73 @@ class LastAssistantTracker {
     await subscription.ready.catch(() => {});
     this.loading.add(agentId);
     try {
-      // Canonical projection: raw items, so ids are the real ones.
-      const payload = await client.agents
-        .ref(agentId)
-        .timeline.refetch({ direction: "tail", projection: "canonical" });
+      const handle = client.agents.ref(agentId);
+      const payload = await handle.timeline.refetch({
+        direction: "tail",
+        projection: "canonical",
+      });
       const entries = [...payload.entries].reverse(); // oldest last
-      let last: string | null = null;
-      for (const entry of entries) {
+      // Walk the history and record, per turn, its last assistant message and
+      // whether a turn boundary (user message / sent review) came after it.
+      const lastByTurn = new Map<string, string>();
+      const turnOfMessage = new Map<string, string>();
+      const lastIndexByTurn = new Map<string, number>();
+      const boundaryAfter = new Map<string, boolean>();
+      const seenTurns: string[] = [];
+      let implicit = 0;
+      let sawBoundaryForCurrent = false;
+      let lastTurnKey = "";
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
         const item = entry.item;
-        const type = item.type === "plugin" ? "assistant_message" : item.type;
-        if (type === "assistant_message" && item.messageId) last = item.messageId;
+        const pluginKind = item.type === "plugin" ? item.kind : null;
+        const effectiveType = pluginKind === "inline-review-sent"
+          ? "user_message"
+          : pluginKind === "inline-review"
+            ? "assistant_message"
+            : item.type;
+        const isBoundary = effectiveType === "user_message";
+        if (isBoundary) {
+          if (lastTurnKey) lastIndexByTurn.set(lastTurnKey, index);
+          sawBoundaryForCurrent = true;
+          implicit += 1;
+          continue;
+        }
+        if (effectiveType !== "assistant_message" || !item.messageId) continue;
+        const turnKey = entry.turnId ?? `turn-${implicit}`;
+        const previous = lastByTurn.get(turnKey);
+        if (previous !== undefined && previous !== item.messageId) {
+          sawBoundaryForCurrent = sawBoundaryForCurrent || false;
+        }
+        lastByTurn.set(turnKey, item.messageId);
+        turnOfMessage.set(item.messageId, turnKey);
+        if (!seenTurns.includes(turnKey)) seenTurns.push(turnKey);
+        lastIndexByTurn.set(turnKey, index);
+        lastTurnKey = turnKey;
       }
-      if (last && this.lastIds.get(agentId) !== last) {
-        this.lastIds.set(agentId, last);
-        this.notify(agentId);
+      void sawBoundaryForCurrent;
+      // A turn is completed when a boundary came after its last assistant
+      // message, or it is the final turn and the agent is idle.
+      const agentIdle = handle.status === "idle";
+      const finalTurn = lastTurnKey;
+      const completed = new Set<string>();
+      for (const turnKey of lastByTurn.keys()) {
+        const lastIndex = lastIndexByTurn.get(turnKey) ?? -1;
+        let hasBoundaryAfter = false;
+        for (const [otherTurnKey, otherIndex] of lastIndexByTurn) {
+          if (otherIndex <= lastIndex) continue;
+          // Any later turn implies a user reply happened in between.
+          if (otherTurnKey !== turnKey) hasBoundaryAfter = true;
+        }
+        if (hasBoundaryAfter || (turnKey === finalTurn && agentIdle)) completed.add(turnKey);
       }
+      const state = this.state(agentId);
+      state.lastByTurn = lastByTurn;
+      state.turnOfMessage = turnOfMessage;
+      state.completedTurns = completed;
+      this.notify(agentId);
     } catch {
-      // Unknown until a live event arrives; the renderer renders normally.
+      // Live events still drive the tracker.
     } finally {
       this.loading.delete(agentId);
     }

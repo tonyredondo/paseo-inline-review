@@ -232,8 +232,8 @@ function ReviewAssistantMessage({
     (listener) => lastAssistantTracker.subscribe(agentId, listener),
     () => lastAssistantTracker.version(agentId),
   );
-  const isLast = useMemo(
-    () => lastAssistantTracker.isLast(agentId, data.messageId),
+  const isFinal = useMemo(
+    () => lastAssistantTracker.isFinal(agentId, data.messageId),
     [lastVersion, agentId, data.messageId],
   );
   useEffect(() => {
@@ -355,7 +355,7 @@ function ReviewAssistantMessage({
     <View
       style={[
         styles.root,
-        isLast
+        isFinal
           ? { borderLeftWidth: 3, borderLeftColor: theme.colors.accent, paddingLeft: 10 }
           : null,
       ]}
