@@ -182,7 +182,7 @@ function InlineRun({
               <MarkdownSpan
                 key={index}
                 style={{
-                  color: lighten(theme.colors.foreground, 0.25),
+                  color: lighten(theme.colors.accent, 0.45),
                   backgroundColor: theme.colors.surface2,
                   fontSize: styles.codeFontSize,
                   paddingHorizontal: 5,
@@ -471,7 +471,7 @@ export function MarkdownText({
                     color: theme.colors.foreground,
                     fontWeight: "700",
                     marginTop: block.level === 1 ? 16 : 12,
-                    marginBottom: block.level <= 2 ? 6 : 8,
+                    marginBottom: block.level <= 2 ? 2 : 8,
                     fontSize: compact
                       ? block.level === 1 ? 20 : block.level === 2 ? 17 : block.level === 3 ? 16 : 15
                       : block.level === 1 ? 22 : block.level === 2 ? 19 : block.level === 3 ? 17 : 16,
