@@ -760,3 +760,32 @@ test("turn classifier: messages without id stay unknown", () => {
 test("turn classifier: unknown agent stays unknown", () => {
   assert.equal(turnClassifier.role("cls-agent-x", "m"), "unknown");
 });
+
+// --- turn group card anchoring ---
+
+test("turn classifier: first intermediate anchors the group, others group away", () => {
+  const agent = "cls-group-1";
+  turnClassifier.observe(agent, { type: "assistant_message", messageId: "g1", text: "first plan" }, "t1");
+  turnClassifier.observe(agent, { type: "assistant_message", messageId: "g2", text: "second note" }, "t1");
+  turnClassifier.observe(agent, { type: "assistant_message", messageId: "g3", text: "---" }, "t1");
+  const group = turnClassifier.turnGroup(agent, "g1");
+  assert.ok(group);
+  assert.equal(group ? group.messages.length : 0, 2);
+  assert.equal(turnClassifier.isGroupedAway(agent, "g2"), true);
+  // g3 is still the latest of its turn: it renders as the final answer.
+  assert.equal(turnClassifier.isGroupedAway(agent, "g3"), false);
+  assert.equal(turnClassifier.turnGroup(agent, "g2"), null);
+});
+
+test("turn classifier: intermediate messages with no useful text preview to empty", () => {
+  // previewOf logic mirror: only "---" texts produce an empty preview
+  const preview = (texts: string[]) => {
+    for (const text of texts) {
+      const cleaned = text.replace(/\s+/g, " ").trim();
+      if (cleaned.length > 0 && !/^-+$/.test(cleaned)) return cleaned;
+    }
+    return "";
+  };
+  assert.equal(preview(["---", "real text here"]), "real text here");
+  assert.equal(preview(["---", ""]), "");
+});
