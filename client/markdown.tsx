@@ -305,28 +305,89 @@ function CodeBlockView({
           <Icon name="Copy" size={13} color="#8b949e" />
         )}
       </Pressable>
-      <ScrollView horizontal showsHorizontalScrollIndicator>
-        <View style={{ flexDirection: "row" }}>
-          <Text
-            style={[
-              mono,
-              nowrap,
-              { color: darkPalette.plain, fontSize: styles.codeFontSize, lineHeight: 18 },
-            ]}
-          >
-            {lines.map((line, lineIndex) => (
-              <Fragment key={lineIndex}>
-                {line.map((token: CodeToken, tokenIndex: number) => (
-                  <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type as keyof typeof darkPalette] }]}>
-                    {token.text}
+      {(() => {
+        // Line-number gutter. Web: a fixed column left of the scrolling code
+        // (lines never wrap there, so heights align 1:1). Native: the number
+        // rides on each line row so wrapped lines keep their number top-aligned.
+        const digits = String(lines.length).length;
+        const gutterWidth = Math.max(2, digits) * styles.codeFontSize * 0.6 + 8;
+        const gutterColor = "#565e69";
+        const gutterRule = "rgba(139,148,158,0.25)";
+        if (Platform.OS === "web") {
+          return (
+            <View style={{ flexDirection: "row", alignItems: "stretch" }}>
+              <View
+                style={{
+                  minWidth: gutterWidth,
+                  paddingRight: 10,
+                  borderRightWidth: StyleSheet.hairlineWidth,
+                  borderRightColor: gutterRule,
+                }}
+              >
+                {lines.map((_, lineIndex) => (
+                  <Text
+                    key={lineIndex}
+                    style={[mono, { color: gutterColor, fontSize: styles.codeFontSize, lineHeight: 18, textAlign: "right" }]}
+                  >
+                    {lineIndex + 1}
                   </Text>
                 ))}
-                {"\n"}
-              </Fragment>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator style={{ flex: 1 }}>
+                <View style={{ flexDirection: "row", flexWrap: "nowrap", paddingLeft: 10 }}>
+                  {lines.map((line, lineIndex) => (
+                    <Text
+                      key={lineIndex}
+                      style={[mono, nowrap, { color: darkPalette.plain, fontSize: styles.codeFontSize, lineHeight: 18 }]}
+                    >
+                      {line.length === 0
+                        ? " "
+                        : line.map((token: CodeToken, tokenIndex: number) => (
+                            <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type as keyof typeof darkPalette] }]}>
+                              {token.text}
+                            </Text>
+                          ))}
+                    </Text>
+                  ))}
+                </View>
+              </ScrollView>
+            </View>
+          );
+        }
+        return (
+          <View>
+            {lines.map((line, lineIndex) => (
+              <View key={lineIndex} style={{ flexDirection: "row" }}>
+                <Text
+                  style={[mono, { color: gutterColor, fontSize: styles.codeFontSize, lineHeight: 18, textAlign: "right", width: gutterWidth, paddingRight: 10 }]}
+                >
+                  {lineIndex + 1}
+                </Text>
+                <Text
+                  style={[
+                    mono,
+                    {
+                      color: darkPalette.plain,
+                      fontSize: styles.codeFontSize,
+                      lineHeight: 18,
+                      flex: 1,
+                      borderLeftWidth: StyleSheet.hairlineWidth,
+                      borderLeftColor: gutterRule,
+                      paddingLeft: 10,
+                    },
+                  ]}
+                >
+                  {line.map((token: CodeToken, tokenIndex: number) => (
+                    <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type as keyof typeof darkPalette] }]}>
+                      {token.text}
+                    </Text>
+                  ))}
+                </Text>
+              </View>
             ))}
-          </Text>
-        </View>
-      </ScrollView>
+          </View>
+        );
+      })()}
     </View>
   );
 }
