@@ -326,9 +326,23 @@ function useStyles(theme: PluginTheme, compact: boolean) {
       cell: { padding: 6 } as const,
       blockGap: { gap: compact ? 10 : 14 } as const,
       // Justify the body text: react-native-web and Android honor it; iOS RN
-      // falls back to left alignment (platform limitation).
-      paragraph: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22, textAlign: "justify" } as const,
-      paragraphLine: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22, textAlign: "justify" } as const,
+      // falls back to left alignment (platform limitation). overflow-wrap
+      // lets long words break instead of overflowing the justified line
+      // (web-only style keys; react-native-web hyphenates them to CSS).
+      paragraph: {
+        color: theme.colors.foreground,
+        fontSize: compact ? 14 : 15,
+        lineHeight: 22,
+        textAlign: "justify",
+        overflowWrap: "anywhere",
+      } as const,
+      paragraphLine: {
+        color: theme.colors.foreground,
+        fontSize: compact ? 14 : 15,
+        lineHeight: 22,
+        textAlign: "justify",
+        overflowWrap: "anywhere",
+      } as const,
       codeBlock: {
         backgroundColor: "#000000",
         borderColor: theme.colors.border,
