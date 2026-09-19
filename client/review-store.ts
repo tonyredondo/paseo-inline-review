@@ -160,6 +160,14 @@ type SaveFn = (input: { agentId: string; comments: ReviewComment[]; deleted?: st
 type LoadFn = (input: { agentId: string }) => Promise<{ comments: ReviewComment[] }>;
 
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Saves queued by the debounce or with an RPC in flight. */
+let inFlightSaves = 0;
+
+/** True while local mutations have not reached the daemon yet: refreshes must
+ * wait, or a poll would resurrect comments a just-executed delete removed. */
+export function hasPendingSaves(): boolean {
+  return saveTimers.size > 0 || inFlightSaves > 0;
+}
 
 /** Pushes the agent's comments to the daemon store, debounced per agent. */
 export function scheduleSave(
@@ -172,11 +180,16 @@ export function scheduleSave(
     agentId,
     setTimeout(() => {
       saveTimers.delete(agentId);
+      inFlightSaves += 1;
       void save({
         agentId,
         comments: getComments().filter((comment) => comment.agentId === agentId),
         deleted: [...(tombstones.get(agentId) ?? [])],
-      });
+      })
+        .catch(() => {})
+        .finally(() => {
+          inFlightSaves -= 1;
+        });
     }, 300),
   );
 }
@@ -198,6 +211,9 @@ export function hydrate(agentId: string, serverComments: ReviewComment[], delete
   );
   const merged: ReviewComment[] = [];
   for (const serverComment of serverComments) {
+    // A tombstone (local delete or deletion from another device) always wins,
+    // even when the server copy is still in flight from a stale device save.
+    if (deletedIds.has(serverComment.id)) continue;
     const local = known.get(serverComment.id);
     if (local) {
       merged.push({ ...local, status: serverComment.status });
@@ -214,7 +230,14 @@ export function hydrate(agentId: string, serverComments: ReviewComment[], delete
 
 /** Hydrates one agent from the daemon when the client store has nothing yet. */
 export function hydrateFromServer(agentId: string, load: LoadFn): void {
+  // Do not refresh while local mutations are still landing on the daemon: a
+  // poll in that window would resurrect a just-deleted comment. The next poll
+  // tick retries.
+  if (hasPendingSaves()) return;
   void load({ agentId })
-    .then((result) => hydrate(agentId, result.comments, (result as { deleted?: string[] }).deleted ?? []))
+    .then((result) => {
+      if (hasPendingSaves()) return;
+      hydrate(agentId, result.comments, (result as { deleted?: string[] }).deleted ?? []);
+    })
     .catch(() => {});
 }
