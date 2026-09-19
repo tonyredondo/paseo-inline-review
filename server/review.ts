@@ -78,11 +78,17 @@ function setAgentComments(
   const tombstones = new Set(store.deleted[agentId] ?? []);
   for (const id of deleted) tombstones.add(id);
   store.deleted[agentId] = pruneTombstones([...tombstones]);
-  const alive = validated.filter((comment) => !tombstones.has(comment.id));
+  // Merge instead of replace: a stale device that failed to hydrate would
+  // otherwise push an empty list and wipe comments another device still has.
+  // Deletions are always explicit through tombstones, never implicit by
+  // omitting a comment from the incoming list.
+  const merged = new Map((store.agents[agentId] ?? []).map((comment) => [comment.id, comment]));
+  for (const comment of validated) merged.set(comment.id, comment);
+  const alive = [...merged.values()].filter((comment) => !tombstones.has(comment.id));
   if (alive.length === 0) {
     delete store.agents[agentId];
   } else {
-    store.agents[agentId] = alive;
+    store.agents[agentId] = alive.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
   persist();
 }
