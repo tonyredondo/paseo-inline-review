@@ -57,6 +57,19 @@ export const openInBrowserRpc = defineRpc({
   output: z.object({ ok: z.boolean() }),
 });
 
+/** Data for the plugin-owned replacement of a sent review user message. */
+export const sentReviewSchema = z.object({
+  messageId: z.string().nullable(),
+  text: z.string(),
+});
+
+export type SentReviewData = z.output<typeof sentReviewSchema>;
+
+/** Matches the user messages produced by formatReview (optionally after a note). */
+export function looksLikeSentReview(text: string): boolean {
+  return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: "/.test(text);
+}
+
 /** Client tells the daemon which agent's workspace is currently visible, so
  * the attachment picker only offers that agent's draft. */
 export const setActiveAgentRpc = defineRpc({

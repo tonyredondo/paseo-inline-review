@@ -1,19 +1,23 @@
 import type { PluginClientContext, PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import type { PluginTheme } from "@getpaseo/plugin";
 import {
+  Icon,
   TextInput,
   useRevealedText,
 } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
   loadCommentsRpc,
   reviewItemSchema,
   saveCommentsRpc,
+  sentReviewSchema,
   splitParagraphs,
+  looksLikeSentReview,
   type ReviewComment,
   type ReviewItemData,
+  type SentReviewData,
 } from "../shared/review";
 import {
   addComment,
@@ -126,6 +130,76 @@ function CommentCard({
         </View>
       </View>
       <Text style={styles.text}>{comment.text}</Text>
+    </View>
+  );
+}
+
+/** Parses a formatted review into its optional note and per-paragraph entries. */
+function parseSentReview(text: string): { note: string; entries: { quote: string; comment: string }[] } {
+  const headerIndex = text.search(/(?:^|\n)Review:\s*\n/);
+  const note = headerIndex > 0 ? text.slice(0, headerIndex).trim() : "";
+  const body = headerIndex >= 0 ? text.slice(headerIndex).replace(/^(?:\n)?Review:\s*\n/, "") : text;
+  const entries: { quote: string; comment: string }[] = [];
+  const entryPattern = /\[\d+\] On: "([^"]*)"[^\n]*\nComment: ((?:.|\n)*?)(?=\n\s*\n|\n\[\d+\] On: |$)/g;
+  for (const match of body.matchAll(entryPattern)) {
+    entries.push({ quote: match[1], comment: match[2].trim() });
+  }
+  return { note, entries };
+}
+
+/** Compact card replacing the raw review text in the timeline. */
+function SentReviewCard({
+  item,
+  theme,
+  layout,
+}: PluginTimelineItemProps<SentReviewData>) {
+  const parsed = useMemo(() => parseSentReview(item.data.text), [item.data.text]);
+  const [open, setOpen] = useState(false);
+  const styles = useMemo(
+    () => ({
+      card: {
+        borderColor: theme.colors.border,
+        borderWidth: 1,
+        borderRadius: 10,
+        backgroundColor: theme.colors.surface1,
+      } as const,
+      header: { flexDirection: "row", alignItems: "center", gap: 8, padding: 10 } as const,
+      title: { color: theme.colors.foreground, fontWeight: "600", fontSize: 13, flex: 1 } as const,
+      badge: { color: theme.colors.accent, fontSize: 11, fontWeight: "600" } as const,
+      note: {
+        color: theme.colors.foreground,
+        fontSize: 14,
+        lineHeight: 21,
+        paddingHorizontal: 10,
+        paddingBottom: parsed.entries.length > 0 ? 6 : 10,
+      } as const,
+      entry: { paddingHorizontal: 10, paddingVertical: 8, gap: 3 } as const,
+      entryBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.border } as const,
+      quote: { color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic" } as const,
+      comment: { color: theme.colors.foreground, fontSize: 14, lineHeight: 21 } as const,
+    }),
+    [theme, parsed.entries.length],
+  );
+  const count = parsed.entries.length;
+  return (
+    <View style={styles.card}>
+      <Pressable accessibilityRole="button" onPress={() => setOpen((value) => !value)} style={styles.header}>
+        <Icon name="MessageSquareQuote" size={14} color={theme.colors.accent} />
+        <Text style={styles.title}>{`Review sent`}</Text>
+        <Text style={styles.badge}>{count === 1 ? "1 comment" : `${count} comments`}</Text>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{open ? "▼" : "▶"}</Text>
+      </Pressable>
+      {open || count === 0 ? (
+        <View>
+          {parsed.note.length > 0 ? <Text style={styles.note}>{parsed.note}</Text> : null}
+          {parsed.entries.map((entry, index) => (
+            <View key={index} style={[styles.entry, index > 0 ? styles.entryBorder : null]}>
+              <Text style={styles.quote} numberOfLines={2}>{`"${entry.quote}"`}</Text>
+              <Text style={styles.comment}>{entry.comment}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -371,5 +445,30 @@ export function registerTimeline(client: PluginClientContext): void {
     version: 1,
     schema: reviewItemSchema,
     Component: ReviewAssistantMessage,
+  });
+  // Reviews we send through the panel or the fastpath pill become a compact
+  // card instead of the plain user bubble. Other user messages stay native.
+  client.addTimelineTransformer({
+    id: "inline-review-sent",
+    query: { itemType: "user_message" },
+    transform({ item }) {
+      if (!looksLikeSentReview(item.text)) return undefined;
+      return {
+        items: [
+          {
+            type: "plugin",
+            kind: "inline-review-sent",
+            version: 1,
+            data: { messageId: item.messageId ?? null, text: item.text },
+          },
+        ],
+      };
+    },
+  });
+  client.addTimelineRenderer({
+    kind: "inline-review-sent",
+    version: 1,
+    schema: sentReviewSchema,
+    Component: SentReviewCard,
   });
 }

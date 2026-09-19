@@ -716,3 +716,17 @@ test("emails inside urls do not break url autolink", () => {
 test("incomplete domains stay plain", () => {
   assert.ok(parseInline("write user@localhost").every((tk) => tk.type !== "link"));
 });
+
+// --- sent review detection (user_message transformer) ---
+
+test("looksLikeSentReview detects formatted reviews with and without a note", () => {
+  const review = "Review:\n\n[1] On: \"para one\"\nComment: fix this";
+  assert.ok(syntaxLooks(review));
+  assert.ok(syntaxLooks("here is my extra note\n\nReview:\n[1] On: \"x\"\nComment: y"));
+  assert.ok(!syntaxLooks("regular user question about the code"));
+  assert.ok(!syntaxLooks("Review:"));
+});
+
+function syntaxLooks(text: string): boolean {
+  return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: "/.test(text);
+}
