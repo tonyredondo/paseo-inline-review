@@ -390,6 +390,10 @@ function ReviewAssistantMessage({
                       event.preventDefault?.();
                       save();
                     }
+                    if (native.key === "Escape") {
+                      event.preventDefault?.();
+                      setEditing(null);
+                    }
                   }}
                   style={styles.input}
                 />
