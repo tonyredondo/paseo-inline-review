@@ -257,7 +257,9 @@ function ReviewAssistantMessage({
                   theme={theme}
                   compact={layout.compact}
                   refs={refs}
-                  selectable
+                  // iOS: RN selectable Text is block-level-only (Copy menu);
+                  // disable selection there entirely per user decision.
+                  selectable={layout.platform !== "ios"}
                   onChunkPress={() => handleChunkTap(index)}
                 />
               </View>
