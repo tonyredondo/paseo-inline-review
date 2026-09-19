@@ -5,7 +5,7 @@ import {
   TextInput,
   useRevealedText,
 } from "@getpaseo/plugin/client/react-native";
-import { usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { useRpc } from "@getpaseo/plugin/client";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
@@ -30,7 +30,6 @@ import {
   updateComment,
 } from "./review-store";
 import { MarkdownText } from "./markdown";
-import { lastAssistantTracker } from "./last-assistant";
 import { extractRefDefs } from "../shared/markdown-parse";
 
 type EditingTarget = {
@@ -226,19 +225,6 @@ function ReviewAssistantMessage({
       void scheduleSave(agentId, persistComments);
     });
   }, [agentId, load, persistComments]);
-  // Mark the LATEST assistant message of the agent (border); nothing else.
-  const paseo = usePaseo();
-  const lastVersion = useSyncExternalStore(
-    (listener) => lastAssistantTracker.subscribe(agentId, listener),
-    () => lastAssistantTracker.version(agentId),
-  );
-  const isFinal = useMemo(
-    () => lastAssistantTracker.isFinal(agentId, data.messageId),
-    [lastVersion, agentId, data.messageId],
-  );
-  useEffect(() => {
-    void lastAssistantTracker.ensure(paseo, agentId);
-  }, [agentId, paseo]);
   const revealed = useRevealedText(data.text, data.phase);
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
   const paragraphTexts = paragraphs;
@@ -352,14 +338,7 @@ function ReviewAssistantMessage({
   }
 
   return (
-    <View
-      style={[
-        styles.root,
-        isFinal
-          ? { borderLeftWidth: 3, borderLeftColor: theme.colors.accent, paddingLeft: 10 }
-          : null,
-      ]}
-    >
+    <View style={styles.root}>
       {paragraphs.map((paragraph, index) => {
         const anchored = comments.filter((comment) =>
           commentAnchorsHere(data, paragraph, index, comment),
