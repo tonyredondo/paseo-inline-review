@@ -270,8 +270,21 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
         <TextInput
           value={draft}
           onChangeText={setDraft}
-          placeholder="Optional note..."
+          placeholder="Optional note... (Cmd+Shift+Return to send)"
           multiline
+          onKeyPress={(event) => {
+            // Cmd/Ctrl+Shift+Return sends the review straight from the note.
+            const native = event.nativeEvent as unknown as {
+              key?: string;
+              metaKey?: boolean;
+              ctrlKey?: boolean;
+              shiftKey?: boolean;
+            };
+            if (native.key === "Enter" && (native.metaKey || native.ctrlKey) && native.shiftKey) {
+              event.preventDefault?.();
+              if (!busy) void send();
+            }
+          }}
           style={[styles.input, { flex: 1, minHeight: 48 }]}
         />
         <Pressable accessibilityRole="button" accessibilityLabel="Send review to the agent" style={styles.sendButton} disabled={busy} onPress={send}>
