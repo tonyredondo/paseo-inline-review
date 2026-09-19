@@ -361,7 +361,7 @@ function useStyles(theme: PluginTheme, compact: boolean) {
       cellBorder: { borderColor: theme.colors.border } as const,
       hr: { height: 1, backgroundColor: theme.colors.border, marginVertical: 4 } as const,
       image: { width: "100%" as const, height: 180, borderRadius: 8, marginVertical: 2 } as const,
-      paragraphGap: { gap: 4 } as const,
+      paragraphGap: { gap: 0 } as const,
     }),
     [theme, compact],
   );
