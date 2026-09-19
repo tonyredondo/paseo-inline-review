@@ -26,13 +26,20 @@ export function registerPills(client: PluginClientContext): () => void {
 
   function refreshLabels(): void {
     const counts = new Map<string, number>();
+    const totals = new Map<string, number>();
     for (const comment of getComments()) {
+      totals.set(comment.agentId, (totals.get(comment.agentId) ?? 0) + 1);
       if (comment.status !== "pending") continue;
       counts.set(comment.agentId, (counts.get(comment.agentId) ?? 0) + 1);
     }
     for (const [agentId, pill] of pills) {
       const count = counts.get(agentId) ?? 0;
-      pill.update({ label: count > 0 ? `Review (${count})` : "Review" });
+      // The panel opens empty when the agent has no comments at all; disable
+      // the pill in that case, like the send pill.
+      pill.update({
+        label: count > 0 ? `Review (${count})` : "Review",
+        disabled: (totals.get(agentId) ?? 0) === 0,
+      });
     }
     for (const [agentId, pill] of sendPills) {
       const count = counts.get(agentId) ?? 0;
@@ -52,7 +59,9 @@ export function registerPills(client: PluginClientContext): () => void {
         workspaceId,
         agentId,
         button: {
-          title: "Open review panel",
+          // No SDK tooltip field; the title doubles as the hover tooltip on
+          // desktop and the accessibility label everywhere.
+          title: "Add a review: Cmd+Click a paragraph on desktop, double-tap it on mobile or tablet",
           icon: "MessageSquareQuote",
           label: "Review",
           behavior: {
