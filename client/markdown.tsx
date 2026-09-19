@@ -2,7 +2,7 @@ import type { InlineToken } from "../shared/markdown-parse";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Image, Linking, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MarkdownSpan } from "./markdown-span";
 import { isValidHttpUrl, openInBrowserRpc } from "../shared/review";
 import {
@@ -182,12 +182,12 @@ function InlineRun({
               <MarkdownSpan
                 key={index}
                 style={{
-                  color: lighten(theme.colors.accent, 0.15),
+                  color: theme.colors.foregroundMuted,
                   backgroundColor: theme.colors.surface2,
                   fontSize: styles.codeFontSize,
-                  paddingHorizontal: 5,
-                  paddingVertical: 2,
-                  borderRadius: 6,
+                  paddingHorizontal: 4,
+                  paddingVertical: 1,
+                  borderRadius: 5,
                   ...monospaceFont(),
                 }}
                 selectable={selectable}
@@ -344,7 +344,7 @@ function Cell({ cell, theme, styles, flex }: { cell: { spans: InlineToken[]; ali
 function useStyles(theme: PluginTheme, compact: boolean) {
   return useMemo(
     () => ({
-      codeFontSize: compact ? 12 : 13,
+      codeFontSize: Platform.OS === "ios" ? (compact ? 11 : 12) : compact ? 12 : 13,
       tableFontSize: compact ? 12 : 13,
       cell: { padding: 6 } as const,
       blockGap: { gap: compact ? 10 : 14 } as const,
@@ -464,21 +464,32 @@ export function MarkdownText({
             );
           case "heading":
             return (
-              <MarkdownSpan
-                key={index}
-                uiTextView
-                style={{
-                  color: theme.colors.foreground,
-                  fontWeight: "700",
-                  marginTop: block.level === 1 ? 16 : 12,
-                  marginBottom: 8,
-                  fontSize: compact
-                    ? block.level === 1 ? 20 : block.level === 2 ? 17 : block.level === 3 ? 16 : 15
-                    : block.level === 1 ? 22 : block.level === 2 ? 19 : block.level === 3 ? 17 : 16,
-                }}
-              >
-                <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} />
-              </MarkdownSpan>
+              <Fragment key={index}>
+                <MarkdownSpan
+                  uiTextView
+                  style={{
+                    color: theme.colors.foreground,
+                    fontWeight: "700",
+                    marginTop: block.level === 1 ? 16 : 12,
+                    marginBottom: 8,
+                    fontSize: compact
+                      ? block.level === 1 ? 20 : block.level === 2 ? 17 : block.level === 3 ? 16 : 15
+                      : block.level === 1 ? 22 : block.level === 2 ? 19 : block.level === 3 ? 17 : 16,
+                  }}
+                >
+                  <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} />
+                </MarkdownSpan>
+                {block.level <= 2 ? (
+                  <View
+                    style={{
+                      height: StyleSheet.hairlineWidth,
+                      backgroundColor: theme.colors.foregroundMuted,
+                      opacity: 0.35,
+                      marginTop: 6,
+                    }}
+                  />
+                ) : null}
+              </Fragment>
             );
           case "bullet":
             return (
