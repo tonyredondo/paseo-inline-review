@@ -17,6 +17,9 @@ import {
   updateComment,
 } from "./review-store";
 
+/** Cross-device poll: re-hydrate plugin comments from the daemon this often. */
+const POLL_INTERVAL_MS = 5000;
+
 export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
   const paseo = usePaseo();
   const toast = useToast();
@@ -51,8 +54,14 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
     } catch {
       // agent subscription unavailable; panel refresh happens on reopen
     }
+    // Multi-device: plugin data has no push channel, so poll the daemon.
+    // hydrate() merges server statuses over local ones, so this is idempotent.
+    const poll = setInterval(() => {
+      hydrateFromServer(agentId, load);
+    }, POLL_INTERVAL_MS);
     const removeSaveWatcher = subscribe(() => scheduleSave(agentId, persistComments));
     return () => {
+      clearInterval(poll);
       unsubscribe?.();
       removeSaveWatcher();
     };
