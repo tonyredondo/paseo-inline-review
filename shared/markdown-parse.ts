@@ -13,10 +13,10 @@
 export type InlineToken =
   | { type: "text"; text: string }
   | { type: "break" }
-  | { type: "bold"; text: string }
-  | { type: "italic"; text: string }
+  | { type: "bold"; text: string; tokens: InlineToken[] }
+  | { type: "italic"; text: string; tokens: InlineToken[] }
   | { type: "code"; text: string }
-  | { type: "strike"; text: string }
+  | { type: "strike"; text: string; tokens: InlineToken[] }
   | { type: "link"; text: string; url: string }
   | { type: "image"; alt: string; url: string };
 
@@ -257,7 +257,7 @@ export function parseBlocks(text: string): Block[] {
 }
 
 const inlinePattern =
-  /(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+)/g;
+  /(\*\*(?:[^*]|\*(?!\*))+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+)/g;
 
 /**
  * Consumes wrapped and indented continuation lines of a list item:
@@ -379,17 +379,17 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
       tokens.push({ type: "text", text: masked.slice(lastIndex, start) });
     }
     if (token.startsWith("**") && token.endsWith("**")) {
-      tokens.push({ type: "bold", text: token.slice(2, -2) });
+      tokens.push({ type: "bold", text: token.slice(2, -2), tokens: parseInline(token.slice(2, -2), refs) });
     } else if (token.startsWith("__") && token.endsWith("__")) {
-      tokens.push({ type: "bold", text: token.slice(2, -2) });
+      tokens.push({ type: "bold", text: token.slice(2, -2), tokens: parseInline(token.slice(2, -2), refs) });
     } else if (token.startsWith("~~") && token.endsWith("~~")) {
-      tokens.push({ type: "strike", text: token.slice(2, -2) });
+      tokens.push({ type: "strike", text: token.slice(2, -2), tokens: parseInline(token.slice(2, -2), refs) });
     } else if (token.startsWith("`") && token.endsWith("`")) {
       tokens.push({ type: "code", text: token.slice(1, -1) });
     } else if (token.startsWith("*") && token.endsWith("*")) {
-      tokens.push({ type: "italic", text: token.slice(1, -1) });
+      tokens.push({ type: "italic", text: token.slice(1, -1), tokens: parseInline(token.slice(1, -1), refs) });
     } else if (token.startsWith("_") && token.endsWith("_")) {
-      tokens.push({ type: "italic", text: token.slice(1, -1) });
+      tokens.push({ type: "italic", text: token.slice(1, -1), tokens: parseInline(token.slice(1, -1), refs) });
     } else if (token.startsWith("![")) {
       const image = /^!\[([^\]]*)\]\(([^)\s]+)\)$/.exec(token);
       if (image) {
@@ -447,6 +447,10 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
     }
     if (token.type === "break") {
       return token;
+    }
+    if (token.type === "bold" || token.type === "italic" || token.type === "strike") {
+      // Nested tokens are already unescaped by the recursive call.
+      return { ...token, text: replaceShortcodes(restore(token.text)) };
     }
     return { ...token, text: replaceShortcodes(restore(token.text)) };
   });

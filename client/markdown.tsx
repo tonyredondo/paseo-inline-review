@@ -137,13 +137,13 @@ function InlineRun({
           case "bold":
             return (
               <MarkdownSpan key={index} style={{ color: theme.colors.foreground, fontWeight: "700" }} selectable={selectable}>
-                {token.text}
+                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : token.text}
               </MarkdownSpan>
             );
           case "italic":
             return (
               <MarkdownSpan key={index} style={{ color: theme.colors.foreground, fontStyle: "italic" }} selectable={selectable}>
-                {token.text}
+                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : token.text}
               </MarkdownSpan>
             );
           case "strike":
@@ -153,7 +153,7 @@ function InlineRun({
                 style={{ color: theme.colors.foreground, textDecorationLine: "line-through" }}
                 selectable={selectable}
               >
-                {token.text}
+                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : token.text}
               </MarkdownSpan>
             );
           case "code":

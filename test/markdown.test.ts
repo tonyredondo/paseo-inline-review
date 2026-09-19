@@ -343,3 +343,27 @@ test("emoji shortcodes convert outside code spans", () => {
   const codeToken = tokens.find((token) => token.type === "code");
   assert.ok(codeToken && codeToken.type === "code" && codeToken.text === ":tada:");
 });
+
+test("inline code inside bold renders nested", () => {
+  const tokens = parseInline("**2. Alta — un `tracer.Start()` posterior sigue**");
+  assert.deepEqual(inlineTypes(tokens), ["bold"]);
+  const bold = tokens[0];
+  assert.ok(bold.type === "bold");
+  const kinds = bold.tokens.map((token) => token.type);
+  assert.ok(kinds.includes("code"), "expected a code token inside bold");
+  const code = bold.tokens.find((token) => token.type === "code");
+  assert.ok(code && code.type === "code" && code.text === "tracer.Start()");
+});
+
+test("nested bold survives recursion", () => {
+  const tokens = parseInline("**outer *inner* end**");
+  assert.deepEqual(inlineTypes(tokens), ["bold"]);
+  assert.ok(tokens[0].type === "bold" && tokens[0].tokens.some((token) => token.type === "italic"));
+});
+
+test("link inside bold keeps its url", () => {
+  const tokens = parseInline("**see [docs](https://paseo.sh)**");
+  assert.ok(tokens[0].type === "bold");
+  const link = tokens[0].tokens.find((token) => token.type === "link");
+  assert.ok(link && link.type === "link" && link.url === "https://paseo.sh");
+});
