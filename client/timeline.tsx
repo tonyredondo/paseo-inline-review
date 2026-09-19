@@ -55,15 +55,6 @@ function matchesCapturedText(captured: string, paragraph: string | undefined): b
   return paragraph === captured || paragraph.startsWith(captured);
 }
 
-/** First meaningful preview text for a working-notes group row. */
-function previewOf(messages: { text: string }[]): string {
-  for (const message of messages) {
-    const cleaned = message.text.replace(/\s+/g, " ").trim();
-    if (cleaned.length > 0 && !/^-+$/.test(cleaned)) return cleaned.slice(0, 90);
-  }
-  return "";
-}
-
 function commentAnchorsHere(
   data: ReviewItemData,
   paragraph: string,
@@ -358,89 +349,22 @@ function ReviewAssistantMessage({
     setEditing(null);
   }
 
-  // Intermediate messages group by turn: the first one renders the group card
-  // (dimmed, one line, expandable to all the turn's working notes); the rest
-  // collapse to zero height so the timeline stays clean between tool rows.
+  // Intermediate messages render dimmed; the final message of the turn gets a
+  // subtle accent border to stand apart. No collapsing: user decision after
+  // trying the grouped experiment.
   const isIntermediate = role === "intermediate" && data.phase === "complete";
-  const groupedAway = turnClassifier.isGroupedAway(agentId, data.messageId);
-  const group = isIntermediate && !groupedAway
-    ? turnClassifier.turnGroup(agentId, data.messageId)
-    : null;
-  const groupCount = group ? group.messages.length : 0;
-  // Any comment anchored to any message of the group keeps it expanded.
-  const allAgentComments = useSyncExternalStore(subscribe, getComments).filter(
-    (comment) => comment.agentId === agentId,
-  );
-  const groupHasComments = group
-    ? group.messages.some((message) =>
-        allAgentComments.some((comment) =>
-          comment.messageId === message.messageId ||
-          (comment.messageId === null && commentBelongsToMessage(data, comment)),
-        ),
-      )
-    : false;
-  const hasCommentsHere = comments.length > 0 || groupHasComments;
+  const isFinal = role === "final";
   return (
     <View
       style={[
         styles.root,
-        isIntermediate && (expanded || hasCommentsHere) ? { opacity: 0.75 } : null,
+        isIntermediate ? { opacity: 0.75 } : null,
+        isFinal
+          ? { borderLeftWidth: 3, borderLeftColor: theme.colors.accent, paddingLeft: 10 }
+          : null,
       ]}
     >
-      {groupedAway ? null : group ? (
-        <View style={{ gap: 4 }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={expanded ? "Collapse working notes" : "Show working notes"}
-            onPress={() => setExpanded((value) => !value)}
-            style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 3 }}
-          >
-            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-              {`Working notes (${groupCount})`}
-            </Text>
-            <Text
-              style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic", flex: 1, opacity: 0.8 }}
-              numberOfLines={1}
-            >
-              {previewOf(group.messages)}
-            </Text>
-            <Text style={{ color: theme.colors.accent, fontSize: 12 }}>{expanded ? "Hide" : "Show"}</Text>
-          </Pressable>
-          {expanded || groupHasComments ? (
-            <View style={{ paddingLeft: 10, gap: 8, opacity: 0.85 }}>
-              {group.messages.map((message) => {
-                const messageComments = allAgentComments.filter((comment) =>
-                  comment.messageId === message.messageId ||
-                  (comment.messageId === null && comment.paragraphIndex >= 0 && commentBelongsToMessage(data, comment)),
-                );
-                return (
-                  <View key={message.messageId} style={{ gap: 2 }}>
-                    <MarkdownText text={message.text} theme={theme} compact={layout.compact} refs={refs} />
-                    {messageComments.map((comment) => (
-                      <CommentCard
-                        key={comment.id}
-                        comment={comment}
-                        theme={theme}
-                        onEdit={(target) =>
-                          setEditing({
-                            paragraphIndex: comment.paragraphIndex,
-                            paragraphText: comment.paragraphText,
-                            draft: comment.text,
-                            commentId: comment.id,
-                          })
-                        }
-                        onRemove={() => removeComment(comment.id)}
-                      />
-                    ))}
-                  </View>
-                );
-              })}
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-      {!groupedAway && (!isIntermediate || expanded || hasCommentsHere) ? (
-      paragraphs.map((paragraph, index) => {
+{paragraphs.map((paragraph, index) => {
         const anchored = comments.filter((comment) =>
           commentAnchorsHere(data, paragraph, index, comment),
         );
@@ -542,8 +466,7 @@ function ReviewAssistantMessage({
             ))}
           </View>
         );
-      })
-      ) : null}
+      })}
     </View>
   );
 }
