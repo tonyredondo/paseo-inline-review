@@ -170,7 +170,7 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
           </Pressable>
         </View>
       </View>
-      {comments.length === 0 ? (
+      {all.length === 0 ? (
         <Text style={styles.empty}>
           No comments yet. Tap a paragraph on an agent response to comment on it.
         </Text>
