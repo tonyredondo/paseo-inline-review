@@ -387,3 +387,10 @@ test("syntax: shell flags and json keys get color", () => {
   assert.ok(syntax.highlightCode("git diff --check", "sh").flat().some((tk) => tk.type === "meta" && tk.text === "--check"));
   assert.ok(syntax.highlightCode('{ "a": 1 }', "json").flat().some((tk) => tk.type === "type" && tk.text === "\"a\""));
 });
+
+test("syntax: go and java builtins, java family, constants", () => {
+  assert.ok(syntax.highlightCode("items := make([]string, 0)", "go").flat().some((tk) => tk.type === "function" && tk.text === "make"));
+  assert.ok(syntax.highlightCode("public final class Foo {}", "java").flat().some((tk) => tk.type === "keyword" && tk.text === "class"));
+  assert.ok(syntax.highlightCode("int MAX = 1;", "java").flat().some((tk) => tk.type === "number" && tk.text === "MAX"));
+  assert.ok(syntax.highlightCode("var xs = new List<int>();", "cs").flat().some((tk) => tk.type === "function" && tk.text === "List"));
+});

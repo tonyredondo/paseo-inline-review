@@ -9,6 +9,8 @@ export type CodeToken = { type: CodeTokenType; text: string };
 
 type Family = {
   keywords: string[];
+  /** Language built-in functions that render in the function color. */
+  builtins?: string[];
   lineComments?: string[];
   blockComments?: [string, string][];
   stringDelims?: string[];
@@ -19,8 +21,9 @@ type Family = {
 const FAMILIES: Record<string, Family> = {
   "js": { keywords: ["abstract", "as", "async", "await", "break", "case", "catch", "class", "const", "constructor", "continue", "debugger", "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for", "from", "func", "function", "get", "go", "goto", "if", "implements", "import", "in", "instanceof", "interface", "internal", "is", "let", "lock", "mut", "namespace", "new", "null", "nullptr", "operator", "out", "override", "package", "private", "protected", "pub", "public", "readonly", "ref", "return", "sealed", "self", "set", "sizeof", "static", "struct", "super", "switch", "template", "this", "throw", "throws", "trait", "true", "try", "type", "typedef", "typeof", "union", "unsafe", "use", "using", "val", "var", "virtual", "void", "volatile", "where", "while", "with", "yield", "undefined", "NaN", "console"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'", "`"] },
   "ts": { keywords: ["abstract", "as", "async", "await", "break", "case", "catch", "class", "const", "constructor", "continue", "debugger", "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for", "from", "func", "function", "get", "go", "goto", "if", "implements", "import", "in", "instanceof", "interface", "internal", "is", "let", "lock", "mut", "namespace", "new", "null", "nullptr", "operator", "out", "override", "package", "private", "protected", "pub", "public", "readonly", "ref", "return", "sealed", "self", "set", "sizeof", "static", "struct", "super", "switch", "template", "this", "throw", "throws", "trait", "true", "try", "type", "typedef", "typeof", "union", "unsafe", "use", "using", "val", "var", "virtual", "void", "volatile", "where", "while", "with", "yield", "interface", "type", "declare", "keyof", "infer", "unknown", "never", "any", "satisfies"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'", "`"] },
-  "go": { keywords: ["package", "import", "func", "type", "struct", "interface", "map", "chan", "go", "defer", "select", "switch", "case", "default", "fallthrough", "for", "range", "if", "else", "return", "var", "const", "break", "continue", "goto", "nil", "true", "false", "string", "int", "int64", "int32", "uint", "byte", "rune", "float64", "float32", "bool", "error", "any"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'", "`"] },
-  "cs": { keywords: ["using", "namespace", "class", "struct", "interface", "record", "enum", "static", "public", "private", "protected", "internal", "readonly", "override", "virtual", "sealed", "abstract", "async", "await", "var", "new", "return", "if", "else", "switch", "case", "default", "for", "foreach", "while", "do", "break", "continue", "try", "catch", "finally", "throw", "null", "true", "false", "void", "bool", "string", "int", "long", "double", "float", "decimal", "object", "this", "base", "get", "set", "partial", "out", "ref", "is", "as", "where", "yield"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
+  "go": { keywords: ["package", "import", "func", "type", "struct", "interface", "map", "chan", "go", "defer", "select", "switch", "case", "default", "fallthrough", "for", "range", "if", "else", "return", "var", "const", "break", "continue", "goto", "nil", "true", "false", "string", "int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uintptr", "byte", "rune", "float64", "float32", "complex64", "complex128", "bool", "error", "any"], builtins: ["make", "len", "cap", "append", "copy", "new", "delete", "panic", "recover", "print", "println", "close", "min", "max", "clear"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'", "`"] },
+  "cs": { keywords: ["using", "namespace", "class", "struct", "interface", "record", "enum", "static", "public", "private", "protected", "internal", "readonly", "override", "virtual", "sealed", "abstract", "async", "await", "var", "new", "return", "if", "else", "switch", "case", "default", "for", "foreach", "while", "do", "break", "continue", "try", "catch", "finally", "throw", "null", "true", "false", "void", "bool", "string", "int", "long", "double", "float", "decimal", "object", "this", "base", "get", "set", "partial", "out", "ref", "is", "as", "where", "yield", "global", "file", "required", "init", "scoped", "nint", "nuint", "sbyte", "short", "ushort", "uint", "ulong", "nameof", "typeof", "sizeof", "checked", "unchecked", "lock", "params", "when", "event", "delegate", "explicit", "implicit", "unmanaged", "record"], builtins: ["Console", "Math", "Environment", "Task", "List", "Dictionary", "HashSet", "Enumerable", "String", "Int32", "Int64", "Double", "Boolean", "Object", "Exception"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
+  "java": { keywords: ["abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const", "continue", "default", "do", "double", "else", "enum", "extends", "final", "finally", "float", "for", "goto", "if", "implements", "import", "instanceof", "int", "interface", "long", "native", "new", "package", "private", "protected", "public", "return", "short", "static", "strictfp", "super", "switch", "synchronized", "this", "throw", "throws", "transient", "try", "void", "volatile", "while", "var", "record", "sealed", "yield", "permits", "true", "false", "null"], builtins: ["String", "Integer", "Long", "Boolean", "Double", "Character", "Math", "System", "Objects", "Optional", "Arrays", "Collections", "List", "Map", "Set", "ArrayList", "HashMap", "HashSet"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
   "c": { keywords: ["#include", "#define", "#pragma", "#ifndef", "#endif", "#ifdef", "int", "char", "void", "long", "short", "unsigned", "signed", "float", "double", "struct", "union", "enum", "typedef", "static", "extern", "const", "volatile", "register", "return", "if", "else", "switch", "case", "default", "for", "while", "do", "break", "continue", "goto", "sizeof", "NULL"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
   "cpp": { keywords: ["#include", "#define", "#pragma", "class", "struct", "template", "typename", "namespace", "using", "public", "private", "protected", "virtual", "override", "inline", "constexpr", "static", "const", "auto", "new", "delete", "nullptr", "true", "false", "return", "if", "else", "switch", "case", "default", "for", "while", "do", "break", "continue", "try", "catch", "throw", "operator", "friend", "explicit", "enum", "union"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
   "rust": { keywords: ["fn", "let", "mut", "const", "static", "struct", "enum", "trait", "impl", "for", "in", "while", "loop", "if", "else", "match", "return", "break", "continue", "pub", "crate", "mod", "use", "as", "where", "unsafe", "async", "await", "move", "dyn", "ref", "self", "Self", "true", "false", "Some", "None", "Ok", "Err", "Vec", "String", "u8", "u32", "u64", "usize", "i32", "i64", "isize", "f32", "f64", "bool", "char", "str"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\""] },
@@ -67,6 +70,12 @@ const ALIASES: Record<string, string> = {
   "console": "sh",
   "terminal": "sh",
   "shellsession": "sh",
+  "java": "java",
+  "jvm": "java",
+  "kotlin": "java",
+  "kt": "java",
+  "scala": "java",
+  "groovy": "java",
   "powershell": "ps",
   "pwsh": "ps",
   "ps1": "ps",
@@ -102,6 +111,7 @@ type Scanner = {
   stringDelims: string[];
   tripleStringDelims?: [string, string][];
   caseInsensitive: boolean;
+  builtinSet: Set<string>;
   /** HTML mode: tag names, attributes and text need structural context. */
   isHtml?: boolean;
   /** CSS mode: brace depth separates selectors from properties. */
@@ -118,6 +128,7 @@ function buildScanner(family: Family): Scanner {
     stringDelims: family.stringDelims ?? [],
     tripleStringDelims: family.tripleStringDelims,
     caseInsensitive: family.caseInsensitive ?? false,
+    builtinSet: new Set((family.builtins ?? []).map((builtin) => (family.caseInsensitive ? builtin.toLowerCase() : builtin))),
     isHtml: normalizedHtml(family),
     isCss: normalizedCss(family),
     inTag: false,
@@ -268,10 +279,15 @@ export function highlightCode(code: string, language: string): CodeToken[][] {
         }
       } else if (isKeyword(scanner, word)) {
         push("keyword", word);
+      } else if (scanner.builtinSet.has(probe)) {
+        push("function", word);
       } else if (isCall) {
         push("function", word);
       } else if (word.startsWith("$")) {
         push("keyword", word);
+      } else if (/^[A-Z][A-Z0-9_]{2,}$/.test(word)) {
+        // SCREAMING_SNAKE constants read like literal values.
+        push("number", word);
       } else if (/^[A-Z]/.test(word)) {
         push("type", word);
       } else {
