@@ -162,11 +162,19 @@ type LoadFn = (input: { agentId: string }) => Promise<{ comments: ReviewComment[
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** Saves queued by the debounce or with an RPC in flight. */
 let inFlightSaves = 0;
+/** When the oldest in-flight save started, to bound the refresh block. */
+let oldestInFlightAt: number | null = null;
 
-/** True while local mutations have not reached the daemon yet: refreshes must
- * wait, or a poll would resurrect comments a just-executed delete removed. */
+/**
+ * True while local mutations have not reached the daemon yet: refreshes must
+ * wait, or a poll would resurrect comments a just-executed delete removed.
+ * Bounded at 5s so a hung RPC cannot block hydration forever.
+ */
 export function hasPendingSaves(): boolean {
-  return saveTimers.size > 0 || inFlightSaves > 0;
+  if (saveTimers.size > 0) return true;
+  if (inFlightSaves > 0 && Date.now() - (oldestInFlightAt ?? 0) < 5000) return true;
+  if (inFlightSaves === 0) oldestInFlightAt = null;
+  return false;
 }
 
 /** Pushes the agent's comments to the daemon store, debounced per agent. */
@@ -181,6 +189,7 @@ export function scheduleSave(
     setTimeout(() => {
       saveTimers.delete(agentId);
       inFlightSaves += 1;
+      if (oldestInFlightAt === null) oldestInFlightAt = Date.now();
       void save({
         agentId,
         comments: getComments().filter((comment) => comment.agentId === agentId),
@@ -189,6 +198,10 @@ export function scheduleSave(
         .catch(() => {})
         .finally(() => {
           inFlightSaves -= 1;
+          if (inFlightSaves <= 0) {
+            inFlightSaves = 0;
+            oldestInFlightAt = null;
+          }
         });
     }, 300),
   );
