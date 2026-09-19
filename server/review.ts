@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
@@ -44,7 +44,11 @@ function persist(): void {
   writeChain = writeChain.then(() => {
     try {
       mkdirSync(path.dirname(dataPath), { recursive: true });
-      writeFileSync(dataPath, JSON.stringify(load(), null, 2));
+      // Atomic replace: a crash mid-write must not truncate the store. The
+      // loader treats a corrupt file as empty, which would lose every comment.
+      const tmp = `${dataPath}.tmp`;
+      writeFileSync(tmp, JSON.stringify(load(), null, 2));
+      renameSync(tmp, dataPath);
     } catch (error) {
       console.error("inline-review: failed to persist comments", error);
     }
@@ -53,6 +57,13 @@ function persist(): void {
 
 export function getAgentComments(agentId: string): ReviewComment[] {
   return load().agents[agentId] ?? [];
+}
+
+/** Keeps tombstones bounded: deletions are repair metadata, not history. */
+const MAX_TOMBSTONES_PER_AGENT = 200;
+
+function pruneTombstones(ids: string[]): string[] {
+  return ids.length <= MAX_TOMBSTONES_PER_AGENT ? ids : ids.slice(-MAX_TOMBSTONES_PER_AGENT);
 }
 
 function setAgentComments(
@@ -66,7 +77,7 @@ function setAgentComments(
   // tombstone wins over any comment body.
   const tombstones = new Set(store.deleted[agentId] ?? []);
   for (const id of deleted) tombstones.add(id);
-  store.deleted[agentId] = [...tombstones];
+  store.deleted[agentId] = pruneTombstones([...tombstones]);
   const alive = validated.filter((comment) => !tombstones.has(comment.id));
   if (alive.length === 0) {
     delete store.agents[agentId];
