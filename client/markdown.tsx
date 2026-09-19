@@ -324,7 +324,7 @@ function useStyles(theme: PluginTheme, compact: boolean) {
       codeFontSize: compact ? 12 : 13,
       tableFontSize: compact ? 12 : 13,
       cell: { padding: 6 } as const,
-      blockGap: { gap: compact ? 6 : 8 } as const,
+      blockGap: { gap: compact ? 10 : 14 } as const,
       paragraph: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22 } as const,
       paragraphLine: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22 } as const,
       codeBlock: {
@@ -424,22 +424,25 @@ export function MarkdownText({
             );
           case "heading":
             return (
-              <Text
+              <MarkdownSpan
                 key={index}
+                uiTextView
                 style={{
                   color: theme.colors.foreground,
                   fontWeight: "700",
+                  marginTop: block.level === 1 ? 10 : 8,
+                  marginBottom: 2,
                   fontSize: compact
-                    ? block.level === 1 ? 18 : block.level === 2 ? 16 : 15
-                    : block.level === 1 ? 20 : block.level === 2 ? 18 : 15,
+                    ? block.level === 1 ? 20 : block.level === 2 ? 17 : block.level === 3 ? 16 : 15
+                    : block.level === 1 ? 22 : block.level === 2 ? 19 : block.level === 3 ? 17 : 16,
                 }}
               >
                 <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} />
-              </Text>
+              </MarkdownSpan>
             );
           case "bullet":
             return (
-              <View key={index} style={{ gap: 2 }}>
+              <View key={index} style={{ gap: 6 }}>
                 {block.items.map((item, itemIndex) => (
                   <View key={itemIndex} style={[styles.listRow, { paddingLeft: 14 * item.level }]}>
                     {item.task ? (
@@ -449,22 +452,22 @@ export function MarkdownText({
                     ) : (
                       <Text style={styles.marker}>{"\u2022"}</Text>
                     )}
-                    <Text style={styles.paragraph}>
-                      <InlineRun tokens={item.spans} theme={theme} styles={styles} />
-                    </Text>
+                    <MarkdownSpan style={styles.paragraph} uiTextView selectable={selectable}>
+                      <InlineRun tokens={item.spans} theme={theme} styles={styles} selectable={selectable} />
+                    </MarkdownSpan>
                   </View>
                 ))}
               </View>
             );
           case "ordered":
             return (
-              <View key={index} style={{ gap: 2 }}>
+              <View key={index} style={{ gap: 6 }}>
                 {block.items.map((item, itemIndex) => (
                   <View key={itemIndex} style={[styles.listRow, { paddingLeft: 14 * item.level }]}>
                     <Text style={styles.marker}>{item.marker}.</Text>
-                    <Text style={styles.paragraph}>
-                      <InlineRun tokens={item.spans} theme={theme} styles={styles} />
-                    </Text>
+                    <MarkdownSpan style={styles.paragraph} uiTextView selectable={selectable}>
+                      <InlineRun tokens={item.spans} theme={theme} styles={styles} selectable={selectable} />
+                    </MarkdownSpan>
                   </View>
                 ))}
               </View>
@@ -475,9 +478,9 @@ export function MarkdownText({
                 key={index}
                 style={[styles.quote, { marginLeft: 10 * Math.max(0, block.depth - 1) }]}
               >
-                <Text style={styles.quoteText}>
+                <MarkdownSpan style={styles.quoteText} uiTextView>
                   <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} />
-                </Text>
+                </MarkdownSpan>
               </View>
             );
           case "table":
