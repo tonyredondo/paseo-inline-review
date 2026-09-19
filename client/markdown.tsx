@@ -334,7 +334,10 @@ function CodeBlockView({
                 ))}
               </View>
               <ScrollView horizontal showsHorizontalScrollIndicator style={{ flex: 1 }}>
-                <View style={{ flexDirection: "row", flexWrap: "nowrap", paddingLeft: 10 }}>
+                {/* Column layout: the container width grows to the longest
+                    line, so the horizontal scroll range is right and each
+                    line stays on its own row, aligned with its number. */}
+                <View style={{ alignItems: "flex-start", paddingLeft: 10 }}>
                   {lines.map((line, lineIndex) => (
                     <Text
                       key={lineIndex}
