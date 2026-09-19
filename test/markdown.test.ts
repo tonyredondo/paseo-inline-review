@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseBlocks, parseInline, type Block, type InlineToken } from "../shared/markdown-parse.ts";
 import * as syntax from "../shared/syntax.ts";
+import { lastAssistantTracker } from "../client/last-assistant.ts";
 
 function first(blocks: Block[]): Block {
   assert.ok(blocks.length > 0, "expected at least one block");
@@ -730,3 +731,28 @@ test("looksLikeSentReview detects formatted reviews with and without a note", ()
 function syntaxLooks(text: string): boolean {
   return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: "/.test(text);
 }
+
+// --- last assistant tracker ---
+
+test("last-assistant tracker: latest assistant message wins, others unchanged", () => {
+  const agent = "last-agent-1";
+  const tracker = lastAssistantTracker;
+  tracker.observe(agent, { type: "assistant_message", messageId: "l1" });
+  assert.equal(tracker.isLast(agent, "l1"), true);
+  tracker.observe(agent, { type: "assistant_message", messageId: "l2" });
+  assert.equal(tracker.isLast(agent, "l1"), false);
+  assert.equal(tracker.isLast(agent, "l2"), true);
+});
+
+test("last-assistant tracker: user messages and id-less items are ignored", () => {
+  const agent = "last-agent-2";
+  lastAssistantTracker.observe(agent, { type: "assistant_message", messageId: "keep" });
+  lastAssistantTracker.observe(agent, { type: "user_message", messageId: "u1" });
+  lastAssistantTracker.observe(agent, { type: "assistant_message", messageId: null });
+  assert.equal(lastAssistantTracker.isLast(agent, "keep"), true);
+  assert.equal(lastAssistantTracker.isLast(agent, null), false);
+});
+
+test("last-assistant tracker: unknown agent is never last", () => {
+  assert.equal(lastAssistantTracker.isLast("last-agent-unknown", "m"), false);
+});
