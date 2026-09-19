@@ -322,8 +322,8 @@ function CodeBlockView({
   const allLines = useMemo(() => highlightCode(code, language), [code, language]);
   // Very long dumps collapse: first COLLAPSE_LINES + an expander.
   const [showAll, setShowAll] = useState(false);
-  // Desktop starts in scroll mode (editor-like); wrap mode swaps to wrapping.
-  const [wrapMode, setWrapMode] = useState(Platform.OS !== "web");
+  // Scroll mode is the default everywhere; wrap is the secondary option.
+  const [wrapMode, setWrapMode] = useState(false);
   const collapsed = allLines.length > CODE_COLLAPSE_LINES && !showAll;
   const lines = collapsed ? allLines.slice(0, CODE_COLLAPSE_LINES) : allLines;
   // Fixed custom palette (One Dark-inspired), vivid on the black background.
