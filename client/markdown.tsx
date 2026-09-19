@@ -28,6 +28,9 @@ import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
 // Android breaks long words natively, so this is iOS-only.
 const ZWSP = "\u200B";
 
+/** Code blocks longer than this collapse behind a "Show more" control. */
+const CODE_COLLAPSE_LINES = 40;
+
 function breakLongWords(text: string): string {
   if (Platform.OS !== "ios") return text;
   return text
@@ -45,7 +48,8 @@ async function openLink(
   url: string,
   openUrlViaDaemon: ((input: { url: string }) => Promise<{ ok: boolean }>) | null,
 ): Promise<void> {
-  if (!isValidHttpUrl(url)) return;
+  // mailto: and other schemes skip the http check; the OS opener routes them.
+  if (!url.startsWith("mailto:") && !isValidHttpUrl(url)) return;
   // 1. Host-injected external opener (system browser) when the app provides it.
   if (typeof openExternalUrl === "function") {
     try {
@@ -315,7 +319,13 @@ function CodeBlockView({
       if (timerRef.current !== null) clearTimeout(timerRef.current);
     };
   }, []);
-  const lines = useMemo(() => highlightCode(code, language), [code, language]);
+  const allLines = useMemo(() => highlightCode(code, language), [code, language]);
+  // Very long dumps collapse: first COLLAPSE_LINES + an expander.
+  const [showAll, setShowAll] = useState(false);
+  // Desktop starts in scroll mode (editor-like); wrap mode swaps to wrapping.
+  const [wrapMode, setWrapMode] = useState(Platform.OS !== "web");
+  const collapsed = allLines.length > CODE_COLLAPSE_LINES && !showAll;
+  const lines = collapsed ? allLines.slice(0, CODE_COLLAPSE_LINES) : allLines;
   // Fixed custom palette (One Dark-inspired), vivid on the black background.
   const darkPalette = {
     plain: "#d7dce3",
@@ -369,7 +379,7 @@ function CodeBlockView({
         const gutterWidth = Math.max(2, digits) * styles.codeFontSize * 0.6 + 8;
         const gutterColor = "#565e69";
         const gutterRule = "rgba(139,148,158,0.25)";
-        if (Platform.OS === "web") {
+        if (Platform.OS === "web" && !wrapMode) {
           return (
             <View style={{ flexDirection: "row", alignItems: "stretch" }}>
               <View
@@ -413,6 +423,7 @@ function CodeBlockView({
             </View>
           );
         }
+        const webWrap = Platform.OS === "web" && wrapMode;
         return (
           <View>
             {lines.map((line, lineIndex) => (
@@ -433,6 +444,7 @@ function CodeBlockView({
                       borderLeftWidth: StyleSheet.hairlineWidth,
                       borderLeftColor: gutterRule,
                       paddingLeft: 10,
+                      ...(webWrap ? ({ whiteSpace: "pre-wrap" } as object) : null),
                     },
                   ]}
                 >
@@ -447,6 +459,28 @@ function CodeBlockView({
           </View>
         );
       })()}
+      {collapsed ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Show more lines"
+          onPress={() => setShowAll(true)}
+          style={{ paddingTop: 6 }}
+        >
+          <Text style={{ color: "#58a6ff", fontSize: 11 }}>
+            {`Show ${allLines.length - lines.length} more lines`}
+          </Text>
+        </Pressable>
+      ) : null}
+      {Platform.OS === "web" ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={wrapMode ? "Scroll long lines" : "Wrap long lines"}
+          onPress={() => setWrapMode((value) => !value)}
+          style={{ paddingTop: 6 }}
+        >
+          <Text style={{ color: "#8b949e", fontSize: 11 }}>{wrapMode ? "Scroll" : "Wrap"}</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -681,6 +715,13 @@ export function MarkdownText({
               warning: "Warning",
               caution: "Caution",
             };
+            const alertIcons: Record<string, string> = {
+              note: "Info",
+              tip: "Lightbulb",
+              important: "CircleAlert",
+              warning: "TriangleAlert",
+              caution: "OctagonAlert",
+            };
             const alertColor = alertColors[block.alertType] ?? "#58a6ff";
             return (
               <View
@@ -695,9 +736,12 @@ export function MarkdownText({
                   gap: 4,
                 }}
               >
-                <MarkdownSpan style={{ color: alertColor, fontWeight: "700", fontSize: compact ? 13 : 14 }}>
-                  {alertLabels[block.alertType]}
-                </MarkdownSpan>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Icon name={alertIcons[block.alertType] ?? "Info"} size={14} color={alertColor} />
+                  <MarkdownSpan style={{ color: alertColor, fontWeight: "700", fontSize: compact ? 13 : 14 }}>
+                    {alertLabels[block.alertType]}
+                  </MarkdownSpan>
+                </View>
                 <MarkdownText
                   text={block.lines.join("\n")}
                   theme={theme}

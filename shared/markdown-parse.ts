@@ -314,7 +314,7 @@ export function parseBlocks(text: string): Block[] {
 }
 
 const inlinePattern =
-  /(\*\*(?:[^*]|\*(?!\*))+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[\^[^\]\s]+\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+|www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s)]*)?)/g;
+  /(\*\*(?:[^*]|\*(?!\*))+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[\^[^\]\s]+\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+|www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s)]*)?|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/g;
 
 /**
  * Consumes wrapped and indented continuation lines of a list item:
@@ -509,6 +509,8 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
           tokens.push({ type: "text", text: token });
         }
       }
+    } else if (/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$/.test(token)) {
+      tokens.push({ type: "link", text: token, url: `mailto:${token}` });
     } else {
       // www.example.com autolinks through https.
       tokens.push({ type: "link", text: token, url: token.startsWith("www.") ? `https://${token}` : token });

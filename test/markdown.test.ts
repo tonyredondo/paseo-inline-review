@@ -686,3 +686,33 @@ test("alert after other blocks stays isolated", () => {
   const blocks = parseBlocks("para\n\n> [!WARNING]\n> careful\n\ntail");
   assert.deepEqual(kinds(blocks), ["p", "alert", "p"]);
 });
+
+// --- email autolinks ---
+
+test("emails autolink as mailto", () => {
+  const tokens = parseInline("mail me at foo.bar@example.com now");
+  assert.deepEqual(inlineTypes(tokens), ["text", "link", "text"]);
+  const link = tokens.find((tk) => tk.type === "link");
+  assert.ok(link && link.type === "link" && link.url === "mailto:foo.bar@example.com");
+});
+
+test("emails inside code spans stay code", () => {
+  const tokens = parseInline("config `user@example.com` stays");
+  assert.ok(tokens.some((tk) => tk.type === "code" && tk.text === "user@example.com"));
+  assert.ok(tokens.every((tk) => tk.type !== "link"));
+});
+
+test("mentions without domain stay plain", () => {
+  assert.ok(parseInline("ping @tony about it").every((tk) => tk.type !== "link"));
+});
+
+test("emails inside urls do not break url autolink", () => {
+  const tokens = parseInline("see https://example.com/~user@mail.com/page");
+  assert.deepEqual(inlineTypes(tokens), ["text", "link"]);
+  const link = tokens.find((tk) => tk.type === "link");
+  assert.ok(link && link.type === "link" && link.url.startsWith("https://"));
+});
+
+test("incomplete domains stay plain", () => {
+  assert.ok(parseInline("write user@localhost").every((tk) => tk.type !== "link"));
+});
