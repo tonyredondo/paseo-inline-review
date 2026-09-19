@@ -5,7 +5,7 @@ import {
   TextInput,
   useRevealedText,
 } from "@getpaseo/plugin/client/react-native";
-import { usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { useRpc } from "@getpaseo/plugin/client";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
@@ -30,7 +30,6 @@ import {
   updateComment,
 } from "./review-store";
 import { MarkdownText } from "./markdown";
-import { turnClassifier } from "./turn-classifier";
 import { extractRefDefs } from "../shared/markdown-parse";
 
 type EditingTarget = {
@@ -49,15 +48,10 @@ type EditingTarget = {
  * - Without one (id-less messages): the saved paragraph snapshot must equal
  *   the paragraph exactly, in a message that has no id either.
  */
-/**
- * A captured streaming snapshot may be a prefix of the completed paragraph.
- * Prefix matching requires a substantial capture so short quotes cannot steal
- * anchors across messages (exact matches are always accepted).
- */
+/** A captured streaming snapshot may be a prefix of the completed paragraph. */
 function matchesCapturedText(captured: string, paragraph: string | undefined): boolean {
   if (paragraph === undefined) return false;
-  if (paragraph === captured) return true;
-  return captured.length >= 40 && paragraph.startsWith(captured);
+  return paragraph === captured || paragraph.startsWith(captured);
 }
 
 function commentAnchorsHere(
@@ -220,20 +214,6 @@ function ReviewAssistantMessage({
   const refs = useMemo(() => extractRefDefs(data.text), [data.text]);
   const load = useRpc(loadCommentsRpc);
   const persistComments = useRpc(saveCommentsRpc);
-  const paseo = usePaseo();
-  const roleVersion = useSyncExternalStore(
-    (listener) => turnClassifier.subscribe(agentId, listener),
-    () => turnClassifier.roleVersion(agentId),
-  );
-  const role = useMemo(
-    () => turnClassifier.role(agentId, data.messageId),
-    [roleVersion, agentId, data.messageId],
-  );
-  const [expanded, setExpanded] = useState(false);
-  // Classify once per agent: full timeline rebuild + live subscription.
-  useEffect(() => {
-    void turnClassifier.ensure(paseo, agentId);
-  }, [agentId, paseo]);
   // Hydrate persisted comments once per mount, and keep the daemon store in
   // sync (debounced) whenever this agent's comments change.
   useEffect(() => {
@@ -254,19 +234,14 @@ function ReviewAssistantMessage({
     for (const comment of comments) {
       const storedParagraph = paragraphs[comment.paragraphIndex];
       const storedMatches = matchesCapturedText(comment.paragraphText, storedParagraph);
-      if (comment.messageId === null) {
-        // Adoption across messages requires an exact paragraph match: fuzzy
-        // prefixes would let one message steal another message's comment.
-        const exact = paragraphs.indexOf(comment.paragraphText);
-        if (exact !== -1) relocateComment(comment.id, data.messageId, exact);
-      } else if (!storedMatches) {
-        // Heal index drift inside the same message: prefer exact, then a long
-        // prefix (streaming snapshot).
+      if (comment.messageId === null || !storedMatches) {
         let index = paragraphs.indexOf(comment.paragraphText);
         if (index === -1) {
           index = paragraphs.findIndex((paragraph) => matchesCapturedText(comment.paragraphText, paragraph));
         }
-        if (index !== -1) relocateComment(comment.id, data.messageId, index);
+        if (index !== -1) {
+          relocateComment(comment.id, data.messageId, index);
+        }
       }
     }
   }, [comments, paragraphs, data.messageId]);
@@ -359,22 +334,9 @@ function ReviewAssistantMessage({
     setEditing(null);
   }
 
-  // Intermediate messages render dimmed; the final message of the turn gets a
-  // subtle accent border to stand apart. No collapsing: user decision after
-  // trying the grouped experiment.
-  const isIntermediate = role === "intermediate" && data.phase === "complete";
-  const isFinal = role === "final";
   return (
-    <View
-      style={[
-        styles.root,
-        isIntermediate ? { opacity: 0.75 } : null,
-        isFinal
-          ? { borderLeftWidth: 3, borderLeftColor: theme.colors.accent, paddingLeft: 10 }
-          : null,
-      ]}
-    >
-{paragraphs.map((paragraph, index) => {
+    <View style={styles.root}>
+      {paragraphs.map((paragraph, index) => {
         const anchored = comments.filter((comment) =>
           commentAnchorsHere(data, paragraph, index, comment),
         );

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseBlocks, parseInline, type Block, type InlineToken } from "../shared/markdown-parse.ts";
 import * as syntax from "../shared/syntax.ts";
-import { turnClassifier } from "../client/turn-classifier.ts";
 
 function first(blocks: Block[]): Block {
   assert.ok(blocks.length > 0, "expected at least one block");
@@ -731,72 +730,3 @@ test("looksLikeSentReview detects formatted reviews with and without a note", ()
 function syntaxLooks(text: string): boolean {
   return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: "/.test(text);
 }
-
-// --- turn classifier: intermediate vs final assistant messages ---
-
-test("turn classifier: last assistant of a turn is final, earlier ones intermediate", () => {
-  const agent = "cls-agent-1";
-  turnClassifier.observe(agent, { type: "assistant_message", messageId: "m1" }, "t1");
-  turnClassifier.observe(agent, { type: "assistant_message", messageId: "m2" }, "t1");
-  assert.equal(turnClassifier.role(agent, "m1"), "intermediate");
-  assert.equal(turnClassifier.role(agent, "m2"), "final");
-});
-
-test("turn classifier: different turns do not interfere", () => {
-  const agent = "cls-agent-2";
-  turnClassifier.observe(agent, { type: "assistant_message", messageId: "a1" }, "t1");
-  turnClassifier.observe(agent, { type: "assistant_message", messageId: "b1" }, "t2");
-  assert.equal(turnClassifier.role(agent, "a1"), "final");
-  assert.equal(turnClassifier.role(agent, "b1"), "final");
-});
-
-test("turn classifier: messages without id stay unknown", () => {
-  const agent = "cls-agent-3";
-  turnClassifier.observe(agent, { type: "assistant_message", messageId: null }, "t1");
-  assert.equal(turnClassifier.role(agent, null), "unknown");
-  assert.equal(turnClassifier.role(agent, "never-seen"), "unknown");
-});
-
-test("turn classifier: unknown agent stays unknown", () => {
-  assert.equal(turnClassifier.role("cls-agent-x", "m"), "unknown");
-});
-
-// --- turn group card anchoring ---
-
-test("turn classifier: first intermediate anchors the group, others group away", () => {
-  const agent = "cls-group-1";
-  turnClassifier.observe(agent, { type: "assistant_message", messageId: "g1", text: "first plan" }, "t1");
-  turnClassifier.observe(agent, { type: "assistant_message", messageId: "g2", text: "second note" }, "t1");
-  turnClassifier.observe(agent, { type: "assistant_message", messageId: "g3", text: "---" }, "t1");
-  const group = turnClassifier.turnGroup(agent, "g1");
-  assert.ok(group);
-  assert.equal(group ? group.messages.length : 0, 2);
-  assert.equal(turnClassifier.isGroupedAway(agent, "g2"), true);
-  // g3 is still the latest of its turn: it renders as the final answer.
-  assert.equal(turnClassifier.isGroupedAway(agent, "g3"), false);
-  assert.equal(turnClassifier.turnGroup(agent, "g2"), null);
-});
-
-test("turn classifier: intermediate messages with no useful text preview to empty", () => {
-  // previewOf logic mirror: only "---" texts produce an empty preview
-  const preview = (texts: string[]) => {
-    for (const text of texts) {
-      const cleaned = text.replace(/\s+/g, " ").trim();
-      if (cleaned.length > 0 && !/^-+$/.test(cleaned)) return cleaned;
-    }
-    return "";
-  };
-  assert.equal(preview(["---", "real text here"]), "real text here");
-  assert.equal(preview(["---", ""]), "");
-});
-
-test("turn classifier: a sent-review plugin item acts as a turn boundary", () => {
-  const agent = "cls-plugin-boundary";
-  // Projected timelines replace the user message with our plugin item.
-  turnClassifier.observe(agent, { type: "assistant_message", messageId: "p1" }, "t1");
-  turnClassifier.observe(agent, { type: "plugin", kind: "inline-review-sent", messageId: "p2" }, "t1");
-  turnClassifier.observe(agent, { type: "assistant_message", messageId: "p3" }, "t1");
-  // p1 stays final of its own turn; p3 is final of the next turn.
-  assert.equal(turnClassifier.role(agent, "p1"), "final");
-  assert.equal(turnClassifier.role(agent, "p3"), "final");
-});
