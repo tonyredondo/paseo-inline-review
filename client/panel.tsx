@@ -62,6 +62,7 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
     () => ({
       root: { flex: 1, padding: layout.compact ? 16 : 24, gap: 12, backgroundColor: theme.colors.surface0 } as const,
       titleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" } as const,
+      titleActions: { flexDirection: "row", alignItems: "center", gap: 14 } as const,
       title: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 22, fontWeight: "600" } as const,
       clearText: { color: theme.colors.statusDanger, fontSize: 13 } as const,
       markSentText: { color: theme.colors.statusSuccess, fontSize: 13 } as const,
@@ -158,14 +159,16 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
     <View style={styles.root}>
       <View style={styles.titleRow}>
         <Text style={styles.title}>Review ({comments.length})</Text>
-        {comments.length > 0 ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="Mark all comments as sent" hitSlop={6} onPress={markAllSent}>
-            <Text style={styles.markSentText}>Mark all as sent</Text>
+        <View style={styles.titleActions}>
+          {comments.length > 0 ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="Mark all comments as sent" hitSlop={6} onPress={markAllSent}>
+              <Text style={styles.markSentText}>Mark all as sent</Text>
+            </Pressable>
+          ) : null}
+          <Pressable accessibilityRole="button" accessibilityLabel="Clear comments" hitSlop={6} onPress={clear}>
+            <Text style={styles.clearText}>Clear</Text>
           </Pressable>
-        ) : null}
-        <Pressable accessibilityRole="button" accessibilityLabel="Clear comments" hitSlop={6} onPress={clear}>
-          <Text style={styles.clearText}>Clear</Text>
-        </Pressable>
+        </View>
       </View>
       {comments.length === 0 ? (
         <Text style={styles.empty}>
