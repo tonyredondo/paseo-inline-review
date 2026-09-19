@@ -430,8 +430,8 @@ export function MarkdownText({
                 style={{
                   color: theme.colors.foreground,
                   fontWeight: "700",
-                  marginTop: block.level === 1 ? 10 : 8,
-                  marginBottom: 2,
+                  marginTop: block.level === 1 ? 16 : 12,
+                  marginBottom: 6,
                   fontSize: compact
                     ? block.level === 1 ? 20 : block.level === 2 ? 17 : block.level === 3 ? 16 : 15
                     : block.level === 1 ? 22 : block.level === 2 ? 19 : block.level === 3 ? 17 : 16,
