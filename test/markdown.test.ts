@@ -81,7 +81,7 @@ test("multi-line quote merges into one block", () => {
   const blocks = parseBlocks("> line one\n> line two");
   const block = first(blocks);
   if (block.kind !== "quote") throw new Error("expected quote");
-  assert.equal(block.text, "line one line two");
+  assert.equal(block.text, "line one\nline two");
 });
 
 test("GFM table with alignment and short rows", () => {
@@ -543,4 +543,36 @@ test("content before details is unaffected", () => {
 test("unclosed details consumes to end", () => {
   const blocks = parseBlocks("<details>\n<summary>s</summary>\nnever closed");
   assert.deepEqual(kinds(blocks), ["details"]);
+});
+
+// --- rich content inside quotes (tables, fences, lists) ---
+
+test("table inside a quote parses as nested markdown", () => {
+  const blocks = parseBlocks("> | col a | col b |\n> | --- | --- |\n> | 1 | 2 |");
+  assert.equal(blocks[0].kind, "quote");
+  if (blocks[0].kind !== "quote") throw new Error("expected quote");
+  assert.ok(blocks[0].text.includes("| 1 | 2 |"));
+  const inner = parseBlocks(blocks[0].text);
+  assert.deepEqual(kinds(inner), ["table"]);
+});
+
+test("fenced code inside a quote parses as code", () => {
+  const blocks = parseBlocks("> ```go\n> x := 1\n> ```");
+  if (blocks[0].kind !== "quote") throw new Error("expected quote");
+  const inner = parseBlocks(blocks[0].text);
+  assert.deepEqual(kinds(inner), ["code"]);
+  assert.ok(inner[0].kind === "code" && inner[0].language === "go");
+});
+
+test("lists inside a quote parse as list blocks", () => {
+  const blocks = parseBlocks("> - one\n> - two");
+  if (blocks[0].kind !== "quote") throw new Error("expected quote");
+  const inner = parseBlocks(blocks[0].text);
+  assert.deepEqual(kinds(inner), ["bullet"]);
+});
+
+test("deep quotes still parse as separate depth blocks", () => {
+  const blocks = parseBlocks("> outer\n>> inner");
+  assert.ok(blocks[0].kind === "quote" && blocks[0].depth === 1);
+  assert.ok(blocks[1].kind === "quote" && blocks[1].depth === 2);
 });

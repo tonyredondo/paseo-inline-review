@@ -695,14 +695,15 @@ export function MarkdownText({
             );
           }
           case "quote":
+            // Quote content re-parses as nested markdown, so tables, fences
+            // and lists inside a quote render fully. Deep quotes keep their
+            // indent through the recursive MarkdownText (depth via ">", ">>").
             return (
               <View
                 key={index}
                 style={[styles.quote, { marginLeft: 10 * Math.max(0, block.depth - 1) }]}
               >
-                <MarkdownSpan style={styles.quoteText} uiTextView>
-                  <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} />
-                </MarkdownSpan>
+                <MarkdownText text={block.text} theme={theme} compact={compact} refs={refs} selectable={selectable} />
               </View>
             );
           case "table":

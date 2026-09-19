@@ -190,7 +190,7 @@ export function parseBlocks(text: string): Block[] {
           lines: alertLines,
         });
       } else {
-        blocks.push({ kind: "quote", depth, text: parts.join(" ") });
+        blocks.push({ kind: "quote", depth, text: parts.join("\n") });
       }
       continue;
     }
