@@ -202,6 +202,16 @@ function InlineRun({
                 {`[${token.alt}]`}
               </MarkdownSpan>
             );
+          case "footnoteRef":
+            return (
+              <MarkdownSpan
+                key={index}
+                style={{ color: theme.colors.accent, fontSize: styles.codeFontSize - 1, fontWeight: "600" }}
+                selectable={selectable}
+              >
+                {`[^${token.label}]`}
+              </MarkdownSpan>
+            );
           case "link":
             return (
               <MarkdownSpan
@@ -643,6 +653,17 @@ export function MarkdownText({
                 selectable={selectable}
                 styles={styles}
               />
+            );
+          }
+          case "footnote": {
+            return (
+              <View key={index} style={{ gap: 2 }}>
+                <MarkdownSpan style={{ color: theme.colors.foregroundMuted, fontSize: compact ? 12 : 13 }} selectable={selectable}>
+                  <Text style={{ color: theme.colors.accent, fontWeight: "700" }}>{`[^${block.label}]`}</Text>
+                  {" "}
+                  <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} selectable={selectable} />
+                </MarkdownSpan>
+              </View>
             );
           }
           case "alert": {

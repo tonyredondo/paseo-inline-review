@@ -18,7 +18,8 @@ export type InlineToken =
   | { type: "code"; text: string }
   | { type: "strike"; text: string; tokens: InlineToken[] }
   | { type: "link"; text: string; url: string }
-  | { type: "image"; alt: string; url: string };
+  | { type: "image"; alt: string; url: string }
+  | { type: "footnoteRef"; label: string };
 
 export type ListItem = {
   level: number;
@@ -38,6 +39,7 @@ export type Block =
   | { kind: "quote"; depth: number; text: string }
   | { kind: "alert"; alertType: "note" | "tip" | "important" | "warning" | "caution"; lines: string[] }
   | { kind: "details"; summary: string; lines: string[] }
+  | { kind: "footnote"; label: string; text: string }
   | { kind: "table"; header: TableCell[]; rows: TableCell[][] }
   | { kind: "hr" };
 
@@ -51,6 +53,7 @@ const hrPattern = /^\s*(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
 const detailsOpenPattern = /^\s*<details\b/i;
 const detailsClosePattern = /^\s*<\/details>/i;
 const summaryPattern = /^\s*<summary>(.*)<\/summary>\s*$/i;
+const footnoteDefPattern = /^\s*\[\^([^\]]+)\]:\s*(.*)$/;
 const tableRowPattern = /^\s*\|.*\|\s*$|^\s*\|.*[^|]\s*$/;
 const tableSeparatorPattern =
   /^\s*\|?(?:\s*:?-{1,}:?\s*\|)+\s*:?-{1,}:?\s*\|?\s*$/;
@@ -165,6 +168,18 @@ export function parseBlocks(text: string): Block[] {
     if (heading) {
       blocks.push({ kind: "heading", level: heading[1].length, text: heading[2] });
       index += 1;
+      continue;
+    }
+    const footnoteDef = footnoteDefPattern.exec(line);
+    if (footnoteDef) {
+      const label = footnoteDef[1];
+      const content: string[] = [footnoteDef[2]];
+      index += 1;
+      while (index < lines.length && lines[index].trim().length > 0 && !quotePattern.test(lines[index]) && !fencePattern.test(lines[index])) {
+        content.push(lines[index].replace(/^(?:    |\t)?/, ""));
+        index += 1;
+      }
+      blocks.push({ kind: "footnote", label, text: content.join(" ").trim() });
       continue;
     }
     if (quotePattern.test(line)) {
@@ -299,7 +314,7 @@ export function parseBlocks(text: string): Block[] {
 }
 
 const inlinePattern =
-  /(\*\*(?:[^*]|\*(?!\*))+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+|www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s)]*)?)/g;
+  /(\*\*(?:[^*]|\*(?!\*))+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[\^[^\]\s]+\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+|www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s)]*)?)/g;
 
 /**
  * Consumes wrapped and indented continuation lines of a list item:
@@ -461,6 +476,8 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
       }
     } else if (token.startsWith("<br") && /^<br\s*\/?>$/i.test(token)) {
       tokens.push({ type: "break" });
+    } else if (/^\[\^[^\]\s]+\]$/.test(token)) {
+      tokens.push({ type: "footnoteRef", label: token.slice(2, -1) });
     } else if (token.startsWith("<") || token.startsWith("[")) {
       let handled = false;
       // [text][label] and [label] resolve only when the reference exists.
@@ -514,6 +531,9 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
     if (token.type === "bold" || token.type === "italic" || token.type === "strike") {
       // Nested tokens are already unescaped by the recursive call.
       return { ...token, text: replaceShortcodes(restore(token.text)) };
+    }
+    if (token.type === "footnoteRef") {
+      return token;
     }
     return { ...token, text: replaceShortcodes(restore(token.text)) };
   });

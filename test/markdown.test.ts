@@ -576,3 +576,43 @@ test("deep quotes still parse as separate depth blocks", () => {
   assert.ok(blocks[0].kind === "quote" && blocks[0].depth === 1);
   assert.ok(blocks[1].kind === "quote" && blocks[1].depth === 2);
 });
+
+// --- footnotes ---
+
+test("inline footnote reference tokenizes", () => {
+  const tokens = parseInline("as noted[^1] elsewhere");
+  assert.deepEqual(inlineTypes(tokens), ["text", "footnoteRef", "text"]);
+  const ref = tokens.find((tk) => tk.type === "footnoteRef");
+  assert.ok(ref && ref.type === "footnoteRef" && ref.label === "1");
+});
+
+test("footnote definition parses with label and text", () => {
+  const blocks = parseBlocks("[^1]: The source of this claim.");
+  assert.deepEqual(kinds(blocks), ["footnote"]);
+  const fn = blocks[0];
+  assert.ok(fn.kind === "footnote");
+  assert.ok(fn.kind === "footnote" && fn.label === "1" && fn.text === "The source of this claim.");
+});
+
+test("footnote definition keeps continuation lines", () => {
+  const blocks = parseBlocks("[^note]: first part\n    second part");
+  assert.ok(blocks[0].kind === "footnote");
+  assert.ok(blocks[0].kind === "footnote" && blocks[0].text === "first part second part");
+});
+
+test("footnote label allows words and dashes", () => {
+  const blocks = parseBlocks("[^my-source]: details here");
+  assert.ok(blocks[0].kind === "footnote");
+  assert.ok(blocks[0].kind === "footnote" && blocks[0].label === "my-source");
+});
+
+test("regular reference-style links are not footnote refs", () => {
+  assert.deepEqual(inlineTypes(parseInline("[a link][ref]")), ["text"]);
+  assert.deepEqual(inlineTypes(parseInline("[text]")), ["text"]);
+  assert.ok(parseInline("[a link][ref]").every((tk) => tk.type !== "footnoteRef"));
+});
+
+test("footnote defs and paragraphs interleave", () => {
+  const blocks = parseBlocks("body text[^1]\n\n[^1]: definition");
+  assert.deepEqual(kinds(blocks), ["p", "footnote"]);
+});
