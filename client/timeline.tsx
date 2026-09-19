@@ -2,6 +2,7 @@ import type { PluginClientContext, PluginTimelineItemProps } from "@getpaseo/plu
 import type { PluginTheme } from "@getpaseo/plugin";
 import {
   Icon,
+  Modal,
   TextInput,
   useRevealedText,
 } from "@getpaseo/plugin/client/react-native";
@@ -371,7 +372,7 @@ function ReviewAssistantMessage({
                 />
               </View>
             )}
-            {isEditing && (
+            {isEditing && layout.platform === "web" && (
               <View style={styles.editor}>
                 <TextInput
                   value={editing.draft}
@@ -426,6 +427,63 @@ function ReviewAssistantMessage({
           </View>
         );
       })}
+      {/* Mobile: the keyboard shrinks the viewport and can push the inline
+          editor off-screen. The host Modal integrates keyboard positioning, so
+          editing happens in a bottom sheet that keeps the quoted paragraph and
+          the input visible. Desktop keeps the inline editor. */}
+      {layout.platform !== "web" ? (
+        <Modal
+          title="Comment"
+          icon={<Icon name="MessageSquareQuote" size={14} color={theme.colors.accent} />}
+          open={editing !== null}
+          onOpenChange={(open) => {
+            if (!open) setEditing(null);
+          }}
+        >
+          <Modal.Content>
+            {editing ? (
+              <View style={{ gap: 10 }}>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic" }} numberOfLines={6}>
+                  {`"${editing.paragraphText}"`}
+                </Text>
+                <TextInput
+                  value={editing.draft}
+                  onChangeText={(draft) => setEditing({ ...editing, draft })}
+                  placeholder="Write your comment about this passage..."
+                  multiline
+                  autoFocus
+                  onKeyPress={(event) => {
+                    const native = event.nativeEvent as unknown as {
+                      key?: string;
+                      metaKey?: boolean;
+                      ctrlKey?: boolean;
+                    };
+                    if (native.key === "Enter" && (native.metaKey || native.ctrlKey)) {
+                      event.preventDefault?.();
+                      save();
+                    }
+                    if (native.key === "Escape") {
+                      event.preventDefault?.();
+                      setEditing(null);
+                    }
+                  }}
+                  style={styles.input}
+                />
+                <View style={{ flexDirection: "row", gap: 12 }}>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Save comment" onPress={save}>
+                    <Text style={{ color: theme.colors.accent, fontWeight: "600", fontSize: 14 }}>
+                      {editing.commentId ? "Update" : "Save"}
+                    </Text>
+                  </Pressable>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Cancel comment" onPress={() => setEditing(null)}>
+                    <Text style={{ color: theme.colors.foregroundMuted, fontSize: 14 }}>Cancel</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
+          </Modal.Content>
+        </Modal>
+      ) : null}
     </View>
   );
 }
