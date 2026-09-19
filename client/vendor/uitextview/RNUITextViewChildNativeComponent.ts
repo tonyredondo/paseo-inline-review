@@ -5,7 +5,7 @@ import type {
   Int32,
   WithDefault,
 } from 'react-native/Libraries/Types/CodegenTypes'
-import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNativeComponent'
+import { codegenNativeComponent } from 'react-native'
 
 interface TargetedEvent {
   target: Int32

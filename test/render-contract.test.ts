@@ -63,7 +63,7 @@ test("the vendored UITextView is loaded lazily, never at bundle load", () => {
   // codegenNativeComponent only exists on native builds; a static import of
   // the vendored module crashes the whole plugin entry on web/Android.
   const spanSource = String(readFileSync(path.resolve("client/markdown-span.tsx")));
-  assert.ok(!spanSource.includes('import { UITextView } from "./vendor/uitextview/Text.js"'));
-  assert.match(spanSource, /import\("\.\/vendor\/uitextview\/Text\.js"\)/);
+  assert.ok(!spanSource.includes('import { UITextView } from "./vendor/uitextview'));
+  assert.match(spanSource, /import\("\.\/vendor\/uitextview\/index\.js"\)/);
   assert.match(spanSource, /cachedUITextView/);
 });

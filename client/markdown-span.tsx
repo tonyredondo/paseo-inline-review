@@ -24,6 +24,9 @@ type UITextViewProps = {
 };
 
 let cachedUITextView: ComponentType<UITextViewProps> | null | undefined;
+// TEMPORARY DEBUG: surfaces why the UITextView module could not load, since
+// client-side errors never reach the daemon logs.
+export let uitextViewDebugInfo: string | null = null;
 
 export function MarkdownSpan({
   style,
@@ -44,13 +47,17 @@ export function MarkdownSpan({
 
   useEffect(() => {
     if (Platform.OS !== "ios" || cachedUITextView !== undefined) return;
-    void import("./vendor/uitextview/Text.js")
+    void import("./vendor/uitextview/index.js")
       .then((mod) => {
         cachedUITextView = mod.UITextView as ComponentType<UITextViewProps>;
+        uitextViewDebugInfo = "loaded";
         setSpanComponent(cachedUITextView);
+        console.log("inline-review: uitextview module loaded on iOS");
       })
-      .catch(() => {
+      .catch((error) => {
         cachedUITextView = null;
+        uitextViewDebugInfo = `load failed: ${String(error?.message ?? error)}`;
+        console.error("inline-review: uitextview load failed", error);
         setSpanComponent(null);
       });
   }, []);
@@ -66,10 +73,26 @@ export function MarkdownSpan({
           onPress={onPress ? () => onPress({} as never) : undefined}
         >
           {children}
+          {uitextViewDebugInfo && uitextViewDebugInfo !== "loaded" ? (
+            <Text style={{ color: "#f85149", fontSize: 9 }}>
+              {`[uitextview debug: ${uitextViewDebugInfo}]`}
+            </Text>
+          ) : null}
         </UITextViewSpan>
       );
     }
-    // UITextView module not available yet (or at all): plain selectable Text.
+    // UITextView module not available yet (or at all): plain selectable Text
+    // plus a visible debug hint for the user to screenshot.
+    if (uitextViewDebugInfo && uitextViewDebugInfo !== "loaded") {
+      return (
+        <Text style={style} onPress={onPress}>
+          {children}
+          <Text style={{ color: "#f85149", fontSize: 11 }}>
+            {` [uitextview debug: ${uitextViewDebugInfo}]`}
+          </Text>
+        </Text>
+      );
+    }
   }
   return (
     <Text selectable={selectable} style={style} onPress={onPress}>

@@ -1,12 +1,8 @@
 "use strict";
 
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.flattenStyles = flattenStyles;
-var _reactNative = require("react-native");
-function flattenStyles(rootStyle, style) {
-  const flattenedStyle = _reactNative.StyleSheet.flatten([rootStyle, style]);
+import { StyleSheet } from 'react-native';
+export function flattenStyles(rootStyle, style) {
+  const flattenedStyle = StyleSheet.flatten([rootStyle, style]);
   return {
     ...flattenedStyle,
     fontWeight: fontWeightToNativeProp(flattenedStyle.fontWeight ?? 'normal'),

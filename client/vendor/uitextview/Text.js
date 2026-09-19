@@ -1,22 +1,17 @@
 "use strict";
 
-Object.defineProperty(exports, "__esModule", {
-  value: true
-});
-exports.UITextView = UITextView;
-var _react = _interopRequireDefault(require("react"));
-var _reactNative = require("react-native");
-var _RNUITextViewChildNativeComponent = _interopRequireDefault(require("./RNUITextViewChildNativeComponent"));
-var _RNUITextViewNativeComponent = _interopRequireDefault(require("./RNUITextViewNativeComponent"));
-var _util = require("./util.js");
-var _jsxRuntime = require("react/jsx-runtime");
-function _interopRequireDefault(e) { return e && e.__esModule ? e : { default: e }; }
-const TextAncestorContext = /*#__PURE__*/_react.default.createContext([false, _reactNative.StyleSheet.create({})]);
+import React from 'react';
+import { Platform, StyleSheet, Text as RNText } from 'react-native';
+import RNUITextViewChildNativeComponent from './RNUITextViewChildNativeComponent';
+import RNUITextViewNativeComponent from './RNUITextViewNativeComponent';
+import { flattenStyles } from "./util.js";
+import { jsx as _jsx, Fragment as _Fragment } from "react/jsx-runtime";
+const TextAncestorContext = /*#__PURE__*/React.createContext([false, StyleSheet.create({})]);
 const textDefaults = {
   allowFontScaling: true,
   selectable: true
 };
-const useTextAncestorContext = () => _react.default.useContext(TextAncestorContext);
+const useTextAncestorContext = () => React.useContext(TextAncestorContext);
 
 /**
  * Event fired by `onSelectionChange`. `start`/`end` are 0-based UTF-16 indices
@@ -31,11 +26,11 @@ function UITextViewChild({
   const [isAncestor, rootStyle] = useTextAncestorContext();
 
   // Flatten the styles, and apply the root styles when needed
-  const flattenedStyle = _react.default.useMemo(() => (0, _util.flattenStyles)(rootStyle, style), [rootStyle, style]);
+  const flattenedStyle = React.useMemo(() => flattenStyles(rootStyle, style), [rootStyle, style]);
   if (!isAncestor) {
-    return /*#__PURE__*/(0, _jsxRuntime.jsx)(TextAncestorContext.Provider, {
+    return /*#__PURE__*/_jsx(TextAncestorContext.Provider, {
       value: [true, flattenedStyle],
-      children: /*#__PURE__*/(0, _jsxRuntime.jsx)(_RNUITextViewNativeComponent.default, {
+      children: /*#__PURE__*/_jsx(RNUITextViewNativeComponent, {
         ...textDefaults,
         ...rest,
         // ellipsizeMode={rest.ellipsizeMode ?? rest.lineBreakMode ?? 'tail'}
@@ -44,14 +39,14 @@ function UITextViewChild({
         ,
         onPress: undefined,
         onLongPress: undefined,
-        children: _react.default.Children.toArray(children).map((c, index) => {
-          if (/*#__PURE__*/_react.default.isValidElement(c)) {
+        children: React.Children.toArray(children).map((c, index) => {
+          if (/*#__PURE__*/React.isValidElement(c)) {
             return c;
           } else if (typeof c === 'string' || typeof c === 'number') {
             return (
               /*#__PURE__*/
               // @ts-expect-error @TODO fix this type
-              (0, _jsxRuntime.jsx)(_RNUITextViewChildNativeComponent.default, {
+              _jsx(RNUITextViewChildNativeComponent, {
                 style: flattenedStyle,
                 text: c.toString(),
                 ...rest
@@ -63,15 +58,15 @@ function UITextViewChild({
       })
     });
   } else {
-    return /*#__PURE__*/(0, _jsxRuntime.jsx)(_jsxRuntime.Fragment, {
-      children: _react.default.Children.toArray(children).map((c, index) => {
-        if (/*#__PURE__*/_react.default.isValidElement(c)) {
+    return /*#__PURE__*/_jsx(_Fragment, {
+      children: React.Children.toArray(children).map((c, index) => {
+        if (/*#__PURE__*/React.isValidElement(c)) {
           return c;
         } else if (typeof c === 'string' || typeof c === 'number') {
           return (
             /*#__PURE__*/
             // @ts-expect-error @TODO fix this type
-            (0, _jsxRuntime.jsx)(_RNUITextViewChildNativeComponent.default, {
+            _jsx(RNUITextViewChildNativeComponent, {
               style: flattenedStyle,
               text: c.toString(),
               ...rest
@@ -90,21 +85,21 @@ function UITextViewInner(props) {
   // normal selection (i.e. base RN text) if the text doesn't need to be
   // selectable
   if ((!props.selectable || !props.uiTextView) && !isAncestor) {
-    return /*#__PURE__*/(0, _jsxRuntime.jsx)(_reactNative.Text, {
+    return /*#__PURE__*/_jsx(RNText, {
       ...props
     });
   }
-  return /*#__PURE__*/(0, _jsxRuntime.jsx)(UITextViewChild, {
+  return /*#__PURE__*/_jsx(UITextViewChild, {
     ...props
   });
 }
-function UITextView(props) {
-  if (_reactNative.Platform.OS !== 'ios') {
-    return /*#__PURE__*/(0, _jsxRuntime.jsx)(_reactNative.Text, {
+export function UITextView(props) {
+  if (Platform.OS !== 'ios') {
+    return /*#__PURE__*/_jsx(RNText, {
       ...props
     });
   }
-  return /*#__PURE__*/(0, _jsxRuntime.jsx)(UITextViewInner, {
+  return /*#__PURE__*/_jsx(UITextViewInner, {
     ...props
   });
 }
