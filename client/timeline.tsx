@@ -5,7 +5,7 @@ import {
   TextInput,
   useRevealedText,
 } from "@getpaseo/plugin/client/react-native";
-import { useRpc } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
@@ -30,6 +30,7 @@ import {
   updateComment,
 } from "./review-store";
 import { MarkdownText } from "./markdown";
+import { turnClassifier } from "./turn-classifier";
 import { extractRefDefs } from "../shared/markdown-parse";
 
 type EditingTarget = {
@@ -214,6 +215,20 @@ function ReviewAssistantMessage({
   const refs = useMemo(() => extractRefDefs(data.text), [data.text]);
   const load = useRpc(loadCommentsRpc);
   const persistComments = useRpc(saveCommentsRpc);
+  const paseo = usePaseo();
+  const roleVersion = useSyncExternalStore(
+    (listener) => turnClassifier.subscribe(agentId, listener),
+    () => turnClassifier.roleVersion(agentId),
+  );
+  const role = useMemo(
+    () => turnClassifier.role(agentId, data.messageId),
+    [roleVersion, agentId, data.messageId],
+  );
+  const [expanded, setExpanded] = useState(false);
+  // Classify once per agent: full timeline rebuild + live subscription.
+  useEffect(() => {
+    void turnClassifier.ensure(paseo, agentId);
+  }, [agentId, paseo]);
   // Hydrate persisted comments once per mount, and keep the daemon store in
   // sync (debounced) whenever this agent's comments change.
   useEffect(() => {
@@ -334,9 +349,25 @@ function ReviewAssistantMessage({
     setEditing(null);
   }
 
+  const isIntermediate = role === "intermediate" && data.phase === "complete";
+  const isCollapsed = isIntermediate && !expanded;
   return (
-    <View style={styles.root}>
-      {paragraphs.map((paragraph, index) => {
+    <View style={[styles.root, isIntermediate ? { opacity: 0.75 } : null]}>
+      {isIntermediate ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={isCollapsed ? "Show intermediate message" : "Collapse intermediate message"}
+          onPress={() => setExpanded((value) => !value)}
+          style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 4 }}
+        >
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic", flex: 1 }} numberOfLines={1}>
+            {`Working note \u00b7 ${data.text.replace(/\s+/g, " ").trim().slice(0, 90)}`}
+          </Text>
+          <Text style={{ color: theme.colors.accent, fontSize: 12 }}>{isCollapsed ? "Show" : "Hide"}</Text>
+        </Pressable>
+      ) : null}
+      {!isCollapsed ? (
+      paragraphs.map((paragraph, index) => {
         const anchored = comments.filter((comment) =>
           commentAnchorsHere(data, paragraph, index, comment),
         );
@@ -438,7 +469,8 @@ function ReviewAssistantMessage({
             ))}
           </View>
         );
-      })}
+      })
+      ) : null}
     </View>
   );
 }

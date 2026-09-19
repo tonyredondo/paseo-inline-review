@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseBlocks, parseInline, type Block, type InlineToken } from "../shared/markdown-parse.ts";
 import * as syntax from "../shared/syntax.ts";
+import { turnClassifier } from "../client/turn-classifier.ts";
 
 function first(blocks: Block[]): Block {
   assert.ok(blocks.length > 0, "expected at least one block");
@@ -730,3 +731,32 @@ test("looksLikeSentReview detects formatted reviews with and without a note", ()
 function syntaxLooks(text: string): boolean {
   return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: "/.test(text);
 }
+
+// --- turn classifier: intermediate vs final assistant messages ---
+
+test("turn classifier: last assistant of a turn is final, earlier ones intermediate", () => {
+  const agent = "cls-agent-1";
+  turnClassifier.observe(agent, { type: "assistant_message", messageId: "m1" }, "t1");
+  turnClassifier.observe(agent, { type: "assistant_message", messageId: "m2" }, "t1");
+  assert.equal(turnClassifier.role(agent, "m1"), "intermediate");
+  assert.equal(turnClassifier.role(agent, "m2"), "final");
+});
+
+test("turn classifier: different turns do not interfere", () => {
+  const agent = "cls-agent-2";
+  turnClassifier.observe(agent, { type: "assistant_message", messageId: "a1" }, "t1");
+  turnClassifier.observe(agent, { type: "assistant_message", messageId: "b1" }, "t2");
+  assert.equal(turnClassifier.role(agent, "a1"), "final");
+  assert.equal(turnClassifier.role(agent, "b1"), "final");
+});
+
+test("turn classifier: messages without id stay unknown", () => {
+  const agent = "cls-agent-3";
+  turnClassifier.observe(agent, { type: "assistant_message", messageId: null }, "t1");
+  assert.equal(turnClassifier.role(agent, null), "unknown");
+  assert.equal(turnClassifier.role(agent, "never-seen"), "unknown");
+});
+
+test("turn classifier: unknown agent stays unknown", () => {
+  assert.equal(turnClassifier.role("cls-agent-x", "m"), "unknown");
+});
