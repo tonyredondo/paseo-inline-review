@@ -241,6 +241,52 @@ function InlineRun({
 }
 
 
+/** Collapsible <details> section: tap the summary row to expand. */
+function DetailsView({
+  block,
+  theme,
+  compact,
+  refs,
+  selectable,
+  styles,
+}: {
+  block: Extract<Block, { kind: "details" }>;
+  theme: PluginTheme;
+  compact: boolean;
+  refs?: Map<string, string>;
+  selectable?: boolean;
+  styles: ReturnType<typeof useStyles>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View
+      style={{
+        borderColor: theme.colors.border,
+        borderWidth: 1,
+        borderRadius: 8,
+        backgroundColor: theme.colors.surface2,
+      }}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Toggle ${block.summary || "details"}`}
+        onPress={() => setOpen((value) => !value)}
+        style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 8, gap: 6 }}
+      >
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{open ? "▼" : "▶"}</Text>
+        <MarkdownSpan style={{ color: theme.colors.foreground, fontWeight: "700", flex: 1, fontSize: compact ? 13 : 14 }}>
+          {block.summary || "Details"}
+        </MarkdownSpan>
+      </Pressable>
+      {open ? (
+        <View style={{ paddingHorizontal: 10, paddingBottom: 8 }}>
+          <MarkdownText text={block.lines.join("\n")} theme={theme} compact={compact} refs={refs} selectable={selectable} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function CodeBlockView({
   code,
   language,
@@ -586,6 +632,19 @@ export function MarkdownText({
                 ))}
               </View>
             );
+          case "details": {
+            return (
+              <DetailsView
+                key={index}
+                block={block}
+                theme={theme}
+                compact={compact}
+                refs={refs}
+                selectable={selectable}
+                styles={styles}
+              />
+            );
+          }
           case "alert": {
             const alertColors: Record<string, string> = {
               note: "#58a6ff",

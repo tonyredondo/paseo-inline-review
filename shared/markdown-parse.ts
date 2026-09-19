@@ -37,6 +37,7 @@ export type Block =
   | { kind: "ordered"; items: { marker: string; level: number; spans: InlineToken[] }[] }
   | { kind: "quote"; depth: number; text: string }
   | { kind: "alert"; alertType: "note" | "tip" | "important" | "warning" | "caution"; lines: string[] }
+  | { kind: "details"; summary: string; lines: string[] }
   | { kind: "table"; header: TableCell[]; rows: TableCell[][] }
   | { kind: "hr" };
 
@@ -47,6 +48,9 @@ const bulletPattern = /^(\s*)[-*+]\s+(.*)$/;
 const orderedPattern = /^(\s*)(\d+)[.)]\s+(.*)$/;
 const quotePattern = /^(\s*)(>+)\s?(.*)$/;
 const hrPattern = /^\s*(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
+const detailsOpenPattern = /^\s*<details\b/i;
+const detailsClosePattern = /^\s*<\/details>/i;
+const summaryPattern = /^\s*<summary>(.*)<\/summary>\s*$/i;
 const tableRowPattern = /^\s*\|.*\|\s*$|^\s*\|.*[^|]\s*$/;
 const tableSeparatorPattern =
   /^\s*\|?(?:\s*:?-{1,}:?\s*\|)+\s*:?-{1,}:?\s*\|?\s*$/;
@@ -96,6 +100,32 @@ export function parseBlocks(text: string): Block[] {
     const line = lines[index];
     if (line.trim().length === 0) {
       index += 1;
+      continue;
+    }
+    if (detailsOpenPattern.test(line)) {
+      // <details>/<summary> collapsible section. Body lines are kept for the
+      // renderer to parse as nested markdown.
+      index += 1;
+      const inner: string[] = [];
+      while (index < lines.length && !detailsClosePattern.test(lines[index])) {
+        inner.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1; // consume </details>
+      let summary = "";
+      const body: string[] = [];
+      for (const innerLine of inner) {
+        const summaryMatch = summaryPattern.exec(innerLine);
+        if (summaryMatch) {
+          summary = summaryMatch[1];
+        } else if (!summary && /^\s*<summary>/i.test(innerLine)) {
+          // Summary split across lines: capture tag lines into the summary.
+          continue;
+        } else {
+          body.push(innerLine);
+        }
+      }
+      blocks.push({ kind: "details", summary, lines: body });
       continue;
     }
     if (fencePattern.test(line)) {

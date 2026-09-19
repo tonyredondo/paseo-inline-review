@@ -511,3 +511,36 @@ test("regular quotes without markers stay quotes", () => {
   assert.deepEqual(kinds(parseBlocks("> just a quote")), ["quote"]);
   assert.deepEqual(kinds(parseBlocks("> [!NOTREAL] nope")), ["quote"]);
 });
+
+// --- details/summary collapsible sections ---
+
+test("details parses summary and body", () => {
+  const blocks = parseBlocks("<details>\n<summary>More info</summary>\nBody paragraph.\n</details>");
+  assert.deepEqual(kinds(blocks), ["details"]);
+  const det = blocks[0];
+  assert.ok(det.kind === "details");
+  assert.ok(det.kind === "details" && det.summary === "More info");
+  assert.ok(det.kind === "details" && det.lines.join("\n").includes("Body paragraph."));
+});
+
+test("details body renders nested markdown blocks (code fence)", () => {
+  const blocks = parseBlocks("<details>\n<summary>Code</summary>\n\n```go\nx := 1\n```\n\n</details>");
+  assert.ok(blocks[0].kind === "details");
+  assert.ok(blocks[0].kind === "details" && blocks[0].lines.join("\n").includes("```go"));
+});
+
+test("details without summary keeps body with empty summary", () => {
+  const blocks = parseBlocks("<details>\nbody only\n</details>");
+  assert.ok(blocks[0].kind === "details");
+  assert.ok(blocks[0].kind === "details" && blocks[0].summary === "" && blocks[0].lines.join("\n") === "body only");
+});
+
+test("content before details is unaffected", () => {
+  const blocks = parseBlocks("before\n\n<details>\n<summary>s</summary>\ninside\n</details>\n\nafter");
+  assert.deepEqual(kinds(blocks), ["p", "details", "p"]);
+});
+
+test("unclosed details consumes to end", () => {
+  const blocks = parseBlocks("<details>\n<summary>s</summary>\nnever closed");
+  assert.deepEqual(kinds(blocks), ["details"]);
+});
