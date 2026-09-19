@@ -698,20 +698,13 @@ export function MarkdownText({
                 <MarkdownSpan style={{ color: alertColor, fontWeight: "700", fontSize: compact ? 13 : 14 }}>
                   {alertLabels[block.alertType]}
                 </MarkdownSpan>
-                {block.lines.map((alertLine, alertIndex) => (
-                  <MarkdownSpan key={alertIndex} style={styles.paragraphLine} selectable={selectable}>
-                    {parseInline(alertLine, refs).map((token, tokenIndex) => (
-                      <InlineRun
-                        key={tokenIndex}
-                        tokens={[token]}
-                        theme={theme}
-                        styles={styles}
-                        refs={refs}
-                        selectable={selectable}
-                      />
-                    ))}
-                  </MarkdownSpan>
-                ))}
+                <MarkdownText
+                  text={block.lines.join("\n")}
+                  theme={theme}
+                  compact={compact}
+                  refs={refs}
+                  selectable={selectable}
+                />
               </View>
             );
           }

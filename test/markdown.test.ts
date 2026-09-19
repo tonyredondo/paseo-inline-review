@@ -657,3 +657,32 @@ test("syntax: aliases resolve for new families", () => {
     assert.equal(syntax.normalizeLanguage(alias), expected);
   }
 });
+
+// --- rich alert bodies (markdown re-parsed like quotes) ---
+
+test("alert body keeps line structure for nested markdown", () => {
+  const blocks = parseBlocks("> [!NOTE]\n> - first\n> - second");
+  assert.ok(blocks[0].kind === "alert");
+  assert.ok(blocks[0].kind === "alert" && blocks[0].lines.join("\n") === "- first\n- second");
+  const inner = parseBlocks(blocks[0].kind === "alert" ? blocks[0].lines.join("\n") : "");
+  assert.deepEqual(kinds(inner), ["bullet"]);
+});
+
+test("alert body with code fence parses as code", () => {
+  const blocks = parseBlocks("> [!TIP]\n> ```sh\n> npm test\n> ```");
+  assert.ok(blocks[0].kind === "alert");
+  const inner = parseBlocks(blocks[0].kind === "alert" ? blocks[0].lines.join("\n") : "");
+  assert.deepEqual(kinds(inner), ["code"]);
+});
+
+test("alert body inline chips still parse", () => {
+  const blocks = parseBlocks("> [!NOTE]\n> run `npm test` first");
+  assert.ok(blocks[0].kind === "alert");
+  const inner = parseInline(blocks[0].kind === "alert" ? blocks[0].lines.join("\n") : "");
+  assert.ok(inner.some((tk) => tk.type === "code" && tk.text === "npm test"));
+});
+
+test("alert after other blocks stays isolated", () => {
+  const blocks = parseBlocks("para\n\n> [!WARNING]\n> careful\n\ntail");
+  assert.deepEqual(kinds(blocks), ["p", "alert", "p"]);
+});
