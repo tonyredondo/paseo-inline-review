@@ -30,13 +30,22 @@ export type ReviewComment = z.output<typeof reviewCommentSchema>;
 export const loadCommentsRpc = defineRpc({
   name: "review.load-comments",
   input: z.object({ agentId: z.string() }),
-  output: z.object({ comments: z.array(reviewCommentSchema) }),
+  output: z.object({
+    comments: z.array(reviewCommentSchema),
+    /** Ids deleted on any device. Devices drop them instead of resurrecting. */
+    deleted: z.array(z.string()).optional(),
+  }),
 });
 
 /** Replaces the stored comments for one agent. */
 export const saveCommentsRpc = defineRpc({
   name: "review.save-comments",
-  input: z.object({ agentId: z.string(), comments: z.array(reviewCommentSchema) }),
+  input: z.object({
+    agentId: z.string(),
+    comments: z.array(reviewCommentSchema),
+    /** Ids removed by this device; the daemon keeps them as tombstones. */
+    deleted: z.array(z.string()).optional(),
+  }),
   output: z.object({ ok: z.boolean() }),
 });
 

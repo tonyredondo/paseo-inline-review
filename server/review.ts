@@ -13,6 +13,8 @@ import {
 } from "../shared/review";
 
 type StoredAgents = Record<string, ReviewComment[]>;
+/** Per-agent deleted-comment ids: deletions must beat stale copies on other devices. */
+type Tombstones = Record<string, string[]>;
 
 const dataPath = path.join(
   process.env.PASEO_HOME ?? path.join(os.homedir(), ".paseo"),
@@ -21,16 +23,19 @@ const dataPath = path.join(
   "comments.json",
 );
 
-let cache: { agents: StoredAgents } | null = null;
+let cache: { agents: StoredAgents; deleted: Tombstones } | null = null;
 let writeChain: Promise<void> = Promise.resolve();
 
-function load(): { agents: StoredAgents } {
+function load(): { agents: StoredAgents; deleted: Tombstones } {
   if (cache) return cache;
   try {
-    const parsed = JSON.parse(readFileSync(dataPath, "utf8")) as { agents?: StoredAgents };
-    cache = { agents: parsed.agents ?? {} };
+    const parsed = JSON.parse(readFileSync(dataPath, "utf8")) as {
+      agents?: StoredAgents;
+      deleted?: Tombstones;
+    };
+    cache = { agents: parsed.agents ?? {}, deleted: parsed.deleted ?? {} };
   } catch {
-    cache = { agents: {} };
+    cache = { agents: {}, deleted: {} };
   }
   return cache;
 }
@@ -50,27 +55,38 @@ export function getAgentComments(agentId: string): ReviewComment[] {
   return load().agents[agentId] ?? [];
 }
 
-function setAgentComments(agentId: string, comments: ReviewComment[]): void {
+function setAgentComments(
+  agentId: string,
+  comments: ReviewComment[],
+  deleted: string[] = [],
+): void {
   const validated = comments.map((comment) => reviewCommentSchema.parse(comment));
   const store = load();
-  if (validated.length === 0) {
+  // A stale device re-sending a deleted comment must not resurrect it: the
+  // tombstone wins over any comment body.
+  const tombstones = new Set(store.deleted[agentId] ?? []);
+  for (const id of deleted) tombstones.add(id);
+  store.deleted[agentId] = [...tombstones];
+  const alive = validated.filter((comment) => !tombstones.has(comment.id));
+  if (alive.length === 0) {
     delete store.agents[agentId];
   } else {
-    store.agents[agentId] = validated;
+    store.agents[agentId] = alive;
   }
   persist();
 }
 
 export async function loadComments(
   input: RpcInput<typeof loadCommentsRpc>,
-): Promise<{ comments: ReviewComment[] }> {
-  return { comments: getAgentComments(input.agentId) };
+): Promise<{ comments: ReviewComment[]; deleted: string[] }> {
+  const store = load();
+  return { comments: getAgentComments(input.agentId), deleted: store.deleted[input.agentId] ?? [] };
 }
 
 export async function saveComments(
   input: RpcInput<typeof saveCommentsRpc>,
 ): Promise<{ ok: boolean }> {
-  setAgentComments(input.agentId, input.comments);
+  setAgentComments(input.agentId, input.comments, input.deleted ?? []);
   return { ok: true };
 }
 

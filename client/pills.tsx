@@ -1,8 +1,9 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { formatReview, saveCommentsRpc } from "../shared/review";
+import { formatReview, loadCommentsRpc, saveCommentsRpc } from "../shared/review";
 import {
   clearAgent,
   getComments,
+  hydrateFromServer,
   markAgentCommentsSent,
   registerPersist,
   subscribe,
@@ -23,6 +24,14 @@ export function registerPills(client: PluginClientContext): () => void {
   // Store-owned persistence: every mutation saves through the client context,
   // so sent statuses reach the daemon even when the panel is not open.
   registerPersist((input) => client.rpc(saveCommentsRpc, input));
+
+  // Plugin data has no push channel, so poll the daemon for comment changes
+  // (new comments, status flips, deletions from other devices) while the app
+  // is running. hydrate() is idempotent and tombstones stop stale copies.
+  const load = (input: { agentId: string }) => client.rpc(loadCommentsRpc, input);
+  const poll = setInterval(() => {
+    for (const agentId of pills.keys()) hydrateFromServer(agentId, load);
+  }, 5000);
 
   function refreshLabels(): void {
     const counts = new Map<string, number>();
@@ -145,6 +154,7 @@ export function registerPills(client: PluginClientContext): () => void {
   });
 
   return () => {
+    clearInterval(poll);
     unsubscribeComments();
     unsubscribeAgents();
     for (const pill of pills.values()) pill.remove();

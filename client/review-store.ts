@@ -4,6 +4,18 @@ type Listener = () => void;
 
 let comments: ReviewComment[] = [];
 const listeners = new Set<Listener>();
+/**
+ * Comment ids deleted on any device (this one included). They travel with
+ * every save and block resurrection from stale device copies.
+ */
+const tombstones = new Map<string, Set<string>>();
+
+function addTombstones(agentId: string, ids: string[]): void {
+  if (ids.length === 0) return;
+  const set = tombstones.get(agentId) ?? new Set<string>();
+  for (const id of ids) set.add(id);
+  tombstones.set(agentId, set);
+}
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -70,6 +82,25 @@ export function updateComment(id: string, text: string): ReviewComment | null {
   return updated;
 }
 
+/**
+ * Fixes anchors captured during streaming: once the complete message id and
+ * final paragraph layout are known, the comment re-binds to the paragraph its
+ * text actually lives in. Keeps the status untouched.
+ */
+export function relocateComment(
+  id: string,
+  messageId: string | null,
+  paragraphIndex: number,
+): ReviewComment | null {
+  const existing = comments.find((comment) => comment.id === id);
+  if (!existing) return null;
+  const updated = { ...existing, messageId, paragraphIndex };
+  comments = comments.map((comment) => (comment.id === id ? updated : comment));
+  emit();
+  autoSave(existing.agentId);
+  return updated;
+}
+
 /** Marks pending comments of one agent as sent (fastpath pill + panel send). */
 export function markAgentCommentsSent(agentId: string): void {
   let changed = false;
@@ -88,12 +119,19 @@ export function removeComment(id: string): void {
   const removed = comments.find((comment) => comment.id === id);
   comments = comments.filter((comment) => comment.id !== id);
   emit();
-  if (removed) autoSave(removed.agentId);
+  if (removed) {
+    addTombstones(removed.agentId, [removed.id]);
+    autoSave(removed.agentId);
+  }
 }
 
 export function clearAgent(agentId: string): void {
+  const removedIds = comments
+    .filter((comment) => comment.agentId === agentId)
+    .map((comment) => comment.id);
   comments = comments.filter((comment) => comment.agentId !== agentId);
   emit();
+  addTombstones(agentId, removedIds);
   autoSave(agentId);
 }
 
@@ -118,7 +156,7 @@ function autoSave(agentId: string): void {
 
 // --- Server sync ------------------------------------------------------------
 
-type SaveFn = (input: { agentId: string; comments: ReviewComment[] }) => Promise<unknown>;
+type SaveFn = (input: { agentId: string; comments: ReviewComment[]; deleted?: string[] }) => Promise<unknown>;
 type LoadFn = (input: { agentId: string }) => Promise<{ comments: ReviewComment[] }>;
 
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -126,7 +164,7 @@ const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** Pushes the agent's comments to the daemon store, debounced per agent. */
 export function scheduleSave(
   agentId: string,
-  save: (input: { agentId: string; comments: ReviewComment[] }) => Promise<unknown>,
+  save: (input: { agentId: string; comments: ReviewComment[]; deleted?: string[] }) => Promise<unknown>,
 ): void {
   const previous = saveTimers.get(agentId);
   if (previous) clearTimeout(previous);
@@ -134,7 +172,11 @@ export function scheduleSave(
     agentId,
     setTimeout(() => {
       saveTimers.delete(agentId);
-      void save({ agentId, comments: getComments().filter((comment) => comment.agentId === agentId) });
+      void save({
+        agentId,
+        comments: getComments().filter((comment) => comment.agentId === agentId),
+        deleted: [...(tombstones.get(agentId) ?? [])],
+      });
     }, 300),
   );
 }
@@ -144,8 +186,16 @@ export function scheduleSave(
  * list is authoritative for ids the client does not have (fresh app start) and
  * for status changes; client-only comments survive.
  */
-export function hydrate(agentId: string, serverComments: ReviewComment[]): void {
-  const known = new Map(getComments().filter((comment) => comment.agentId === agentId).map((comment) => [comment.id, comment]));
+export function hydrate(agentId: string, serverComments: ReviewComment[], deleted: string[] = []): void {
+  // Deletions from other devices win over local copies, so a stale device
+  // cannot resurrect a removed comment.
+  addTombstones(agentId, deleted);
+  const deletedIds = tombstones.get(agentId) ?? new Set<string>();
+  const known = new Map(
+    getComments()
+      .filter((comment) => comment.agentId === agentId && !deletedIds.has(comment.id))
+      .map((comment) => [comment.id, comment]),
+  );
   const merged: ReviewComment[] = [];
   for (const serverComment of serverComments) {
     const local = known.get(serverComment.id);
@@ -165,6 +215,6 @@ export function hydrate(agentId: string, serverComments: ReviewComment[]): void 
 /** Hydrates one agent from the daemon when the client store has nothing yet. */
 export function hydrateFromServer(agentId: string, load: LoadFn): void {
   void load({ agentId })
-    .then((result) => hydrate(agentId, result.comments))
+    .then((result) => hydrate(agentId, result.comments, (result as { deleted?: string[] }).deleted ?? []))
     .catch(() => {});
 }

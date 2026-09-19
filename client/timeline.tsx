@@ -19,6 +19,7 @@ import {
   addComment,
   getComments,
   hydrateFromServer,
+  relocateComment,
   removeComment,
   scheduleSave,
   subscribe,
@@ -43,22 +44,28 @@ type EditingTarget = {
  * - Without one (id-less messages): the saved paragraph snapshot must equal
  *   the paragraph exactly, in a message that has no id either.
  */
+/** A captured streaming snapshot may be a prefix of the completed paragraph. */
+function matchesCapturedText(captured: string, paragraph: string | undefined): boolean {
+  if (paragraph === undefined) return false;
+  return paragraph === captured || paragraph.startsWith(captured);
+}
+
 function commentAnchorsHere(
   data: ReviewItemData,
   paragraph: string,
   index: number,
   comment: ReviewComment,
 ): boolean {
+  if (comment.messageId !== null && comment.messageId !== data.messageId) return false;
   if (comment.paragraphIndex !== index) return false;
-  if (comment.messageId !== null) return comment.messageId === data.messageId;
-  return data.messageId === null && comment.paragraphText === paragraph;
+  return matchesCapturedText(comment.paragraphText, paragraph);
 }
 
 function commentBelongsToMessage(data: ReviewItemData, comment: ReviewComment): boolean {
   if (comment.messageId !== null) return comment.messageId === data.messageId;
-  // Unknown message id: the comment may belong to any id-less message of the
-  // agent; paragraph anchoring decides where it renders.
-  return data.messageId === null;
+  // Unknown message id (commented while streaming): any message may adopt it;
+  // paragraph-text anchoring decides where it actually lives.
+  return true;
 }
 
 function useMessageComments(agentId: string, data: ReviewItemData) {
@@ -145,6 +152,25 @@ function ReviewAssistantMessage({
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
   const paragraphTexts = paragraphs;
   const comments = useMessageComments(agentId, data);
+  // Re-anchor streaming-time comments once the complete message exists: bind
+  // id-less comments to this message and heal paragraph-index drift caused by
+  // re-chunking between the streaming and complete snapshots.
+  useEffect(() => {
+    if (data.messageId === null) return;
+    for (const comment of comments) {
+      const storedParagraph = paragraphs[comment.paragraphIndex];
+      const storedMatches = matchesCapturedText(comment.paragraphText, storedParagraph);
+      if (comment.messageId === null || !storedMatches) {
+        let index = paragraphs.indexOf(comment.paragraphText);
+        if (index === -1) {
+          index = paragraphs.findIndex((paragraph) => matchesCapturedText(comment.paragraphText, paragraph));
+        }
+        if (index !== -1) {
+          relocateComment(comment.id, data.messageId, index);
+        }
+      }
+    }
+  }, [comments, paragraphs, data.messageId]);
   const [editing, setEditing] = useState<EditingTarget | null>(null);
   // Double-tap detection for touch devices (web uses modifier-click).
   const lastTapRef = useRef<{ index: number; at: number } | null>(null);
