@@ -9,6 +9,7 @@ import {
   clearAgent,
   getComments,
   hydrateFromServer,
+  markAgentCommentsSent,
   registerPersist,
   removeComment,
   scheduleSave,
@@ -63,6 +64,7 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
       titleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" } as const,
       title: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 22, fontWeight: "600" } as const,
       clearText: { color: theme.colors.statusDanger, fontSize: 13 } as const,
+      markSentText: { color: theme.colors.statusSuccess, fontSize: 13 } as const,
       composer: { flexDirection: "row", gap: 8, alignItems: "center" } as const,
       sendButton: { backgroundColor: theme.colors.accent, borderRadius: 10, paddingVertical: 12, paddingHorizontal: 16 } as const,
       sendText: { color: theme.colors.accentForeground, fontSize: 14, fontWeight: "600" } as const,
@@ -145,10 +147,22 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
     setEditingId(null);
   }
 
+  /** Marks every pending comment sent without messaging the agent. */
+  function markAllSent(): void {
+    markAgentCommentsSent(agentId);
+    setEditingId(null);
+    toast.show("Marked as sent.", { variant: "success" });
+  }
+
   return (
     <View style={styles.root}>
       <View style={styles.titleRow}>
         <Text style={styles.title}>Review ({comments.length})</Text>
+        {comments.length > 0 ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="Mark all comments as sent" hitSlop={6} onPress={markAllSent}>
+            <Text style={styles.markSentText}>Mark all as sent</Text>
+          </Pressable>
+        ) : null}
         <Pressable accessibilityRole="button" accessibilityLabel="Clear comments" hitSlop={6} onPress={clear}>
           <Text style={styles.clearText}>Clear</Text>
         </Pressable>
