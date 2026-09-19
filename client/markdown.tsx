@@ -182,12 +182,12 @@ function InlineRun({
               <MarkdownSpan
                 key={index}
                 style={{
-                  color: theme.colors.foregroundMuted,
+                  color: lighten(theme.colors.foreground, 0.25),
                   backgroundColor: theme.colors.surface2,
                   fontSize: styles.codeFontSize,
-                  paddingHorizontal: 4,
-                  paddingVertical: 1,
-                  borderRadius: 5,
+                  paddingHorizontal: 5,
+                  paddingVertical: 2,
+                  borderRadius: 6,
                   ...monospaceFont(),
                 }}
                 selectable={selectable}
@@ -471,7 +471,7 @@ export function MarkdownText({
                     color: theme.colors.foreground,
                     fontWeight: "700",
                     marginTop: block.level === 1 ? 16 : 12,
-                    marginBottom: 8,
+                    marginBottom: block.level <= 2 ? 6 : 8,
                     fontSize: compact
                       ? block.level === 1 ? 20 : block.level === 2 ? 17 : block.level === 3 ? 16 : 15
                       : block.level === 1 ? 22 : block.level === 2 ? 19 : block.level === 3 ? 17 : 16,
@@ -485,7 +485,6 @@ export function MarkdownText({
                       height: StyleSheet.hairlineWidth,
                       backgroundColor: theme.colors.foregroundMuted,
                       opacity: 0.35,
-                      marginTop: 6,
                     }}
                   />
                 ) : null}
