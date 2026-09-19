@@ -325,8 +325,10 @@ function useStyles(theme: PluginTheme, compact: boolean) {
       tableFontSize: compact ? 12 : 13,
       cell: { padding: 6 } as const,
       blockGap: { gap: compact ? 10 : 14 } as const,
-      paragraph: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22 } as const,
-      paragraphLine: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22 } as const,
+      // Justify the body text: react-native-web and Android honor it; iOS RN
+      // falls back to left alignment (platform limitation).
+      paragraph: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22, textAlign: "justify" } as const,
+      paragraphLine: { color: theme.colors.foreground, fontSize: compact ? 14 : 15, lineHeight: 22, textAlign: "justify" } as const,
       codeBlock: {
         backgroundColor: "#000000",
         borderColor: theme.colors.border,
