@@ -20,6 +20,27 @@ import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
  * draws its own (see shared/markdown-parse.ts and test/markdown.test.ts).
  */
 
+// iOS has no CSS-style overflow-wrap: a long identifier that cannot fit a
+// justified line stretches the previous line instead of breaking. Insert
+// zero-width spaces inside long unbroken words (separators and camelCase
+// boundaries) to give the text layout break opportunities. Web does not need
+// this (overflow-wrap: anywhere breaks without polluting copied text) and
+// Android breaks long words natively, so this is iOS-only.
+const ZWSP = "\u200B";
+
+function breakLongWords(text: string): string {
+  if (Platform.OS !== "ios") return text;
+  return text
+    .split(/(\s+)/)
+    .map((piece) => {
+      if (/\s/.test(piece) || piece.length < 14) return piece;
+      return piece
+        .replace(/([._/\-])(?=[A-Za-z0-9])/g, `$1${ZWSP}`)
+        .replace(/([a-z0-9])(?=[A-Z])/g, `$1${ZWSP}`);
+    })
+    .join("");
+}
+
 async function openLink(
   url: string,
   openUrlViaDaemon: ((input: { url: string }) => Promise<{ ok: boolean }>) | null,
@@ -137,13 +158,13 @@ function InlineRun({
           case "bold":
             return (
               <MarkdownSpan key={index} style={{ color: theme.colors.foreground, fontWeight: "700" }} selectable={selectable}>
-                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : token.text}
+                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : breakLongWords(token.text)}
               </MarkdownSpan>
             );
           case "italic":
             return (
               <MarkdownSpan key={index} style={{ color: theme.colors.foreground, fontStyle: "italic" }} selectable={selectable}>
-                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : token.text}
+                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : breakLongWords(token.text)}
               </MarkdownSpan>
             );
           case "strike":
@@ -153,7 +174,7 @@ function InlineRun({
                 style={{ color: theme.colors.foreground, textDecorationLine: "line-through" }}
                 selectable={selectable}
               >
-                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : token.text}
+                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : breakLongWords(token.text)}
               </MarkdownSpan>
             );
           case "code":
@@ -171,7 +192,7 @@ function InlineRun({
                 }}
                 selectable={selectable}
               >
-                {token.text}
+                {breakLongWords(token.text)}
               </MarkdownSpan>
             );
           case "image":
@@ -196,13 +217,14 @@ function InlineRun({
           case "break":
             return <Text key={index}>{"\n"}</Text>;
           case "text":
-          default:
-            if (!selectable) return <Fragment key={index}>{token.text}</Fragment>;
+          default: {
+            const broken = breakLongWords(token.text);
+            if (!selectable) return <Fragment key={index}>{broken}</Fragment>;
             // Word-level selectable fragments: long-press selects the touched
             // word instead of the whole paragraph.
             return (
               <Fragment key={index}>
-                {token.text.split(/(\s+)/).map((piece, pieceIndex) =>
+                {broken.split(/(\s+)/).map((piece, pieceIndex) =>
                   piece.length > 0 ? (
                     <MarkdownSpan key={pieceIndex} selectable>
                       {piece}
@@ -211,6 +233,7 @@ function InlineRun({
                 )}
               </Fragment>
             );
+          }
         }
       })}
     </>
