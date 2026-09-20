@@ -537,6 +537,7 @@ function ReviewAssistantMessage({
                 />
               </View>
             )}
+            {isEditing && !itemEditing ? editorNode : null}
             {anchored.map((comment) => (
               <CommentCard
                 key={comment.id}
