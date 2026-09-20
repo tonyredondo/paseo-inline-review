@@ -62,6 +62,23 @@ export const openInBrowserRpc = defineRpc({
   output: z.object({ ok: z.boolean() }),
 });
 
+export const openLocalFileRpc = defineRpc({
+  name: "review.open-local-file",
+  input: z.object({
+    path: z.string(),
+    lineStart: z.number().int().optional(),
+    lineEnd: z.number().int().optional(),
+    mode: z.enum(["open", "read"]).optional(),
+  }),
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().optional(),
+    content: z.string().optional(),
+    truncated: z.boolean().optional(),
+    size: z.number().optional(),
+  }),
+});
+
 /** Data for the plugin-owned replacement of a sent review user message. */
 export const sentReviewSchema = z.object({
   messageId: z.string().nullable(),

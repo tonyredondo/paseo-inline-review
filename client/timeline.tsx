@@ -2,14 +2,18 @@ import type { PluginClientContext, PluginTimelineItemProps } from "@getpaseo/plu
 import type { PluginTheme } from "@getpaseo/plugin";
 import {
   Icon,
+  Modal,
   TextInput,
   useRevealedText,
+  useToast,
 } from "@getpaseo/plugin/client/react-native";
-import { useRpc } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
   loadCommentsRpc,
+  openLocalFileRpc,
   reviewItemSchema,
   saveCommentsRpc,
   sentReviewSchema,
@@ -250,14 +254,31 @@ function ReviewAssistantMessage({
   const refs = useMemo(() => extractRefDefs(data.text), [data.text]);
   const load = useRpc(loadCommentsRpc);
   const persistComments = useRpc(saveCommentsRpc);
+  const openLocalFile = useRpc(openLocalFileRpc);
+  const toast = useToast();
+  const paseo = usePaseo();
+  const [filePreview, setFilePreview] = useState<{
+    path: string;
+    content: string;
+    truncated: boolean;
+    size: number;
+  } | null>(null);
+  // The workspace root lives on the daemon machine; relative file links
+  // resolve against it.
+  const workspaceRoot = useMemo(
+    () => paseo?.agents?.ref(agentId)?.cwd ?? null,
+    [paseo, agentId],
+  );
   // Hydrate persisted comments once per mount, and keep the daemon store in
   // sync (debounced) whenever this agent's comments change.
   useEffect(() => {
     hydrateFromServer(agentId, load);
+    const handle = paseo?.agents?.ref(agentId);
+    if (handle?.cwd === null) void handle.refresh().catch(() => {});
     return subscribe(() => {
       void scheduleSave(agentId, persistComments);
     });
-  }, [agentId, load, persistComments]);
+  }, [agentId, load, persistComments, paseo]);
   const revealed = useRevealedText(data.text, data.phase);
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
   const paragraphTexts = paragraphs;
@@ -381,6 +402,43 @@ function ReviewAssistantMessage({
     handleChunkTap(chunkIndex, itemIndex, itemText);
   }
 
+  function handleLocalFilePress(target: LocalFileTarget): void {
+    // Content preview is always the default: it works local and remote. The
+    // sheet offers the explicit "open on the agent machine" action.
+    void openLocalFile({
+      path: target.path,
+      lineStart: target.lineStart,
+      lineEnd: target.lineEnd,
+      mode: "read",
+    }).then((result) => {
+      if (!result.ok) {
+        toast.error(result.error ?? "Could not open the file.");
+        return;
+      }
+      setFilePreview({
+        path: target.path,
+        content: result.content ?? "",
+        truncated: result.truncated ?? false,
+        size: result.size ?? 0,
+      });
+    }).catch(() => {
+      toast.error("Could not open the file.");
+    });
+  }
+
+  function openFileOnAgentMachine(): void {
+    if (!filePreview) return;
+    void openLocalFile({ path: filePreview.path, mode: "open" }).then((result) => {
+      if (result.ok) {
+        toast.show("Opened on the agent machine.", { variant: "success" });
+      } else {
+        toast.error(result.error ?? "Could not open the file.");
+      }
+    }).catch(() => {
+      toast.error("Could not open the file.");
+    });
+  }
+
   function save() {
     if (!editing || editing.draft.trim().length === 0) {
       setEditing(null);
@@ -441,7 +499,8 @@ function ReviewAssistantMessage({
   ) : null;
 
   return (
-    <View style={styles.root}>
+    <>
+      <View style={styles.root}>
       {paragraphs.map((paragraph, index) => {
         const anchored = comments.filter((comment) =>
           commentAnchorsHere(data, paragraph, index, comment),
@@ -472,6 +531,8 @@ function ReviewAssistantMessage({
                   compact={layout.compact}
                   refs={refs}
                   onCommentRequest={() => setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })}
+                  localFileResolver={(url) => classifyLocalFileLink(url, { workspaceRoot })}
+                  onLocalFilePress={handleLocalFilePress}
                   onListItemPress={(itemIndex, itemText, event) => handleListItemTap(index, itemIndex, itemText, event)}
                   listItemExtras={(itemIndex) => (
                     <>
@@ -511,6 +572,8 @@ function ReviewAssistantMessage({
                   selectable={layout.platform !== "ios"}
                   onChunkPress={() => handleChunkTap(index)}
                   onCommentRequest={() => setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })}
+                  localFileResolver={(url) => classifyLocalFileLink(url, { workspaceRoot })}
+                  onLocalFilePress={handleLocalFilePress}
                   onListItemPress={(itemIndex, itemText, event) => handleListItemTap(index, itemIndex, itemText, event)}
                   listItemExtras={(itemIndex) => (
                     <>
@@ -557,7 +620,41 @@ function ReviewAssistantMessage({
           </View>
         );
       })}
-    </View>
+      <Modal
+        title="File preview"
+        icon={<Icon name="FileText" size={14} color={theme.colors.accent} />}
+        open={filePreview !== null}
+        onOpenChange={(open) => {
+          if (!open) setFilePreview(null);
+        }}
+      >
+        <Modal.Content>
+          {filePreview ? (
+            <View style={{ gap: 8 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, flex: 1 }} numberOfLines={2}>
+                  {`${filePreview.path}${filePreview.truncated ? " (truncated)" : ""}`}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Open the file on the agent machine"
+                  hitSlop={6}
+                  onPress={openFileOnAgentMachine}
+                >
+                  <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open locally</Text>
+                </Pressable>
+              </View>
+              <View style={styles.input}>
+                <Text style={{ color: theme.colors.foreground, fontSize: 12 }} selectable>
+                  {filePreview.content}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+        </Modal.Content>
+      </Modal>
+      </View>
+      </>
   );
 }
 

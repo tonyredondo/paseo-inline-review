@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseBlocks, parseInline, type Block, type InlineToken } from "../shared/markdown-parse.ts";
+import { parseBlocks, parseInline, classifyLocalFileLink, type Block, type InlineToken } from "../shared/markdown-parse.ts";
 import * as syntax from "../shared/syntax.ts";
 
 function first(blocks: Block[]): Block {
@@ -772,4 +772,39 @@ test("image inside a link parses as a clickable image", () => {
 test("angle-bracket destinations work", () => {
   const link = parseInline("[text](<https://example.com/my page>)").find((tk) => tk.type === "link");
   assert.ok(link && link.type === "link" && link.url === "https://example.com/my page");
+});
+
+// --- local file link classifier ---
+
+test("local file classifier: web urls and emails are never files", () => {
+  assert.equal(classifyLocalFileLink("https://example.com/x.go"), null);
+  assert.equal(classifyLocalFileLink("mailto:a@b.com"), null);
+  assert.equal(classifyLocalFileLink("#anchor"), null);
+});
+
+test("local file classifier: file:// urls with and without line fragments", () => {
+  const plain = classifyLocalFileLink("file:///Users/tony/x/main.go");
+  assert.ok(plain && plain.path === "/Users/tony/x/main.go");
+  const ranged = classifyLocalFileLink("file:///tmp/dd/x.go#L12-L20");
+  assert.ok(ranged && ranged.path === "/tmp/dd/x.go" && ranged.lineStart === 12 && ranged.lineEnd === 20);
+});
+
+test("local file classifier: absolute paths with vscode suffixes", () => {
+  const colon = classifyLocalFileLink("/Users/tony/ddtrace/tracer/span.go:467");
+  assert.ok(colon && colon.path === "/Users/tony/ddtrace/tracer/span.go" && colon.lineStart === 467);
+  const range = classifyLocalFileLink("/x/main.go lines 10-20");
+  assert.ok(range && range.path === "/x/main.go" && range.lineStart === 10 && range.lineEnd === 20);
+});
+
+test("local file classifier: home-relative and workspace-relative", () => {
+  const home = classifyLocalFileLink("~/go/src/x/main.go");
+  assert.ok(home && home.path === "~/go/src/x/main.go");
+  const relative = classifyLocalFileLink("ddtrace/tracer/span.go:23", {
+    workspaceRoot: "/go/src/github.com/DataDog/dd-trace-go",
+  });
+  assert.ok(relative && relative.path === "/go/src/github.com/DataDog/dd-trace-go/ddtrace/tracer/span.go" && relative.lineStart === 23);
+  // Non-source relative files do not resolve.
+  assert.equal(classifyLocalFileLink("notes.txt.backup", { workspaceRoot: "/w" }), null);
+  // Without a workspace root, relative paths stay unresolved.
+  assert.equal(classifyLocalFileLink("main.go"), null);
 });

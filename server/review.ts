@@ -7,6 +7,7 @@ import {
   isValidHttpUrl,
   loadCommentsRpc,
   openInBrowserRpc,
+  openLocalFileRpc,
   reviewCommentSchema,
   saveCommentsRpc,
   type ReviewComment,
@@ -105,6 +106,84 @@ export async function saveComments(
 ): Promise<{ ok: boolean }> {
   setAgentComments(input.agentId, input.comments, input.deleted ?? []);
   return { ok: true };
+}
+
+const MAX_READ_BYTES = 256 * 1024;
+
+/**
+ * Opens a local file on the daemon machine (macOS `open`, xdg-open elsewhere)
+ * or returns its text content so remote clients can view it through the RPC.
+ */
+export async function openLocalFile(
+  input: RpcInput<typeof openLocalFileRpc>,
+): Promise<{
+  ok: boolean;
+  error?: string;
+  content?: string;
+  truncated?: boolean;
+  size?: number;
+}> {
+  const absolutePath = expandHome(input.path);
+  if (!absolutePath) {
+    return { ok: false, error: "path could not be resolved to an absolute location" };
+  }
+  if (input.mode === "read") {
+    return readLocalFile(absolutePath);
+  }
+  const command =
+    process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args =
+    process.platform === "win32" ? ["/c", "start", "", absolutePath] : [absolutePath];
+  return new Promise((resolve) => {
+    execFile(command, args, (error) => {
+      if (error) return resolve({ ok: false, error: error.message });
+      // Desktop users usually want the editor at the right line; the file
+      // opener decides. Text content is still available through read mode.
+      resolve({ ok: true });
+    });
+  });
+}
+
+function expandHome(filePath: string): string | null {
+  const trimmed = filePath.trim();
+  if (trimmed.startsWith("~/") || trimmed === "~") {
+    return path.join(os.homedir(), trimmed.slice(1));
+  }
+  if (path.isAbsolute(trimmed) || /^[A-Za-z]:[\\/]/.test(trimmed)) return trimmed;
+  return null;
+}
+
+function readLocalFile(absolutePath: string): {
+  ok: boolean;
+  error?: string;
+  content?: string;
+  truncated?: boolean;
+  size?: number;
+} {
+  try {
+    const buffer = readFileSync(absolutePath);
+    const size = buffer.byteLength;
+    if (isProbablyBinary(buffer.subarray(0, Math.min(1024, buffer.length)))) {
+      return { ok: false, error: "binary file", size };
+    }
+    const slice = buffer.subarray(0, MAX_READ_BYTES);
+    return {
+      ok: true,
+      content: slice.toString("utf8"),
+      truncated: size > MAX_READ_BYTES,
+      size,
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function isProbablyBinary(buffer: Buffer): boolean {
+  const sample = Math.min(1024, buffer.length);
+  for (let index = 0; index < sample; index += 1) {
+    if (buffer[index] === 0) return true;
+  }
+  return false;
 }
 
 export async function openInBrowser(

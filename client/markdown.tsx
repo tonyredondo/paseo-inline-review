@@ -5,6 +5,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import { Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MarkdownSpan } from "./markdown-span";
 import { isValidHttpUrl, openInBrowserRpc } from "../shared/review";
+import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
 import {
   extractRefDefs,
   parseBlocks,
@@ -146,6 +147,8 @@ function InlineRun({
   styles,
   refs,
   selectable,
+  localFileResolver,
+  onLocalFilePress,
 }: {
   tokens: InlineToken[];
   theme: PluginTheme;
@@ -153,6 +156,10 @@ function InlineRun({
   refs?: Map<string, string>;
   /** Native: each word becomes its own selectable Text (word-level selection). */
   selectable?: boolean;
+  /** Classifies a link href as a local file target (null = external). */
+  localFileResolver?: (href: string) => LocalFileTarget | null;
+  /** Pressed a local file link: (path, lineStart?, lineEnd?). */
+  onLocalFilePress?: (target: LocalFileTarget) => void;
 }): ReactNode {
   const openUrlViaDaemon = useRpc(openInBrowserRpc);
   return (
@@ -234,15 +241,28 @@ function InlineRun({
             // Link text parses recursively: bold/code inside a link renders
             // styled inside the link instead of showing raw markdown.
             const nested = token.tokens ? (
-              <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} />
+              <InlineRun
+                tokens={token.tokens}
+                theme={theme}
+                styles={styles}
+                refs={refs}
+                selectable={selectable}
+                localFileResolver={localFileResolver}
+                onLocalFilePress={onLocalFilePress}
+              />
             ) : (
               token.text
             );
+            const localTarget = localFileResolver?.(token.url) ?? null;
             return (
               <MarkdownSpan
                 key={index}
                 style={{ color: theme.colors.accent }}
                 onPress={() => {
+                  if (localTarget) {
+                    onLocalFilePress?.(localTarget);
+                    return;
+                  }
                   void openLink(token.url, openUrlViaDaemon);
                 }}
               >
@@ -603,6 +623,8 @@ export function MarkdownText({
   onCommentRequest,
   onListItemPress,
   listItemExtras,
+  localFileResolver,
+  onLocalFilePress,
 }: {
   text: string;
   theme: PluginTheme;
@@ -619,6 +641,10 @@ export function MarkdownText({
   onListItemPress?: (itemIndex: number, itemText: string, event?: unknown) => void;
   /** Per-item extras (comment cards) rendered below each list item. */
   listItemExtras?: (itemIndex: number) => ReactNode;
+  /** Classifies a link href as a local file target (null = external). */
+  localFileResolver?: (href: string) => LocalFileTarget | null;
+  /** Pressed a local file link: (path, lineStart?, lineEnd?). */
+  onLocalFilePress?: (target: LocalFileTarget) => void;
 }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   const styles = useStyles(theme, compact);
@@ -627,7 +653,15 @@ export function MarkdownText({
   function renderTextLines(lines: string[], style: object): ReactNode {
     return lines.map((line, index) => (
       <MarkdownSpan key={index} style={style} uiTextView selectable={selectable} onPress={onChunkPress}>
-        <InlineRun tokens={parseInline(line, refs)} theme={theme} styles={styles} refs={refs} selectable={selectable} />
+        <InlineRun
+          tokens={parseInline(line, refs)}
+          theme={theme}
+          styles={styles}
+          refs={refs}
+          selectable={selectable}
+          localFileResolver={localFileResolver}
+          onLocalFilePress={onLocalFilePress}
+        />
       </MarkdownSpan>
     ));
   }
@@ -709,7 +743,14 @@ export function MarkdownText({
                         selectable={selectable}
                         onPress={onListItemPress ? (event) => onListItemPress(itemIndex, item.spans.map((token) => ("text" in token ? token.text : "")).join(""), event) : undefined}
                       >
-                        <InlineRun tokens={item.spans} theme={theme} styles={styles} selectable={selectable} />
+                        <InlineRun
+                        tokens={item.spans}
+                        theme={theme}
+                        styles={styles}
+                        selectable={selectable}
+                        localFileResolver={localFileResolver}
+                        onLocalFilePress={onLocalFilePress}
+                      />
                       </MarkdownSpan>
                       {listItemExtras ? listItemExtras(itemIndex) : null}
                     </View>
@@ -730,7 +771,14 @@ export function MarkdownText({
                         selectable={selectable}
                         onPress={onListItemPress ? (event) => onListItemPress(itemIndex, item.spans.map((token) => ("text" in token ? token.text : "")).join(""), event) : undefined}
                       >
-                        <InlineRun tokens={item.spans} theme={theme} styles={styles} selectable={selectable} />
+                        <InlineRun
+                        tokens={item.spans}
+                        theme={theme}
+                        styles={styles}
+                        selectable={selectable}
+                        localFileResolver={localFileResolver}
+                        onLocalFilePress={onLocalFilePress}
+                      />
                       </MarkdownSpan>
                       {listItemExtras ? listItemExtras(itemIndex) : null}
                     </View>

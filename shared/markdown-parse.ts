@@ -576,3 +576,138 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
     return { ...token, text: replaceShortcodes(restore(token.text)) };
   });
 }
+
+
+// --- Local file links --------------------------------------------------------
+// Mirrors the host app's assistant-file-links classifier: file:// URLs,
+// absolute paths (with VSCode-style line suffixes), home-relative paths and
+// workspace-relative paths with known source extensions. Web URLs return null.
+
+export type LocalFileTarget = {
+  path: string;
+  lineStart?: number;
+  lineEnd?: number;
+};
+
+const LOCAL_FILE_EXTENSIONS = new Set([
+  "astro", "bash", "c", "cc", "cjs", "cpp", "cs", "css", "cts", "cxx", "env", "fish", "go",
+  "gql", "gradle", "graphql", "h", "hpp", "htm", "html", "ini", "java", "js", "json", "jsonc",
+  "jsx", "kt", "kts", "less", "lock", "lua", "md", "mdx", "mjs", "mts", "php", "proto", "py",
+  "rb", "rs", "sass", "scss", "sh", "sql", "svelte", "swift", "toml", "ts", "tsx", "txt",
+  "vue", "xml", "yaml", "yml", "zsh", "log", "conf",
+]);
+
+const LINE_FRAGMENT_PATTERNS = [
+  /^(.+?):([0-9]+)(?::[0-9]+)?(?:-([0-9]+)(?::[0-9]+)?)?$/,
+  /^(.+?)\(([0-9]+)(?:,[0-9]+)?(?:-([0-9]+)(?:,[0-9]+)?)?\)$/,
+  /^(.+?)\s+[Ll]ines?\s+([0-9]+)(?:-([0-9]+))?$/,
+];
+
+/** Strict suffix parsers: `path:12`, `path(12,3)`, `path lines 10-20`. */
+function parseInlineLineSuffix(value: string): { path: string; lineStart?: number; lineEnd?: number } | null {
+  for (const pattern of LINE_FRAGMENT_PATTERNS) {
+    const match = pattern.exec(value);
+    if (!match) continue;
+    const basePath = (match[1] ?? "").trim().replace(/^['"`]|['"`]$/g, "").replace(/\\/g, "/");
+    if (!basePath || basePath.includes("://")) continue;
+    const lineStart = parseInt(match[2], 10);
+    if (!Number.isFinite(lineStart) || lineStart <= 0) continue;
+    const lineEnd = match[3] ? parseInt(match[3], 10) : undefined;
+    if (lineEnd !== undefined && (lineEnd <= 0 || lineEnd < lineStart)) continue;
+    return { path: basePath, lineStart, lineEnd };
+  }
+  return null;
+}
+
+function splitHash(value: string): { path: string; fragment: string } {
+  const hashIndex = value.indexOf("#");
+  if (hashIndex === -1) return { path: value, fragment: "" };
+  return { path: value.slice(0, hashIndex), fragment: value.slice(hashIndex + 1) };
+}
+
+function parseFragmentLines(fragment: string): { lineStart?: number; lineEnd?: number } | null {
+  const raw = fragment.replace(/^L/i, "");
+  if (!raw) return null;
+  const range = /^([0-9]+)(?:-[Ll]?([0-9]+))?$/.exec(raw);
+  if (!range) return null;
+  const lineStart = parseInt(range[1], 10);
+  if (!Number.isFinite(lineStart) || lineStart <= 0) return null;
+  const lineEnd = range[2] ? parseInt(range[2], 10) : undefined;
+  if (lineEnd !== undefined && (lineEnd <= 0 || lineEnd < lineStart)) return null;
+  return { lineStart, lineEnd };
+}
+
+function isHomeRelative(value: string): boolean {
+  return value === "~" || value.startsWith("~/") || value.startsWith("~\\");
+}
+
+function hasKnownSourceExtension(path: string): boolean {
+  const base = path.split("/").pop() ?? "";
+  const lower = base.toLowerCase();
+  if (lower === "dockerfile" || lower === "makefile") return true;
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return LOCAL_FILE_EXTENSIONS.has(base.slice(dot + 1).toLowerCase());
+}
+
+/**
+ * Classifies a link href as a local file target: `file://` URLs, absolute
+ * paths (with VSCode-style line suffixes), home-relative paths, or
+ * workspace-relative paths with a known source extension. Web URLs return
+ * null.
+ */
+export function classifyLocalFileLink(
+  href: string,
+  options: { workspaceRoot?: string | null } = {},
+): LocalFileTarget | null {
+  const raw = (href ?? "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw) || raw.startsWith("#") || /^[A-Za-z0-9._%+-]+@/.test(raw)) return null;
+
+  let path = "";
+  let lineStart: number | undefined;
+  let lineEnd: number | undefined;
+  if (/^file:\/\//i.test(raw)) {
+    const withoutPrefix = raw.replace(/^file:\/\//i, "");
+    const suffix = parseInlineLineSuffix(withoutPrefix);
+    if (suffix) {
+      path = suffix.path;
+      lineStart = suffix.lineStart;
+      lineEnd = suffix.lineEnd;
+    } else {
+      const { path: hashless, fragment } = splitHash(withoutPrefix);
+      path = hashless;
+      const fragmentLines = parseFragmentLines(fragment);
+      lineStart = fragmentLines?.lineStart;
+      lineEnd = fragmentLines?.lineEnd;
+    }
+  } else {
+    const suffix = parseInlineLineSuffix(raw);
+    if (suffix) {
+      path = suffix.path;
+      lineStart = suffix.lineStart;
+      lineEnd = suffix.lineEnd;
+    } else {
+      const { path: hashless, fragment } = splitHash(raw);
+      path = hashless;
+      const fragmentLines = parseFragmentLines(fragment);
+      lineStart = fragmentLines?.lineStart;
+      lineEnd = fragmentLines?.lineEnd;
+    }
+  }
+  if (!path) return null;
+
+  // Home-relative paths resolve on the daemon side (server expands ~).
+  if (isHomeRelative(path)) return { path, lineStart, lineEnd };
+
+  // Absolute paths.
+  if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)) {
+    return { path: path.replace(/\\/g, "/"), lineStart, lineEnd };
+  }
+
+  // Workspace-relative source files resolve against the workspace root.
+  const root = options.workspaceRoot?.trim();
+  if (!root || !root.startsWith("/")) return null;
+  if (!hasKnownSourceExtension(path)) return null;
+  return { path: `${root.replace(/\/+$/, "")}/${path.replace(/^\.\//, "")}`, lineStart, lineEnd };
+}
