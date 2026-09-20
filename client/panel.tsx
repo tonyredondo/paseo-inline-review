@@ -17,6 +17,15 @@ import {
   updateComment,
 } from "./review-store";
 
+/** Converts #rrggbb to rgba() so borders can fade without losing hue. */
+function withAlpha(hex: string, alpha: number): string {
+  const value = hex.replace("#", "");
+  const r = parseInt(value.slice(0, 2), 16);
+  const g = parseInt(value.slice(2, 4), 16);
+  const b = parseInt(value.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 /** Cross-device poll: re-hydrate plugin comments from the daemon this often. */
 const POLL_INTERVAL_MS = 5000;
 
@@ -193,7 +202,7 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
                   styles.card,
                   comment.status === "pending"
                     ? { borderLeftWidth: 3, borderLeftColor: theme.colors.accent }
-                    : null,
+                    : { borderLeftWidth: 3, borderLeftColor: withAlpha(theme.colors.accent, 0.35) },
                 ]}
               >
                 <Text style={styles.label}>

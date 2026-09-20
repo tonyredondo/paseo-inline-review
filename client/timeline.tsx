@@ -49,6 +49,15 @@ type EditingTarget = {
  *   the paragraph exactly, in a message that has no id either.
  */
 /** A captured streaming snapshot may be a prefix of the completed paragraph. */
+/** Converts #rrggbb to rgba() so borders can fade without losing hue. */
+function withAlpha(hex: string, alpha: number): string {
+  const value = hex.replace("#", "");
+  const r = parseInt(value.slice(0, 2), 16);
+  const g = parseInt(value.slice(2, 4), 16);
+  const b = parseInt(value.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function matchesCapturedText(captured: string, paragraph: string | undefined): boolean {
   if (paragraph === undefined) return false;
   return paragraph === captured || paragraph.startsWith(captured);
@@ -99,8 +108,9 @@ function CommentCard({
         backgroundColor: sent ? theme.colors.surface1 : theme.colors.surface2,
         borderColor: theme.colors.border,
         borderWidth: 1,
-        borderLeftWidth: sent ? 1 : 3,
-        borderLeftColor: sent ? theme.colors.border : theme.colors.accent,
+        // Sent cards keep the guiding border, dimmed via alpha.
+        borderLeftWidth: 3,
+        borderLeftColor: sent ? withAlpha(theme.colors.accent, 0.35) : theme.colors.accent,
         // Inset from sibling blocks and pad the sides so comment cards read
         // as their own element, not as another full-width block.
         marginHorizontal: 10,
