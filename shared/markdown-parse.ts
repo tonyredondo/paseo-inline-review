@@ -17,8 +17,8 @@ export type InlineToken =
   | { type: "italic"; text: string; tokens: InlineToken[] }
   | { type: "code"; text: string }
   | { type: "strike"; text: string; tokens: InlineToken[] }
-  | { type: "link"; text: string; url: string }
-  | { type: "image"; alt: string; url: string }
+  | { type: "link"; text: string; url: string; tokens?: InlineToken[] }
+  | { type: "image"; alt: string; url: string; linkUrl?: string }
   | { type: "footnoteRef"; label: string };
 
 export type ListItem = {
@@ -314,7 +314,7 @@ export function parseBlocks(text: string): Block[] {
 }
 
 const inlinePattern =
-  /(\*\*(?:[^*]|\*(?!\*))+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[\^[^\]\s]+\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s)]+|www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s)]*)?|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/g;
+  /(\*\*(?:[^*]|\*(?!\*))+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|<br\s*\/?>|\[!\[[^\]]*\]\([^)\s]+\)\]\([^)\s]+\)|!\[[^\]]*\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\(<[^>]*>\)|\[[^\]]+\]\([^)\s]+(\s+"[^"]*")?\)|\[[^\]]+\]\[[^\]]*\]|\[\^[^\]\s]+\]|\[[^\]]+\]|<https?:\/\/[^>\s]+>|https?:\/\/[^\s]+|www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s)]*)?|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/g;
 
 /**
  * Consumes wrapped and indented continuation lines of a list item:
@@ -467,6 +467,10 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
       } else {
         tokens.push({ type: "italic", text: token.slice(1, -1), tokens: parseInline(token.slice(1, -1), refs) });
       }
+    } else if (/^\[!\[[^\]]*\]\([^)]*\)\]\([^)\s]+\)$/.test(token)) {
+      // [![alt](image)](link): a clickable image.
+      const imageLink = /^\[!\[([^\]]*)\]\(([^)\s]+)\)\]\(([^)\s]+)\)$/.exec(token)!;
+      tokens.push({ type: "image", alt: imageLink[1], url: imageLink[2], linkUrl: imageLink[3] });
     } else if (token.startsWith("![")) {
       const image = /^!\[([^\]]*)\]\(([^)\s]+)\)$/.exec(token);
       if (image) {
@@ -486,34 +490,66 @@ export function parseInline(raw: string, refs?: Map<string, string>): InlineToke
         if (ref) {
           const label = (ref[2] || ref[1]).toLowerCase();
           const url = refs.get(label);
-          if (url) tokens.push({ type: "link", text: ref[1], url });
+          if (url) {
+            tokens.push({ type: "link", text: ref[1], url, tokens: parseInline(ref[1], refs) });
+          }
           else tokens.push({ type: "text", text: token });
           handled = true;
         } else if (/^\[[^\]]+\]$/.test(token)) {
           const url = refs.get(token.slice(1, -1).toLowerCase());
           if (url) {
-            tokens.push({ type: "link", text: token.slice(1, -1), url });
+            const refText = token.slice(1, -1);
+            tokens.push({ type: "link", text: refText, url, tokens: parseInline(refText, refs) });
             handled = true;
           }
         }
       }
       if (!handled) {
-        const link = /^(?:\[([^\]]+)\]\(|<)([^)\s>]+)(?:\s+"[^"]*")?(\)|>)$/.exec(token);
-        if (link) {
-          tokens.push({
-            type: "link",
-            text: link[1] ?? link[2],
-            url: link[2],
-          });
-        } else {
-          tokens.push({ type: "text", text: token });
-        }
+      const link = token.includes("](<")
+        ? /^\[([^\]]+)\]\(<([^>]*)>\)$/.exec(token)
+        : /^(?:\[([^\]]+)\]\(|<)([^)\s>]+)(?:\s+"[^"]*")?(\)|>)$/.exec(token);
+      if (link) {
+        const linkText = link[1] ?? link[2];
+        tokens.push({
+          type: "link",
+          text: linkText,
+          url: link[2],
+          tokens: parseInline(linkText, refs),
+        });
+      } else {
+        tokens.push({ type: "text", text: token });
+      }
       }
     } else if (/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$/.test(token)) {
       tokens.push({ type: "link", text: token, url: `mailto:${token}` });
     } else {
-      // www.example.com autolinks through https.
-      tokens.push({ type: "link", text: token, url: token.startsWith("www.") ? `https://${token}` : token });
+      // Bare autolinks: strip trailing punctuation the sentence added
+      // (markdown-it linkify behavior) so "https://x.com." does not link the
+      // dot; unbalanced closing parens also fall off.
+      const prefix = token.startsWith("www.") ? "https://" : "";
+      const full = prefix + token;
+      let end = full.length;
+      while (end > 0) {
+        const last = full[end - 1];
+        if (". ,;:!?".includes(last)) {
+          end -= 1;
+          continue;
+        }
+        if (last === ")") {
+          const opens = (full.slice(0, end).match(/\(/g) ?? []).length;
+          const closes = (full.slice(0, end).match(/\)/g) ?? []).length;
+          if (closes > opens) {
+            end -= 1;
+            continue;
+          }
+        }
+        break;
+      }
+      const url = full.slice(0, end);
+      const display = url.slice(prefix.length);
+      tokens.push({ type: "link", text: display, url });
+      const remainder = token.slice(display.length);
+      if (remainder.length > 0) tokens.push({ type: "text", text: remainder });
     }
     lastIndex = start + token.length;
   }

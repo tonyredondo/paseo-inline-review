@@ -730,3 +730,46 @@ test("looksLikeSentReview detects formatted reviews with and without a note", ()
 function syntaxLooks(text: string): boolean {
   return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: "/.test(text);
 }
+
+// --- link support parity with the default renderer ---
+
+test("links parse nested markdown in their text", () => {
+  const tokens = parseInline("[**bold** and `code`](https://x.com)");
+  const link = tokens.find((tk) => tk.type === "link");
+  assert.ok(link && link.type === "link");
+  assert.ok(link.type === "link" && link.tokens !== undefined && link.tokens.some((tk) => tk.type === "bold"));
+  assert.ok(link.type === "link" && link.tokens!.some((tk) => tk.type === "code"));
+});
+
+test("bare urls strip trailing sentence punctuation", () => {
+  const tokens = parseInline("visit https://example.com. next");
+  const link = tokens.find((tk) => tk.type === "link");
+  assert.ok(link && link.type === "link" && link.url === "https://example.com");
+  assert.ok(tokens.some((tk) => tk.type === "text" && tk.text.startsWith(".")));
+});
+
+test("bare urls keep balanced parens but drop unbalanced ones", () => {
+  const balanced = parseInline("docs at (https://en.wikipedia.org/wiki/Go_(programming)) done");
+  const link = balanced.find((tk) => tk.type === "link");
+  assert.ok(link && link.type === "link" && link.url === "https://en.wikipedia.org/wiki/Go_(programming)");
+  const unbalanced = parseInline("a (https://example.com/x) b");
+  const link2 = unbalanced.find((tk) => tk.type === "link");
+  assert.ok(link2 && link2.type === "link" && link2.url === "https://example.com/x");
+});
+
+test("angle-bracket destinations work", () => {
+  const link = parseInline("[text](<https://example.com/my page>)").find((tk) => tk.type === "link");
+  assert.ok(link && link.type === "link" && link.url === "https://example.com/my page");
+});
+
+test("image inside a link parses as a clickable image", () => {
+  const tokens = parseInline("[![img](https://i.png)](https://x.com)");
+  assert.equal(tokens.length, 1);
+  const image = tokens[0];
+  assert.ok(image.type === "image" && image.linkUrl === "https://x.com" && image.url === "https://i.png");
+});
+
+test("angle-bracket destinations work", () => {
+  const link = parseInline("[text](<https://example.com/my page>)").find((tk) => tk.type === "link");
+  assert.ok(link && link.type === "link" && link.url === "https://example.com/my page");
+});

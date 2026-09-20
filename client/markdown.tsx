@@ -199,13 +199,27 @@ function InlineRun({
                 {breakLongWords(token.text)}
               </MarkdownSpan>
             );
-          case "image":
-            // Inline image inside a text line renders as its alt text.
-            return (
+          case "image": {
+            // Inline image inside a text line renders as its alt text; when the
+            // image is wrapped in a link, the whole placeholder is tappable.
+            const image = (
               <MarkdownSpan key={index} style={{ color: theme.colors.foregroundMuted }} selectable={selectable}>
                 {`[${token.alt}]`}
               </MarkdownSpan>
             );
+            if (!token.linkUrl) return image;
+            return (
+              <MarkdownSpan
+                key={index}
+                style={{ color: theme.colors.accent }}
+                onPress={() => {
+                  void openLink(token.linkUrl ?? "", openUrlViaDaemon);
+                }}
+              >
+                {image}
+              </MarkdownSpan>
+            );
+          }
           case "footnoteRef":
             return (
               <MarkdownSpan
@@ -216,7 +230,14 @@ function InlineRun({
                 {`[^${token.label}]`}
               </MarkdownSpan>
             );
-          case "link":
+          case "link": {
+            // Link text parses recursively: bold/code inside a link renders
+            // styled inside the link instead of showing raw markdown.
+            const nested = token.tokens ? (
+              <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} />
+            ) : (
+              token.text
+            );
             return (
               <MarkdownSpan
                 key={index}
@@ -225,9 +246,10 @@ function InlineRun({
                   void openLink(token.url, openUrlViaDaemon);
                 }}
               >
-                {token.text}
+                {nested}
               </MarkdownSpan>
             );
+          }
           case "break":
             return <Text key={index}>{"\n"}</Text>;
           case "text":
