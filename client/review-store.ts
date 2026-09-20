@@ -38,6 +38,8 @@ export function addComment(input: {
   agentId: string;
   messageId: string | null;
   paragraphIndex: number;
+  /** Zero-based list item index when the comment targets one list item. */
+  itemIndex?: number | null;
   paragraphText: string;
   text: string;
 }): ReviewComment {
@@ -46,6 +48,7 @@ export function addComment(input: {
     agentId: input.agentId,
     messageId: input.messageId,
     paragraphIndex: input.paragraphIndex,
+    itemIndex: input.itemIndex ?? null,
     paragraphText: input.paragraphText,
     text: input.text,
     createdAt: new Date().toISOString(),

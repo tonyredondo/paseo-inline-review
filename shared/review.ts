@@ -16,6 +16,11 @@ export const reviewCommentSchema = z.object({
   messageId: z.string().nullable(),
   /** Zero-based paragraph index inside the commented assistant message. */
   paragraphIndex: z.number().int(),
+  /**
+   * When the comment targets one markdown list item: zero-based index of that
+   * item inside its list block. Null/absent = the whole paragraph.
+   */
+  itemIndex: z.number().int().nullable().optional(),
   /** Snapshot of the commented paragraph, used for quoting and anchoring. */
   paragraphText: z.string(),
   text: z.string(),

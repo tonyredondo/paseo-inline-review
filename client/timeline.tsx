@@ -36,6 +36,8 @@ type EditingTarget = {
   paragraphIndex: number;
   paragraphText: string;
   draft: string;
+  /** Set when the target is one markdown list item (per-item comment). */
+  itemIndex?: number | null;
   /** When set, the editor updates an existing comment instead of adding one. */
   commentId?: string;
 };
@@ -58,9 +60,15 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+/**
+ * A captured streaming snapshot may be a prefix of the completed paragraph.
+ * Prefix matching requires a substantial capture so short quotes cannot steal
+ * anchors across messages (exact matches are always accepted).
+ */
 function matchesCapturedText(captured: string, paragraph: string | undefined): boolean {
   if (paragraph === undefined) return false;
-  return paragraph === captured || paragraph.startsWith(captured);
+  if (paragraph === captured) return true;
+  return captured.length >= 40 && paragraph.startsWith(captured);
 }
 
 function commentAnchorsHere(
@@ -69,9 +77,24 @@ function commentAnchorsHere(
   index: number,
   comment: ReviewComment,
 ): boolean {
+  // Per-list-item comments render inside their item row, never chunk-level.
+  if (comment.itemIndex !== undefined && comment.itemIndex !== null) return false;
   if (comment.messageId !== null && comment.messageId !== data.messageId) return false;
   if (comment.paragraphIndex !== index) return false;
   return matchesCapturedText(comment.paragraphText, paragraph);
+}
+
+/** Comments anchored to one list item of the chunk at chunkIndex. */
+function listItemComments(
+  comments: ReviewComment[],
+  chunkIndex: number,
+  itemIndex: number,
+): ReviewComment[] {
+  return comments.filter(
+    (comment) =>
+      comment.paragraphIndex === chunkIndex &&
+      comment.itemIndex === itemIndex,
+  );
 }
 
 function commentBelongsToMessage(data: ReviewItemData, comment: ReviewComment): boolean {
@@ -245,6 +268,8 @@ function ReviewAssistantMessage({
   useEffect(() => {
     if (data.messageId === null) return;
     for (const comment of comments) {
+      // Per-item comments anchor by (paragraphIndex, itemIndex): no healing.
+      if (comment.itemIndex !== undefined && comment.itemIndex !== null) continue;
       const storedParagraph = paragraphs[comment.paragraphIndex];
       const storedMatches = matchesCapturedText(comment.paragraphText, storedParagraph);
       if (comment.messageId === null || !storedMatches) {
@@ -273,7 +298,7 @@ function ReviewAssistantMessage({
     return () => clearTimeout(timer);
   }, [editingOpen, layout.platform]);
   // Double-tap detection for touch devices (web uses modifier-click).
-  const lastTapRef = useRef<{ index: number; at: number } | null>(null);
+  const lastTapRef = useRef<{ index: number; itemIndex: number; at: number } | null>(null);
 
   const styles = useMemo(
     () => ({
@@ -311,21 +336,49 @@ function ReviewAssistantMessage({
     [theme, layout.compact],
   );
 
-  function handleChunkTap(chunkIndex: number): void {
-    // Touch: a double-tap on the same chunk opens the editor, so single taps
-    // and long-presses stay free for scroll and native text selection.
+  function handleChunkTap(chunkIndex: number, itemIndex: number = -1, itemText: string = ""): void {
+    // Touch: a double-tap on the same chunk (or list item) opens the editor, so
+    // single taps and long-presses stay free for scroll and native selection.
     const now = Date.now();
     const last = lastTapRef.current;
-    if (last && last.index === chunkIndex && now - last.at < 350) {
+    if (last && last.index === chunkIndex && last.itemIndex === itemIndex && now - last.at < 350) {
       lastTapRef.current = null;
       setEditing({
         paragraphIndex: chunkIndex,
-        paragraphText: paragraphs[chunkIndex] ?? "",
+        itemIndex: itemIndex >= 0 ? itemIndex : null,
+        paragraphText: itemIndex >= 0 ? itemText : paragraphs[chunkIndex] ?? "",
         draft: "",
       });
       return;
     }
-    lastTapRef.current = { index: chunkIndex, at: now };
+    lastTapRef.current = { index: chunkIndex, itemIndex, at: now };
+  }
+
+  /** List item taps: web opens per-item with Cmd/Ctrl; native uses double-tap. */
+  function handleListItemTap(
+    chunkIndex: number,
+    itemIndex: number,
+    itemText: string,
+    event?: unknown,
+  ): void {
+    const carrier = event as {
+      preventDefault?: () => void;
+      nativeEvent?: { metaKey?: boolean; ctrlKey?: boolean };
+    } | undefined;
+    const native = event === undefined || event === null ? undefined : carrier?.nativeEvent;
+    if (layout.platform === "web") {
+      if (native?.metaKey || native?.ctrlKey) {
+        carrier?.preventDefault?.();
+        setEditing({
+          paragraphIndex: chunkIndex,
+          itemIndex,
+          paragraphText: itemText,
+          draft: "",
+        });
+      }
+      return;
+    }
+    handleChunkTap(chunkIndex, itemIndex, itemText);
   }
 
   function save() {
@@ -340,6 +393,7 @@ function ReviewAssistantMessage({
         agentId,
         messageId: data.messageId,
         paragraphIndex: editing.paragraphIndex,
+        itemIndex: editing.itemIndex ?? null,
         paragraphText: editing.paragraphText,
         text: editing.draft.trim(),
       });
@@ -378,6 +432,28 @@ function ReviewAssistantMessage({
                   compact={layout.compact}
                   refs={refs}
                   onCommentRequest={() => setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })}
+                  onListItemPress={(itemIndex, itemText, event) => handleListItemTap(index, itemIndex, itemText, event)}
+                  listItemExtras={(itemIndex) => (
+                    <>
+                      {listItemComments(comments, index, itemIndex).map((comment) => (
+                        <CommentCard
+                          key={comment.id}
+                          comment={comment}
+                          theme={theme}
+                          onEdit={(target) =>
+                            setEditing({
+                              paragraphIndex: index,
+                              itemIndex,
+                              paragraphText: comment.paragraphText,
+                              draft: comment.text,
+                              commentId: comment.id,
+                            })
+                          }
+                          onRemove={() => removeComment(comment.id)}
+                        />
+                      ))}
+                    </>
+                  )}
                 />
               </Pressable>
             ) : (
@@ -394,6 +470,28 @@ function ReviewAssistantMessage({
                   selectable={layout.platform !== "ios"}
                   onChunkPress={() => handleChunkTap(index)}
                   onCommentRequest={() => setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })}
+                  onListItemPress={(itemIndex, itemText, event) => handleListItemTap(index, itemIndex, itemText, event)}
+                  listItemExtras={(itemIndex) => (
+                    <>
+                      {listItemComments(comments, index, itemIndex).map((comment) => (
+                        <CommentCard
+                          key={comment.id}
+                          comment={comment}
+                          theme={theme}
+                          onEdit={(target) =>
+                            setEditing({
+                              paragraphIndex: index,
+                              itemIndex,
+                              paragraphText: comment.paragraphText,
+                              draft: comment.text,
+                              commentId: comment.id,
+                            })
+                          }
+                          onRemove={() => removeComment(comment.id)}
+                        />
+                      ))}
+                    </>
+                  )}
                 />
               </View>
             )}

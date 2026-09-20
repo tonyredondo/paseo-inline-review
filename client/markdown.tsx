@@ -579,6 +579,8 @@ export function MarkdownText({
   selectable,
   onChunkPress,
   onCommentRequest,
+  onListItemPress,
+  listItemExtras,
 }: {
   text: string;
   theme: PluginTheme;
@@ -591,6 +593,10 @@ export function MarkdownText({
   onChunkPress?: () => void;
   /** Rendered as a Comment control on code blocks; opens the review editor. */
   onCommentRequest?: () => void;
+  /** Tapped one markdown list item: (itemIndex, itemText, event). */
+  onListItemPress?: (itemIndex: number, itemText: string, event?: unknown) => void;
+  /** Per-item extras (comment cards) rendered below each list item. */
+  listItemExtras?: (itemIndex: number) => ReactNode;
 }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   const styles = useStyles(theme, compact);
@@ -674,9 +680,17 @@ export function MarkdownText({
                     ) : (
                       <Text style={styles.marker}>{"\u2022"}</Text>
                     )}
-                    <MarkdownSpan style={styles.paragraph} uiTextView selectable={selectable}>
-                      <InlineRun tokens={item.spans} theme={theme} styles={styles} selectable={selectable} />
-                    </MarkdownSpan>
+                    <View style={{ flex: 1, gap: 4 }}>
+                      <MarkdownSpan
+                        style={styles.paragraph}
+                        uiTextView
+                        selectable={selectable}
+                        onPress={onListItemPress ? (event) => onListItemPress(itemIndex, item.spans.map((token) => ("text" in token ? token.text : "")).join(""), event) : undefined}
+                      >
+                        <InlineRun tokens={item.spans} theme={theme} styles={styles} selectable={selectable} />
+                      </MarkdownSpan>
+                      {listItemExtras ? listItemExtras(itemIndex) : null}
+                    </View>
                   </View>
                 ))}
               </View>
@@ -687,9 +701,17 @@ export function MarkdownText({
                 {block.items.map((item, itemIndex) => (
                   <View key={itemIndex} style={[styles.listRow, { paddingLeft: 14 * item.level }]}>
                     <Text style={styles.marker}>{item.marker}.</Text>
-                    <MarkdownSpan style={styles.paragraph} uiTextView selectable={selectable}>
-                      <InlineRun tokens={item.spans} theme={theme} styles={styles} selectable={selectable} />
-                    </MarkdownSpan>
+                    <View style={{ flex: 1, gap: 4 }}>
+                      <MarkdownSpan
+                        style={styles.paragraph}
+                        uiTextView
+                        selectable={selectable}
+                        onPress={onListItemPress ? (event) => onListItemPress(itemIndex, item.spans.map((token) => ("text" in token ? token.text : "")).join(""), event) : undefined}
+                      >
+                        <InlineRun tokens={item.spans} theme={theme} styles={styles} selectable={selectable} />
+                      </MarkdownSpan>
+                      {listItemExtras ? listItemExtras(itemIndex) : null}
+                    </View>
                   </View>
                 ))}
               </View>
