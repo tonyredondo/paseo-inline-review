@@ -401,6 +401,45 @@ function ReviewAssistantMessage({
     setEditing(null);
   }
 
+  // The inline editor renders either at chunk level (paragraph comments) or
+  // inside the tapped list item (per-item comments).
+  const editorNode = editing ? (
+    <View ref={editorRef} style={styles.editor}>
+      <TextInput
+        value={editing.draft}
+        onChangeText={(draft) => setEditing({ ...editing, draft })}
+        placeholder="Write your comment about this passage..."
+        multiline
+        autoFocus
+        onKeyPress={(event) => {
+          // Platform+Return saves; plain Return inserts a newline.
+          const native = event.nativeEvent as unknown as {
+            key?: string;
+            metaKey?: boolean;
+            ctrlKey?: boolean;
+          };
+          if (native.key === "Enter" && (native.metaKey || native.ctrlKey)) {
+            event.preventDefault?.();
+            save();
+          }
+          if (native.key === "Escape") {
+            event.preventDefault?.();
+            setEditing(null);
+          }
+        }}
+        style={styles.input}
+      />
+      <View style={styles.actions}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Save comment" style={styles.save} onPress={save}>
+          <Text style={styles.saveText}>{editing.commentId ? "Update" : "Save"}</Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Cancel comment" style={styles.cancel} onPress={() => setEditing(null)}>
+          <Text style={styles.cancelText}>Cancel</Text>
+        </Pressable>
+      </View>
+    </View>
+  ) : null;
+
   return (
     <View style={styles.root}>
       {paragraphs.map((paragraph, index) => {
@@ -408,6 +447,7 @@ function ReviewAssistantMessage({
           commentAnchorsHere(data, paragraph, index, comment),
         );
         const isEditing = editing !== null && editing.paragraphIndex === index;
+        const itemEditing = isEditing && editing.itemIndex !== null && editing.itemIndex !== undefined;
         return (
           <View key={index} style={styles.comments}>
             {layout.platform === "web" ? (
@@ -435,6 +475,7 @@ function ReviewAssistantMessage({
                   onListItemPress={(itemIndex, itemText, event) => handleListItemTap(index, itemIndex, itemText, event)}
                   listItemExtras={(itemIndex) => (
                     <>
+                      {editing !== null && editing.paragraphIndex === index && editing.itemIndex === itemIndex ? editorNode : null}
                       {listItemComments(comments, index, itemIndex).map((comment) => (
                         <CommentCard
                           key={comment.id}
@@ -473,6 +514,7 @@ function ReviewAssistantMessage({
                   onListItemPress={(itemIndex, itemText, event) => handleListItemTap(index, itemIndex, itemText, event)}
                   listItemExtras={(itemIndex) => (
                     <>
+                      {editing !== null && editing.paragraphIndex === index && editing.itemIndex === itemIndex ? editorNode : null}
                       {listItemComments(comments, index, itemIndex).map((comment) => (
                         <CommentCard
                           key={comment.id}
@@ -493,42 +535,6 @@ function ReviewAssistantMessage({
                     </>
                   )}
                 />
-              </View>
-            )}
-            {isEditing && (
-              <View ref={editorRef} style={styles.editor}>
-                <TextInput
-                  value={editing.draft}
-                  onChangeText={(draft) => setEditing({ ...editing, draft })}
-                  placeholder="Write your comment about this passage..."
-                  multiline
-                  autoFocus
-                  onKeyPress={(event) => {
-                    // Platform+Return saves; plain Return inserts a newline.
-                    const native = event.nativeEvent as unknown as {
-                      key?: string;
-                      metaKey?: boolean;
-                      ctrlKey?: boolean;
-                    };
-                    if (native.key === "Enter" && (native.metaKey || native.ctrlKey)) {
-                      event.preventDefault?.();
-                      save();
-                    }
-                    if (native.key === "Escape") {
-                      event.preventDefault?.();
-                      setEditing(null);
-                    }
-                  }}
-                  style={styles.input}
-                />
-                <View style={styles.actions}>
-                  <Pressable accessibilityRole="button" accessibilityLabel="Save comment" style={styles.save} onPress={save}>
-                    <Text style={styles.saveText}>{editing.commentId ? "Update" : "Save"}</Text>
-                  </Pressable>
-                  <Pressable accessibilityRole="button" accessibilityLabel="Cancel comment" style={styles.cancel} onPress={() => setEditing(null)}>
-                    <Text style={styles.cancelText}>Cancel</Text>
-                  </Pressable>
-                </View>
               </View>
             )}
             {anchored.map((comment) => (
