@@ -12,12 +12,17 @@ import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-
 import { openFileTab, registerFileTabOpener } from "./preview-store";
 import { ensureWideFrame, undoWideFrame, wideFrameSettings } from "./wide-frame";
 import { userMessageCardsEnabled } from "./user-card-state";
+import {
+  ensureTurnIndex,
+  isTurnFinalMessage,
+  subscribeTurnIndex,
+  turnIndexVersion,
+} from "./turn-final-store";
 import { z } from "zod";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   loadCommentsRpc,
-  debugHairlinesRpc,
   openLocalFileRpc,
   reviewItemSchema,
   saveCommentsRpc,
@@ -494,13 +499,37 @@ function ReviewAssistantMessage({
   const load = useRpc(loadCommentsRpc);
   const persistComments = useRpc(saveCommentsRpc);
   const openLocalFile = useRpc(openLocalFileRpc);
-  const sendSepDump = useRpc(debugHairlinesRpc);
-  useEffect(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).__sendSepDump = (dump: string) => void sendSepDump({ dump });
-  }, [sendSepDump]);
   const toast = useToast();
   const paseo = usePaseo();
+  // Turn-final card: the timeline API gives every entry its turnId, so the
+  // last assistant message of each turn is known on ALL platforms (native
+  // included) — no DOM probing needed.
+  const turnVersion = useSyncExternalStore(
+    subscribeTurnIndex,
+    () => turnIndexVersion(agentId),
+    () => turnIndexVersion(agentId),
+  );
+  const isTurnFinal = useMemo(
+    () =>
+      turnVersion >= 0 &&
+      data.text.trim().length > 0 &&
+      isTurnFinalMessage(agentId, data.messageId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [turnVersion, agentId, data.messageId, data.text],
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const handle = paseo.agents.ref(agentId);
+      if (!handle) return;
+      await handle.refresh().catch(() => null);
+      if (cancelled) return;
+      ensureTurnIndex(agentId, handle.timeline);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [paseo, agentId]);
   const [filePreview, setFilePreview] = useState<{
     path: string;
     content: string;
@@ -534,38 +563,6 @@ function ReviewAssistantMessage({
       undoWideFrame();
     }
   }, [layout.platform, wideFrame, theme]);
-  // TEMP AUDIT: turn-card detection dump.
-  const audit = useRef(false);
-  useEffect(() => {
-    if (layout.platform !== "web" || audit.current) return;
-    audit.current = true;
-    const timer = setTimeout(() => {
-      const g2 = globalThis as unknown as { document?: any };
-      const doc2 = g2.document;
-      if (!doc2) return;
-      const out2: string[] = [];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const send = (globalThis as any).__sendSepDump;
-      const roots = Array.from(doc2.querySelectorAll('[data-testid="inline-review-root"]')) as any[];
-      for (const r3 of roots) {
-        let n3: any = r3;
-        while (n3.parentElement && n3.parentElement.childElementCount === 1) n3 = n3.parentElement;
-        const kinds: string[] = [];
-        let sib: any = n3.nextElementSibling;
-        let count = 0;
-        while (sib && count < 6) {
-          const hasU = sib.querySelectorAll('[data-testid="user-message"]').length > 0;
-          const hasA = sib.querySelectorAll('[data-testid="inline-review-root"]').length > 0;
-          kinds.push(hasU ? "U" : hasA ? "A" : "?");
-          sib = sib.nextElementSibling;
-          count += 1;
-        }
-        out2.push(`ROOT card=${r3.dataset.inlineReviewTurnCard ?? "none"} next=[${kinds.join(",")}] text=${String(r3.textContent).slice(0, 40)}`);
-      }
-      void (globalThis as any).__sendSepDump?.(out2.join("\n") || "no roots");
-    }, 2000);
-    return () => clearTimeout(timer);
-  }, [layout.platform]);
   // Host-maintained agent snapshot: agents.ref() reads null until a snapshot
   // Host-maintained agent snapshot: agents.ref() reads null until a snapshot
   // arrives, but the host state is always populated.
@@ -630,7 +627,29 @@ function ReviewAssistantMessage({
 
   const styles = useMemo(
     () => ({
-      root: { gap: layout.compact ? 6 : 8, paddingBottom: 10 } as const,
+      root: {
+        gap: layout.compact ? 6 : 8,
+        paddingBottom: 10,
+        // Turn-final card (all platforms): mirror of the user card — raised
+        // sent-review surface, hairline border, accent on both edges.
+        ...(isTurnFinal
+          ? {
+              backgroundColor: theme.colors.surface1,
+              borderRadius: 8,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              borderRightWidth: 5,
+              borderRightColor: withAlpha(theme.colors.accent, 0.35),
+              borderLeftWidth: 5,
+              borderLeftColor: withAlpha(theme.colors.accent, 0.35),
+              paddingLeft: 16,
+              paddingRight: 16,
+              paddingTop: 14,
+              paddingBottom: 20,
+              marginTop: 4,
+            }
+          : {}),
+      } as const,
       comments: { gap: 4, marginTop: 2 } as const,
       editor: {
         backgroundColor: theme.colors.surface1,
@@ -661,7 +680,7 @@ function ReviewAssistantMessage({
       cancel: { padding: 10, alignItems: "center" as const } as const,
       cancelText: { color: theme.colors.foregroundMuted, fontSize: 14 } as const,
     }),
-    [theme, layout.compact],
+    [theme, layout.compact, isTurnFinal],
   );
 
   function handleChunkTap(chunkIndex: number, itemIndex: number = -1, itemText: string = ""): void {

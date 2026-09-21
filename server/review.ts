@@ -6,7 +6,6 @@ import type { RpcInput } from "@getpaseo/plugin";
 import {
   isValidHttpUrl,
   loadCommentsRpc,
-  debugHairlinesRpc,
   openInBrowserRpc,
   openLocalFileRpc,
   reviewCommentSchema,
@@ -246,17 +245,6 @@ function isProbablyBinary(buffer: Buffer): boolean {
     if (buffer[index] === 0) return true;
   }
   return false;
-}
-
-/** TEMP AUDIT: append client dump to dom-debug.log. */
-export async function debugHairlines(
-  { dump }: RpcInput<typeof debugHairlinesRpc>,
-): Promise<{ ok: boolean }> {
-  const dir = path.dirname(dataPath);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, "dom-debug.log"), `[${new Date().toISOString()}] ${dump}
-`, { flag: "a" });
-  return { ok: true };
 }
 
 export async function openInBrowser(

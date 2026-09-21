@@ -172,107 +172,6 @@ function loosenToolCallRows(doc: WDoc): void {
  * message of the thread (nothing to separate there). Re-inserted each
  * pass; host re-renders may remove it.
  */
-/**
- * Wraps the last agent message of each turn in a review-style card — the
- * mirror of the user message card, aligned to the agent's left edge:
- * raised surface, hairline border on the other sides, 5px accent border on
- * the left. Styled on the item wrapper itself (React owns the list and
- * deletes foreign nodes on virtualized re-renders; styles re-apply).
- */
-function styleTurnFinalCards(doc: WDoc): void {
-  const roots = doc.querySelectorAll('[data-testid="inline-review-root"]');
-  for (const el of Array.from(roots)) {
-    // Climb from the plugin message root to its flat-list wrapper.
-    let node: WNode = el;
-    while (node.parentElement && node.parentElement.childElementCount === 1) {
-      const up = node.parentElement;
-      if (!up) break;
-      node = up;
-    }
-    // Turn-final iff, skipping neutral items (tool rows, turn stats,
-    // compaction), the next item holds a user message — or no user/agent
-    // item follows at all (the thread's last message is also the last of
-    // the final turn).
-    let next: WNode | null = node.parentElement ? node.nextElementSibling : null;
-    let isFinal = true;
-    while (next) {
-      if (containsUserMessage(next)) {
-        break; // a user message follows: last agent message of this turn
-      }
-      if (containsAssistant(next)) {
-        isFinal = false; // another agent message follows: not final
-        break;
-      }
-      next = next.nextElementSibling;
-    }
-    if (!isFinal) continue;
-    // Card styles on OUR OWN plugin root element (React-managed styles are
-    // wiped on re-render and re-applied by the observer, like widening).
-    // Sent-review-card surface (dimmer than the pending raised surface).
-    el.style.backgroundColor = userCardSurface;
-    el.style.borderRadius = "8px";
-    el.style.borderTopWidth = "1px";
-    el.style.borderTopStyle = "solid";
-    el.style.borderTopColor = userCardBorder;
-    el.style.borderRightWidth = "1px";
-    el.style.borderRightStyle = "solid";
-    el.style.borderRightColor = userCardBorder;
-    el.style.borderBottomWidth = "1px";
-    el.style.borderBottomStyle = "solid";
-    el.style.borderBottomColor = userCardBorder;
-    // Accent border on BOTH edges.
-    el.style.borderRightWidth = "5px";
-    el.style.borderRightColor = withAlpha(userCardAccent, 0.35);
-    el.style.borderLeftWidth = "5px";
-    el.style.borderLeftColor = withAlpha(userCardAccent, 0.35);
-    el.style.paddingLeft = "16px";
-    el.style.paddingRight = "16px";
-    el.style.paddingTop = "14px";
-    el.style.paddingBottom = "20px";
-    el.dataset.inlineReviewTurnCard = "1";
-  }
-}
-
-function containsAssistant(node: WNode): boolean {
-  const u = node as unknown as { querySelectorAll(s: string): ArrayLike<WNode> };
-  return u.querySelectorAll('[data-testid="inline-review-root"]').length > 0;
-}
-
-function containsUserMessage(node: WNode): boolean {
-  const u = node as unknown as { querySelectorAll(s: string): ArrayLike<WNode> };
-  // Host user messages, sent-review cards and native user cards are all
-  // user-side turn boundaries.
-  return (
-    u.querySelectorAll('[data-testid="user-message"]').length > 0 ||
-    u.querySelectorAll('[data-testid="inline-review-sent"]').length > 0
-  );
-}
-
-function unstyleTurnFinalCards(doc: WDoc): void {
-  const nodes = doc.querySelectorAll('[data-inline-review-turn-card="1"]');
-  for (const el of Array.from(nodes)) {
-    el.style.backgroundColor = "";
-    el.style.borderRadius = "";
-    el.style.borderTopWidth = "";
-    el.style.borderTopStyle = "";
-    el.style.borderTopColor = "";
-    el.style.borderRightWidth = "";
-    el.style.borderRightStyle = "";
-    el.style.borderRightColor = "";
-    el.style.borderBottomWidth = "";
-    el.style.borderBottomStyle = "";
-    el.style.borderBottomColor = "";
-    el.style.borderLeftWidth = "";
-    el.style.borderLeftStyle = "";
-    el.style.borderLeftColor = "";
-    el.style.paddingLeft = "";
-    el.style.paddingRight = "";
-    el.style.paddingTop = "";
-    el.style.paddingBottom = "";
-    el.dataset.inlineReviewTurnCard = "";
-  }
-}
-
 function unstyleUserMessages(doc: WDoc): void {
   const nodes = doc.querySelectorAll('[data-testid="user-message"]');
   for (const el of Array.from(nodes)) {
@@ -388,8 +287,6 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     // User messages: review-card look (re-applied; host re-renders wipe it).
     styleUserMessages(doc, g);
     tightenToolCallRows(doc);
-    unstyleTurnFinalCards(doc);
-    styleTurnFinalCards(doc);
   };
 
   if (colors) {
@@ -449,7 +346,6 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     paneWidthCache = 0;
     unstyleUserMessages(doc);
     loosenToolCallRows(doc);
-    unstyleTurnFinalCards(doc);
     for (const cb of observerCbs) cb();
   };
 }

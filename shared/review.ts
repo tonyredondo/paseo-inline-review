@@ -56,13 +56,6 @@ export const saveCommentsRpc = defineRpc({
 
 
 
-/** TEMP AUDIT: client dumps turn-card detection state. */
-export const debugHairlinesRpc = defineRpc({
-  name: "review.debug-hairlines",
-  input: z.object({ dump: z.string() }),
-  output: z.object({ ok: z.boolean() }),
-});
-
 export const openInBrowserRpc = defineRpc({
   name: "review.open-in-browser",
   input: z.object({ url: z.string() }),

@@ -1,14 +1,12 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { wideFrameSettings } from "./shared/wide-frame-settings";
 import {
-  debugHairlinesRpc,
   loadCommentsRpc,
   openInBrowserRpc,
   openLocalFileRpc,
   saveCommentsRpc,
 } from "./shared/review";
 import {
-  debugHairlines,
   loadComments,
   openInBrowser,
   openLocalFile,
@@ -20,7 +18,6 @@ export default function contribute(server: PluginServerContext) {
   server.handle(loadCommentsRpc, loadComments);
   server.handle(saveCommentsRpc, saveComments);
   server.handle(openInBrowserRpc, openInBrowser);
-  server.handle(debugHairlinesRpc, debugHairlines);
   server.handle(openLocalFileRpc, openLocalFile);
   return () => {};
 }
