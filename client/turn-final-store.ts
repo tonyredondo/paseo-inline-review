@@ -9,18 +9,33 @@
  * bundle with "Cannot read property 'prototype' of undefined".
  */
 /** Minimal structural type — avoids importing @getpaseo/client in the client bundle. */
+interface TimelineCursor {
+  epoch: string;
+  seq: number;
+}
 interface TimelineHandle {
   subscribe(handler: (message: unknown) => void): unknown;
-  refetch(options?: { direction?: string; limit?: number }): Promise<{
+  refetch(options?: {
+    direction?: string;
+    limit?: number;
+    cursor?: TimelineCursor;
+  }): Promise<{
     entries: Array<{
       item: { type: string; text?: string; messageId?: string };
       turnId?: string;
       seqEnd: number;
     }>;
+    epoch?: string;
+    hasOlder?: boolean;
+    startCursor?: TimelineCursor | null;
+    endCursor?: TimelineCursor | null;
   }>;
 }
 
-type Entry = { kind: "user" | "assistant"; id: string | null; turnId: string | null; seq: number };
+type Entry = { kind: "user" | "assistant"; id: string | null; turnId: string | null; seq: number; text: string | null };
+
+type TimelinePage = Awaited<ReturnType<TimelineHandle["refetch"]>>;
+type PageRace = { ok: true; value: TimelinePage } | { ok: false };
 
 interface AgentTurnIndex {
   readonly version: number;
@@ -28,12 +43,68 @@ interface AgentTurnIndex {
   refresh(): Promise<void>;
   subscribe(cb: () => void): () => void;
   isFinal(messageId: string | null): boolean;
+  isFinalText(text: string | null): boolean;
   replaceFinals(ids: string[]): void;
 }
 
 function createAgentTurnIndex(agentId: string, timeline: TimelineHandle): AgentTurnIndex {
   let finalIds = new Set<string>();
+  let finalTexts = new Set<string>();
+  let olderEntries: Entry[] = [];
+  let olderComplete = false;
+  let backfillStarted = false;
   let version = 0;
+
+  /** Fetches history pages once, after the first tail refresh settles. */
+  function backfillOlder(): void {
+    void (async () => {
+      try {
+        let cursor: TimelineCursor | null = null;
+        let pages = 0;
+        const collected: Entry[] = [...olderEntries];
+        while (pages < 12) {
+          const racedPage: PageRace = await Promise.race([
+            timeline.refetch({ direction: "before", cursor: cursor ?? undefined, limit: 400 }).then(
+              (value): PageRace => ({ ok: true, value }),
+            ),
+            new Promise<PageRace>((resolve) => setTimeout(() => resolve({ ok: false }), 8000)),
+          ]);
+          if (!racedPage.ok) {
+            noteDiag(agentId, "backfill-timeout");
+            return;
+          }
+          const page: TimelinePage = racedPage.value;
+          cursor = page.startCursor ?? null;
+          for (const entry of page.entries) {
+            const t = entry.item.type;
+            if (t !== "assistant_message" && t !== "user_message") continue;
+            collected.push({
+              kind: t === "assistant_message" ? "assistant" : "user",
+              id: entry.item.messageId ?? null,
+              turnId: entry.turnId ?? null,
+              seq: entry.seqEnd,
+              text: entry.item.text ?? null,
+            });
+          }
+          pages += 1;
+          if (page.hasOlder === false || cursor === null) break;
+        }
+        collected.sort((a, b) => a.seq - b.seq);
+        const dedup: Entry[] = [];
+        for (let i = 0; i < collected.length; i += 1) {
+          if (i > 0 && collected[i].seq === collected[i - 1].seq) continue;
+          dedup.push(collected[i]);
+        }
+        olderEntries = dedup;
+        olderComplete = true;
+        noteDiag(agentId, `backfill:${dedup.length}e`);
+        void refresh();
+      } catch (error) {
+        noteDiag(agentId, `backfill-fail:${String(error).slice(0, 40)}`);
+      }
+    })();
+  }
+
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let started = false;
@@ -76,7 +147,19 @@ function createAgentTurnIndex(agentId: string, timeline: TimelineHandle): AgentT
       }
       if (!payload) return;
       noteDiag(agentId, `ok:${payload.entries.length}e:${payload.entries.filter((e) => e.turnId).length}tid`);
-      const list: Entry[] = [];
+// Backfill: the tail page only covers the last N entries; older turns
+      // (revealed when the user scrolls up) need their boundaries too. The
+      // backfill runs at most ONCE per store (latched) so streaming refreshes
+      // stay cheap; the tail page itself is re-fetched every refresh.
+      const tail = payload.entries;
+      if (payload.hasOlder === false) {
+        olderEntries = [];
+        olderComplete = true;
+      } else if (!olderComplete && !backfillStarted) {
+        backfillStarted = true;
+        void backfillOlder();
+      }
+      const list: Entry[] = [...olderEntries];
       for (const entry of payload.entries) {
         const t = entry.item.type;
         if (t !== "assistant_message" && t !== "user_message") continue;
@@ -89,18 +172,39 @@ function createAgentTurnIndex(agentId: string, timeline: TimelineHandle): AgentT
           id,
           turnId: entry.turnId ?? null,
           seq: entry.seqEnd,
+          text: entry.item.text ?? null,
         });
       }
       list.sort((a, b) => a.seq - b.seq);
+      // Dedupe by seq (cached older entries may overlap the tail page).
+      let dedupList: Entry[] = [];
+      for (let i = 0; i < list.length; i += 1) {
+        if (i > 0 && list[i].seq === list[i - 1].seq) continue;
+        dedupList.push(list[i]);
+      }
+      // Turn-final = the last assistant message BEFORE each user message
+      // (skipping neutral/empty items). Host turnIds are per internal agent
+      // turn — a single user turn can contain many of them (tool runs),
+      // so grouping by turnId styles every segment as its own card.
       const next = new Set<string>();
-      const lastByTurn = new Map<string, string>();
-      for (const entry of list) {
-        if (entry.kind === "assistant" && entry.id) {
-          lastByTurn.set(entry.turnId ?? "-", entry.id);
+      const nextTexts = new Set<string>();
+      let lastAssistantId: string | null = null;
+      let lastAssistantText: string | null = null;
+      for (const entry of dedupList) {
+        if (entry.kind === "assistant") {
+          if (entry.id) lastAssistantId = entry.id;
+          if (entry.text) lastAssistantText = entry.text;
+        } else if (entry.kind === "user" && (lastAssistantId || lastAssistantText)) {
+          if (lastAssistantId) next.add(lastAssistantId);
+          if (lastAssistantText) nextTexts.add(lastAssistantText);
+          lastAssistantId = null;
+          lastAssistantText = null;
         }
       }
-      for (const id of lastByTurn.values()) next.add(id);
+      if (lastAssistantId) next.add(lastAssistantId);
+      if (lastAssistantText) nextTexts.add(lastAssistantText);
       finalIds = next;
+      finalTexts = nextTexts;
       version += 1;
       for (const cb of listeners) cb();
     } catch (error) {
@@ -141,6 +245,10 @@ function createAgentTurnIndex(agentId: string, timeline: TimelineHandle): AgentT
     isFinal(messageId: string | null): boolean {
       if (!messageId) return false;
       return finalIds.has(messageId);
+    },
+    isFinalText(text: string | null): boolean {
+      if (!text) return false;
+      return finalTexts.has(text);
     },
     replaceFinals(ids: string[]): void {
       finalIds = new Set(ids);
@@ -188,6 +296,12 @@ export function turnIndexVersion(agentId: string): number {
 
 export function isTurnFinalMessage(agentId: string, messageId: string | null): boolean {
   return stores.get(agentId)?.isFinal(messageId) ?? false;
+}
+
+/** Text-based match: the host re-uses one messageId across every streamed
+ * segment of a turn (codex), so message ids alone cannot mark ONE segment. */
+export function isTurnFinalText(agentId: string, text: string | null): boolean {
+  return stores.get(agentId)?.isFinalText(text) ?? false;
 }
 
 /** Server-fed final ids. Replaces the index contents (all platforms). */

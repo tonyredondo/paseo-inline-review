@@ -14,6 +14,7 @@ import { ensureWideFrame, undoWideFrame, wideFrameSettings } from "./wide-frame"
 import {
   ensureTurnIndex,
   isTurnFinalMessage,
+  isTurnFinalText,
   noteDiag,
   subscribeTurnIndex,
   turnIndexVersion,
@@ -514,7 +515,9 @@ function ReviewAssistantMessage({
     () =>
       turnVersion >= 0 &&
       data.text.trim().length > 0 &&
-      isTurnFinalMessage(agentId, data.messageId),
+      // MessageIds repeat across streamed segments (codex re-uses one id for
+      // the whole turn), so the TEXT of the final segment is the reliable key.
+      (isTurnFinalText(agentId, data.text) || isTurnFinalMessage(agentId, data.messageId)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [turnVersion, agentId, data.messageId, data.text],
   );
@@ -540,7 +543,6 @@ function ReviewAssistantMessage({
           return;
         }
         ensureTurnIndex(agentId, handle.timeline);
-        noteDiag(agentId, "OK");
       } catch (error) {
         noteDiag(agentId, `TH:${String(error).slice(0, 40)}`);
       }

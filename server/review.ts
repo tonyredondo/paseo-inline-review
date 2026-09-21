@@ -260,3 +260,4 @@ export async function openInBrowser(
     });
   });
 }
+
