@@ -33,6 +33,9 @@ const ZWSP = "\u200B";
 const CODE_COLLAPSE_LINES = 40;
 
 /** Converts #rrggbb to rgba() so fills can fade without losing hue. */
+/** Line-highlight band over the black code background (gutter included). */
+const HIGHLIGHT_ALPHA = 0.38;
+
 function withAlpha(hex: string, alpha: number): string {
   const value = hex.replace("#", "");
   const r = parseInt(value.slice(0, 2), 16);
@@ -507,7 +510,7 @@ export function CodeBlockView({
                         lineHeight: 18,
                         textAlign: "right",
                         // Highlighted rows paint the gutter cell too.
-                        ...(lineIsHighlighted(lineIndex) ? { backgroundColor: withAlpha(theme.colors.accent, 0.22) } : null),
+                        ...(lineIsHighlighted(lineIndex) ? { backgroundColor: withAlpha(theme.colors.accent, HIGHLIGHT_ALPHA) } : null),
                       },
                     ]}
                   >
@@ -534,7 +537,7 @@ export function CodeBlockView({
                           // too: stretch the row to the container width
                           // (the longest line) instead of hugging the text.
                           ...(lineIsHighlighted(lineIndex)
-                            ? { backgroundColor: withAlpha(theme.colors.accent, 0.22), alignSelf: "stretch" as const }
+                            ? { backgroundColor: withAlpha(theme.colors.accent, HIGHLIGHT_ALPHA), alignSelf: "stretch" as const }
                             : null),
                         },
                       ]}
@@ -561,7 +564,7 @@ export function CodeBlockView({
                 key={lineIndex}
                 style={{
                   flexDirection: "row",
-                  backgroundColor: lineIsHighlighted(lineIndex) ? withAlpha(theme.colors.accent, 0.22) : "transparent",
+                  backgroundColor: lineIsHighlighted(lineIndex) ? withAlpha(theme.colors.accent, HIGHLIGHT_ALPHA) : "transparent",
                 }}
               >
                 <Text
