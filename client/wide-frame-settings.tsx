@@ -45,9 +45,9 @@ export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
 
   return (
     <View style={styles.root}>
-      <Text style={styles.title}>Wide reading frame</Text>
+      <Text style={styles.title}>Feature flags</Text>
       <Text style={styles.muted}>
-        {`Widen the timeline past the host's fixed 820px column so messages, tool calls and user messages use the available window width, and style user messages like the plugin's review cards (left accent border, card surface). Desktop only.`}
+        {`Experimental plugin features. Each flag is independent; some need an app restart to take effect.`}
       </Text>
       {settings.status === "error" || settings.status === "invalid" ? (
         <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>{settings.error}</Text>
@@ -57,7 +57,7 @@ export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
         <Switch value={enabled} onValueChange={toggle} />
       </View>
       {values ? (
-        <Text style={styles.state}>{enabled ? "Enabled — restart the app window if items look unchanged." : "Disabled"}</Text>
+        <Text style={styles.state}>{enabled ? "Widening enabled — restart the app window if items look unchanged." : "Widening disabled"}</Text>
       ) : (
         <Text style={styles.muted}>{settings.status === "loading" ? "Loading…" : "Settings unavailable."}</Text>
       )}
@@ -71,9 +71,7 @@ export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
       {cards ? (
         <Text style={styles.state}>Cards enabled — restart the app if messages look unchanged.</Text>
       ) : null}
-      <Pressable onPress={toggle} hitSlop={6}>
-        <Text style={styles.state}>{enabled ? "Tap the switch to disable" : "Tap the switch to enable"}</Text>
-      </Pressable>
+
     </View>
   );
 }

@@ -29,8 +29,8 @@ export default function contribute(client: PluginClientContext) {
 
   client.addSettingsScreen({
     id: "wide-frame",
-    title: "Wide reading frame",
-    icon: "Maximize2",
+    title: "Feature flags",
+    icon: "ToggleRight",
     Component: WideFrameSettingsScreen,
   });
 
