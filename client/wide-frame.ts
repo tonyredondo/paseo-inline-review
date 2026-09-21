@@ -108,6 +108,26 @@ export function ensureWideFrame(): void {
 
   const observerCbs: Array<() => void> = [];
   apply();
+  // Zoom hook: browser/app zoom changes devicePixelRatio (the layout width
+  // in CSS px stays constant). Watch the resolution media query; when it
+  // flips, re-measure and re-apply with the new ratio, then re-arm with it.
+  const withZoom = g as unknown as {
+    devicePixelRatio?: number;
+    matchMedia?: (query: string) => {
+      matches: boolean;
+      addEventListener?: (type: string, cb: () => void) => void;
+    };
+  };
+  const installZoomHook = (): void => {
+    const dpr = withZoom.devicePixelRatio;
+    if (typeof dpr !== "number" || typeof withZoom.matchMedia !== "function") return;
+    const mql = withZoom.matchMedia(`(resolution: ${dpr}dppx)`);
+    mql.addEventListener?.("change", () => {
+      schedule();
+      installZoomHook(); // re-arm with the new ratio
+    });
+  };
+  installZoomHook();
   // Push widening in the same frame as host re-renders: no visible
   // "old width" flash while items mount.
   const Observer = g.MutationObserver;
