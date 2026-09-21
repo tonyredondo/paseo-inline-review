@@ -542,9 +542,10 @@ function ReviewAssistantMessage({
   }
 
   function handleLocalFilePress(target: LocalFileTarget): void {
-    // Desktop: open the review panel tab with the file preview — the panel is
-    // the large surface (the host sheet caps at 520px with no size escape).
-    if (layout.platform === "web") {
+    // Desktop and tablets (iPad): open the review panel tab with the file
+    // preview — the panel is the large surface (the host sheet caps at
+    // 520px with no size escape). Phones get the host bottom sheet.
+    if (layout.platform === "web" || !layout.compact) {
       // The client handle from agents.ref() reads null until a snapshot
       // arrives; useAgent() reads the host-maintained state instead.
       const workspaceId = agentWorkspaceId;
