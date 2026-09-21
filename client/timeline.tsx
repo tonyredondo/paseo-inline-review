@@ -139,12 +139,14 @@ function WebFilePreviewOverlay({
   compact,
   onClose,
   onOpenLocally,
+  onDownload,
 }: {
   filePreview: FilePreviewState;
   theme: PluginTheme;
   compact: boolean;
   onClose(): void;
   onOpenLocally(): void;
+  onDownload(): void;
 }): ReactNode {
   // Escape closes the overlay.
   useEffect(() => {
@@ -200,6 +202,15 @@ function WebFilePreviewOverlay({
             onPress={onOpenLocally}
           >
             <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open locally</Text>
+          </Pressable>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>|</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Download the file"
+            hitSlop={6}
+            onPress={onDownload}
+          >
+            <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Download</Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
@@ -572,6 +583,53 @@ function ReviewAssistantMessage({
     });
   }
 
+  /** Saves the previewed file via chunked base64 + a data: URI anchor (web). */
+  function downloadPreviewedFile(): void {
+    if (!filePreview) return;
+    void (async () => {
+      const CHUNK = 786432; // 0.75 MB, divisible by 3 so chunk base64s concatenate
+      const parts: string[] = [];
+      let offset = 0;
+      let last = false;
+      let size: number | undefined;
+      for (;;) {
+        const result = await openLocalFile({
+          path: filePreview.path,
+          mode: "download",
+          offset,
+          length: CHUNK,
+        });
+        if (!result.ok || !result.base64) {
+          toast.error(result.error ?? "Could not download the file.");
+          return;
+        }
+        parts.push(result.base64);
+        size = result.size ?? size;
+        last = result.done ?? true;
+        if (last) break;
+        offset += CHUNK;
+      }
+      const g = globalThis as unknown as {
+        document?: {
+          createElement(tag: string): { href?: string; download?: string; click?(): void; remove?(): void };
+          body?: { appendChild(node: unknown): void; removeChild(node: unknown): void };
+        };
+      };
+      if (!g.document?.body) {
+        toast.error("Download is only available on desktop.");
+        return;
+      }
+      const name = filePreview.path.split("/").pop() ?? "download";
+      const anchor = g.document.createElement("a");
+      anchor.href = `data:application/octet-stream;base64,${parts.join("")}`;
+      anchor.download = name;
+      g.document.body.appendChild(anchor);
+      anchor.click?.();
+      anchor.remove?.();
+      if (size) toast.show(`Downloaded ${size < 1024 * 1024 ? `${(size / 1024).toFixed(1)} KB` : `${(size / (1024 * 1024)).toFixed(1)} MB`}.`);
+    })().catch(() => toast.error("Could not download the file."));
+  }
+
   function save() {
     if (!editing || editing.draft.trim().length === 0) {
       setEditing(null);
@@ -761,6 +819,7 @@ function ReviewAssistantMessage({
             compact={layout.compact}
             onClose={() => setFilePreview(null)}
             onOpenLocally={openFileOnAgentMachine}
+            onDownload={downloadPreviewedFile}
           />
         ) : null
       ) : (
@@ -786,6 +845,15 @@ function ReviewAssistantMessage({
                     onPress={openFileOnAgentMachine}
                   >
                     <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open locally</Text>
+                  </Pressable>
+                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>|</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Download the file"
+                    hitSlop={6}
+                    onPress={downloadPreviewedFile}
+                  >
+                    <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Download</Text>
                   </Pressable>
                 </View>
                 <FileCodeBlock

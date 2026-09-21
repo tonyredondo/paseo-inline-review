@@ -186,7 +186,6 @@ const DOWNLOAD_CHUNK_BYTES = 786432; // 0.75 MB, divisible by 3
       g.document.body.appendChild(anchor);
       anchor.click?.();
       anchor.remove?.();
-      g.document.body.removeChild(anchor);
       if (size) toast.show(`Downloaded ${formatSize(size)}.`);
     })().catch(() => {
       setDownloadProgress(null);
@@ -222,6 +221,19 @@ const DOWNLOAD_CHUNK_BYTES = 786432; // 0.75 MB, divisible by 3
         >
           <Text style={styles.link}>Open locally</Text>
         </Pressable>
+        <Text style={styles.muted}>|</Text>
+        {downloadProgress === null ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Download the file"
+            hitSlop={6}
+            onPress={download}
+          >
+            <Text style={styles.link}>Download</Text>
+          </Pressable>
+        ) : (
+          <Text style={styles.muted}>{`${Math.round(downloadProgress * 100)}%`}</Text>
+        )}
       </View>
       {state.loading ? (
         <Text style={styles.muted}>Loading…</Text>
