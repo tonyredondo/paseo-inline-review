@@ -26,7 +26,10 @@ type WWin = {
   innerWidth?: number;
   requestAnimationFrame(cb: () => void): number;
   MutationObserver?: new (cb: () => void) => {
-    observe(target: WNode, options: { childList: boolean; subtree: boolean }): void;
+    observe(
+      target: WNode,
+      options: { childList: boolean; subtree: boolean; attributes?: boolean; attributeFilter?: string[] },
+    ): void;
     disconnect(): void;
   };
   addEventListener(type: string, listener: () => void): void;
@@ -34,7 +37,7 @@ type WWin = {
 };
 
 const HIDE = 860;
-const BREATHING = 112; // 56px of air per side
+const BREATHING = 160; // 80px of air per side
 
 let undo: (() => void) | null = null;
 
@@ -110,7 +113,15 @@ export function ensureWideFrame(): void {
   const Observer = g.MutationObserver;
   if (Observer && doc.body) {
     const observer = new Observer(schedule);
-    observer.observe(doc.body, { childList: true, subtree: true });
+    // Watch style attributes too: React re-renders rewrite the host
+    // wrappers' style props and wipe our inline max-width, snapping items
+    // back to the 820px frame until they are re-widened.
+    observer.observe(doc.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style"],
+    });
     observerCbs.push(() => observer.disconnect());
   }
   g.addEventListener("resize", schedule);

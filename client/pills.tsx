@@ -8,7 +8,6 @@ import {
   registerPersist,
   subscribe,
 } from "./review-store";
-import { clearPreview } from "./preview-store";
 
 type PillHandle = { remove(): void; update(patch: { label?: string; disabled?: boolean }): void };
 
@@ -77,9 +76,6 @@ export function registerPills(client: PluginClientContext): () => void {
           behavior: {
             kind: "action",
             onPress() {
-              // The pill always shows the review, not a file preview left
-              // over from a timeline file-link tap.
-              clearPreview();
               // Opening the agent panel also reports it as the active agent.
               client.openPanel("review", { workspaceId, agentId });
             },

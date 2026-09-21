@@ -1,9 +1,9 @@
 /**
- * Request state for the desktop file preview. Tapping a local-file link in
- * the timeline stores the target here and opens the review panel tab; the
- * panel then shows the file preview until the user goes back to the review.
- * (The host AdaptiveModalSheet caps at 520px wide with no size escape hatch,
- * so the panel is the only large surface a plugin can present.)
+ * File-preview tab state. Each opened file gets its own review-panel tab:
+ * the timeline stores the target under the tab's id and opens that panel;
+ * the panel renders the file until the user closes it.
+ * (The host AdaptiveModalSheet caps at 520px wide with no size escape
+ * hatch, so plugin panels are the only large file surfaces.)
  */
 type PreviewTarget = {
   path: string;
@@ -13,7 +13,7 @@ type PreviewTarget = {
   requestId: number;
 };
 
-let target: PreviewTarget | null = null;
+const targets = new Map<string, PreviewTarget>();
 const listeners = new Set<() => void>();
 let nextId = 1;
 
@@ -28,20 +28,29 @@ export function subscribe(listener: () => void): () => void {
   };
 }
 
-export function getPreviewTarget(): PreviewTarget | null {
-  return target;
+export function getPreviewTarget(panelId: string): PreviewTarget | null {
+  return targets.get(panelId) ?? null;
 }
 
-export function requestPreview(path: string, lineStart?: number, lineEnd?: number): void {
-  target = { path, lineStart, lineEnd, requestId: nextId };
-  nextId += 1;
+/** Stores the target for a file tab and returns the target (with fresh requestId). */
+export function requestPreview(
+  path: string,
+  lineStart?: number,
+  lineEnd?: number,
+  panelId?: string,
+): { panelId: string; target: PreviewTarget } {
+  const id = panelId ?? `file-preview-${nextId}`;
+  if (panelId === undefined) nextId += 1;
+  const target: PreviewTarget = { path, lineStart, lineEnd, requestId: nextId++ };
+  targets.set(id, target);
   emit();
+  return { panelId: id, target };
 }
 
-/** Returns to the review view (panel "back"). */
-export function clearPreview(): void {
-  if (target === null) return;
-  target = null;
+/** Closes a file tab's preview (panel back / close). */
+export function clearPreview(panelId: string): void {
+  if (!targets.has(panelId)) return;
+  targets.delete(panelId);
   emit();
 }
 
@@ -50,14 +59,26 @@ export function clearPreview(): void {
  * timeline tap needs it later to open the panel. Registration stores the
  * opener here; the timeline component calls it when a file link is tapped.
  */
-let openPanelRef: ((workspaceId: string, agentId: string) => void) | null = null;
+type FileTabOpener = (
+  path: string,
+  lineStart: number | undefined,
+  lineEnd: number | undefined,
+  workspaceId: string,
+  agentId: string,
+) => void;
 
-export function registerPanelOpener(
-  opener: (workspaceId: string, agentId: string) => void,
-): void {
-  openPanelRef = opener;
+let openFileTabRef: FileTabOpener | null = null;
+
+export function registerFileTabOpener(opener: FileTabOpener): void {
+  openFileTabRef = opener;
 }
 
-export function openPreviewPanel(workspaceId: string, agentId: string): void {
-  openPanelRef?.(workspaceId, agentId);
+export function openFileTab(
+  path: string,
+  lineStart: number | undefined,
+  lineEnd: number | undefined,
+  workspaceId: string,
+  agentId: string,
+): void {
+  openFileTabRef?.(path, lineStart, lineEnd, workspaceId, agentId);
 }

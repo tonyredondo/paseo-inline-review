@@ -40,17 +40,45 @@ const POLL_INTERVAL_MS = 5000;
 /** Mirrors the server's download cap (server/review.ts MAX_DOWNLOAD_BYTES). */
 const MAX_DOWNLOAD_TOTAL = 1024 * 1024 * 1024;
 
+/**
+ * Full-height file preview shown inside a dedicated panel tab. Created per
+ * file tab id so several files can be open at once; reads the target from
+ * the preview store.
+ */
+export function FilePreviewPanel({ panelId, workspaceId, theme, layout }: {
+  panelId: string;
+  workspaceId: string;
+  theme: PluginTheme;
+  layout: PluginAgentPanelProps["layout"];
+}): ReactNode {
+  const target = useSyncExternalStore(subscribePreview, () => getPreviewTarget(panelId));
+  if (!target) {
+    return <View style={{ flex: 1 }} />;
+  }
+  return (
+    <PanelFilePreview
+      workspaceId={workspaceId}
+      target={target}
+      theme={theme}
+      layout={layout}
+      panelId={panelId}
+    />
+  );
+}
+
 /** Full-height file preview shown inside the panel tab (desktop). */
 function PanelFilePreview({
   workspaceId,
   target,
   theme,
   layout,
+  panelId,
 }: {
   workspaceId: string;
   target: { path: string; lineStart?: number; lineEnd?: number; requestId: number };
   theme: PluginTheme;
   layout: PluginAgentPanelProps["layout"];
+  panelId: string;
 }): ReactNode {
   const openFile = useRpc(openLocalFileRpc);
   const toast = useToast();
@@ -204,11 +232,11 @@ const DOWNLOAD_CHUNK_BYTES = 786432; // 0.75 MB, divisible by 3
       <View style={styles.header}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Back to the review"
+          accessibilityLabel="Close the file preview"
           hitSlop={6}
-          onPress={clearPreview}
+          onPress={() => clearPreview(panelId)}
         >
-          <Text style={styles.link}>‹ Review</Text>
+          <Text style={styles.link}>✕ Close</Text>
         </Pressable>
         <Text style={styles.path} numberOfLines={2}>
           {`${target.path}${state.truncated ? " (truncated)" : ""}`}
@@ -416,20 +444,6 @@ export function ReviewPanel({ agentId, workspaceId, theme, layout }: PluginAgent
     markAgentCommentsSent(agentId);
     setEditingId(null);
     toast.show("Marked as sent.", { variant: "success" });
-  }
-
-  // A file link tapped in the timeline puts its target here; the panel then
-  // shows the file preview (full height) until the user goes back.
-  const previewTarget = useSyncExternalStore(subscribePreview, getPreviewTarget);
-  if (previewTarget) {
-    return (
-      <PanelFilePreview
-        workspaceId={workspaceId}
-        target={previewTarget}
-        theme={theme}
-        layout={layout}
-      />
-    );
   }
 
   return (

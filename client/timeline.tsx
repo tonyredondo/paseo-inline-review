@@ -9,7 +9,7 @@ import {
 } from "@getpaseo/plugin/client/react-native";
 import { useAgent, usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
-import { openPreviewPanel, registerPanelOpener, requestPreview } from "./preview-store";
+import { openFileTab, registerFileTabOpener } from "./preview-store";
 import { ensureWideFrame, undoWideFrame, wideFrameSettings } from "./wide-frame";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -568,8 +568,7 @@ function ReviewAssistantMessage({
       // arrives; useAgent() reads the host-maintained state instead.
       const workspaceId = agentWorkspaceId;
       if (workspaceId) {
-        requestPreview(target.path, target.lineStart, target.lineEnd);
-        openPreviewPanel(workspaceId, agentId);
+        openFileTab(target.path, target.lineStart, target.lineEnd, workspaceId, agentId);
         return;
       }
     }
@@ -662,7 +661,7 @@ function ReviewAssistantMessage({
     })().catch(() => toast.error("Could not download the file."));
   }
 
-  /** Moves the sheet preview into the review panel tab (leaves it open). */
+  /** Moves the sheet preview into its own file tab (leaves it open). */
   function openFileInPanel(): void {
     if (!filePreview) return;
     const workspaceId = agentWorkspaceId;
@@ -670,8 +669,7 @@ function ReviewAssistantMessage({
       toast.error("The panel is not available right now.");
       return;
     }
-    requestPreview(filePreview.path, filePreview.lineStart, filePreview.lineEnd);
-    openPreviewPanel(workspaceId, agentId);
+    openFileTab(filePreview.path, filePreview.lineStart, filePreview.lineEnd, workspaceId, agentId);
     setFilePreview(null);
   }
 
@@ -936,9 +934,6 @@ function ReviewAssistantMessage({
  * items.
  */
 export function registerTimeline(client: PluginClientContext): void {
-  registerPanelOpener((workspaceId, agentId) => {
-    client.openPanel("review", { workspaceId, agentId });
-  });
   client.addTimelineTransformer({
     id: "inline-review",
     query: { itemType: "assistant_message" },
