@@ -580,3 +580,4 @@ export function ReviewPanel({ agentId, workspaceId, theme, layout }: PluginAgent
     </View>
   );
 }
+

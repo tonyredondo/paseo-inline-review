@@ -56,6 +56,15 @@ export const saveCommentsRpc = defineRpc({
 
 
 
+export const getTurnFinalRpc = defineRpc({
+  name: "review.get-turn-final",
+  input: z.object({ agentId: z.string() }),
+  output: z.object({
+    /** Turn-final assistant messageIds (last assistant message per turn). */
+    finalIds: z.array(z.string()),
+  }),
+});
+
 export const openInBrowserRpc = defineRpc({
   name: "review.open-in-browser",
   input: z.object({ url: z.string() }),

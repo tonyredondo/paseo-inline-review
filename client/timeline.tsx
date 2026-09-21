@@ -11,15 +11,15 @@ import { useAgent, usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client
 import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
 import { openFileTab, registerFileTabOpener } from "./preview-store";
 import { ensureWideFrame, undoWideFrame, wideFrameSettings } from "./wide-frame";
-import { userMessageCardsEnabled } from "./user-card-state";
 import {
   ensureTurnIndex,
   isTurnFinalMessage,
+  noteDiag,
   subscribeTurnIndex,
   turnIndexVersion,
 } from "./turn-final-store";
 import { z } from "zod";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   loadCommentsRpc,
@@ -499,6 +499,7 @@ function ReviewAssistantMessage({
   const load = useRpc(loadCommentsRpc);
   const persistComments = useRpc(saveCommentsRpc);
   const openLocalFile = useRpc(openLocalFileRpc);
+
   const toast = useToast();
   const paseo = usePaseo();
   // Turn-final card: the timeline API gives every entry its turnId, so the
@@ -519,12 +520,30 @@ function ReviewAssistantMessage({
   );
   useEffect(() => {
     let cancelled = false;
+    // Turn-finality via the timeline API directly. NOTE: do NOT await
+    // handle.refresh() here — the 0.8.0 iPad host leaves that promise
+    // pending forever (the timeline.refetch() itself works fine).
     void (async () => {
-      const handle = paseo.agents.ref(agentId);
-      if (!handle) return;
-      await handle.refresh().catch(() => null);
-      if (cancelled) return;
-      ensureTurnIndex(agentId, handle.timeline);
+      try {
+        const agents = paseo?.agents;
+        if (!agents || typeof agents.ref !== "function") {
+          noteDiag(agentId, "NOAPI");
+          return;
+        }
+        const handle = agents.ref(agentId);
+        if (!handle) {
+          noteDiag(agentId, "NOHANDLE");
+          return;
+        }
+        if (!handle.timeline) {
+          noteDiag(agentId, "NOTL");
+          return;
+        }
+        ensureTurnIndex(agentId, handle.timeline);
+        noteDiag(agentId, "OK");
+      } catch (error) {
+        noteDiag(agentId, `TH:${String(error).slice(0, 40)}`);
+      }
     })();
     return () => {
       cancelled = true;
@@ -1090,7 +1109,7 @@ function ReviewAssistantMessage({
         </Modal>
       )}
       </View>
-      </>
+</>
   );
 }
 
@@ -1147,9 +1166,8 @@ export function registerTimeline(client: PluginClientContext): void {
           ],
         };
       }
-      // User flag: render every user message as a review-style card on ALL
-      // platforms (desktop web, iPhone, iPad) — native included.
-      if (!userMessageCardsEnabled()) return undefined;
+      // Render every user message as a review-style card on ALL platforms
+      // (desktop web, iPhone, iPad) — native included.
       return {
         items: [
           {

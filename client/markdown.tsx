@@ -1,6 +1,9 @@
 import type { InlineToken } from "../shared/markdown-parse";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
+import { useRpc } from "@getpaseo/plugin/client";
+// Host-injected external opener (not declared in the 0.8.0 d.ts; the app
+// supplies the runtime module and may or may not provide it).
+declare const openExternalUrl: ((url: string) => Promise<void>) | undefined;
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MarkdownSpan } from "./markdown-span";
