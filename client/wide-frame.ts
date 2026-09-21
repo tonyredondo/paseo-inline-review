@@ -24,10 +24,19 @@ export interface WideFrameColors {
 type WNode = {
   clientWidth: number;
   parentElement: WNode | null;
+  previousElementSibling: WNode | null;
+  nextElementSibling: WNode | null;
+  childElementCount: number;
   style: Record<string, string>;
   dataset: Record<string, string>;
+  insertBefore(node: WNode, before: WNode | null): void;
+  remove(): void;
 };
-type WDoc = { querySelectorAll(selector: string): ArrayLike<WNode>; body?: WNode | null };
+type WDoc = {
+  querySelectorAll(selector: string): ArrayLike<WNode>;
+  body?: WNode | null;
+  createElement(tag: string): WNode;
+};
 type WWin = {
   getComputedStyle(el: WNode): { maxWidth: string };
   innerWidth?: number;
@@ -127,6 +136,93 @@ function styleUserMessages(doc: WDoc, win: WWin): void {
       trail.style.marginTop = "-10px";
       trail.style.marginBottom = "0px";
     }
+  }
+}
+
+/**
+ * Tightens the gap under the collapsed tool-call row ("Ran N commands"):
+ * the host wrapper carries a 16px bottom margin.
+ */
+function tightenToolCallRows(doc: WDoc): void {
+  const badges = doc.querySelectorAll('[data-testid="tool-call-group"]');
+  for (const badge of Array.from(badges)) {
+    const parent = badge.parentElement;
+    if (parent) {
+      parent.style.marginBottom = "6px";
+      // Hug the paragraph ABOVE: cancel the previous message's bottom
+      // padding + outer margin (host adds ~16px below each message).
+      parent.style.marginTop = "-18px";
+      parent.dataset.inlineReviewTight = "1";
+    }
+  }
+}
+
+function loosenToolCallRows(doc: WDoc): void {
+  const nodes = doc.querySelectorAll('[data-inline-review-tight="1"]');
+  for (const el of Array.from(nodes)) {
+    el.style.marginBottom = "";
+    el.style.marginTop = "";
+    el.dataset.inlineReviewTight = "";
+  }
+}
+
+/**
+ * Turn separator: a full-width hairline right before each user message —
+ * the marker that the agent's turn above it has ended. Skips the first
+ * message of the thread (nothing to separate there). Re-inserted each
+ * pass; host re-renders may remove it.
+ */
+function styleTurnDividers(doc: WDoc): void {
+  const msgs = doc.querySelectorAll('[data-testid="user-message"]');
+  for (const el of Array.from(msgs)) {
+    // The host wraps every timeline item in single-child wrappers; climb to
+    // the item wrapper that hangs off the flat item list (>1 siblings).
+    let node: WNode = el;
+    while (node.parentElement && node.parentElement.childElementCount === 1) {
+      const up = node.parentElement;
+      if (!up) break;
+      node = up;
+    }
+    // Walk BACK to the nearest agent message item; the line is its top
+    // border — between the turn's process and its final agent message.
+    let prev: WNode | null = node.previousElementSibling;
+    let target: WNode | null = null;
+    while (prev) {
+      if (containsAssistant(prev)) {
+        target = prev;
+        break;
+      }
+      if (containsUserMessage(prev)) break; // consecutive user messages
+      prev = prev.previousElementSibling;
+    }
+    if (!target) continue;
+    // Style the wrapper itself instead of inserting nodes: React owns the
+    // list and deletes foreign nodes on virtualized re-renders; a top
+    // border is re-applied by the observer exactly like the widening.
+    target.style.borderTopWidth = "1px";
+    target.style.borderTopStyle = "solid";
+    target.style.borderTopColor = userCardBorder;
+    target.dataset.inlineReviewTurnDivider = "1";
+  }
+}
+
+function containsAssistant(node: WNode): boolean {
+  const u = node as unknown as { querySelectorAll(s: string): ArrayLike<WNode> };
+  return u.querySelectorAll('[data-testid="inline-review-root"]').length > 0;
+}
+
+function containsUserMessage(node: WNode): boolean {
+  const u = node as unknown as { querySelectorAll(s: string): ArrayLike<WNode> };
+  return u.querySelectorAll('[data-testid="user-message"]').length > 0;
+}
+
+function unstyleTurnDividers(doc: WDoc): void {
+  const nodes = doc.querySelectorAll('[data-inline-review-turn-divider="1"]');
+  for (const el of Array.from(nodes)) {
+    el.style.borderTopWidth = "";
+    el.style.borderTopStyle = "";
+    el.style.borderTopColor = "";
+    el.dataset.inlineReviewTurnDivider = "";
   }
 }
 
@@ -244,6 +340,9 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     }
     // User messages: review-card look (re-applied; host re-renders wipe it).
     styleUserMessages(doc, g);
+    tightenToolCallRows(doc);
+    unstyleTurnDividers(doc);
+    styleTurnDividers(doc);
   };
 
   if (colors) {
@@ -302,6 +401,8 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     widened.clear();
     paneWidthCache = 0;
     unstyleUserMessages(doc);
+    loosenToolCallRows(doc);
+    unstyleTurnDividers(doc);
     for (const cb of observerCbs) cb();
   };
 }
