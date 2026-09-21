@@ -480,7 +480,9 @@ export function CodeBlockView({
         // (lines never wrap there, so heights align 1:1). Native: the number
         // rides on each line row so wrapped lines keep their number top-aligned.
         const digits = String(lines.length).length;
-        const gutterWidth = Math.max(2, digits) * styles.codeFontSize * 0.6 + 8;
+        // Generous mono width (0.68em per char) plus padding: a too-tight
+        // fixed width makes the number itself wrap ("14" / "5") in wrap mode.
+        const gutterWidth = Math.max(2, digits) * styles.codeFontSize * 0.68 + 16;
         const gutterColor = "#565e69";
         const gutterRule = "rgba(139,148,158,0.25)";
         if (!wrapMode) {
@@ -563,7 +565,19 @@ export function CodeBlockView({
                 }}
               >
                 <Text
-                  style={[mono, { color: gutterColor, fontSize: styles.codeFontSize, lineHeight: 18, textAlign: "right", width: gutterWidth, paddingRight: 10 }]}
+                  style={[
+                    mono,
+                    {
+                      color: gutterColor,
+                      fontSize: styles.codeFontSize,
+                      lineHeight: 18,
+                      textAlign: "right",
+                      width: gutterWidth,
+                      paddingRight: 10,
+                      // The number never wraps onto two lines.
+                      ...(nowrap ?? null),
+                    },
+                  ]}
                 >
                   {lineIndex + 1}
                 </Text>
