@@ -68,7 +68,10 @@ export const openLocalFileRpc = defineRpc({
     path: z.string(),
     lineStart: z.number().int().optional(),
     lineEnd: z.number().int().optional(),
-    mode: z.enum(["open", "read"]).optional(),
+    mode: z.enum(["open", "read", "download"]).optional(),
+    /** Chunked download: byte offset and max chunk size (client-driven). */
+    offset: z.number().int().min(0).optional(),
+    length: z.number().int().positive().optional(),
   }),
   output: z.object({
     ok: z.boolean(),
@@ -76,6 +79,12 @@ export const openLocalFileRpc = defineRpc({
     content: z.string().optional(),
     truncated: z.boolean().optional(),
     size: z.number().optional(),
+    /** True when the file looks binary: no text content is served. */
+    binary: z.boolean().optional(),
+    /** Base64 payload for mode "download". */
+    base64: z.string().optional(),
+    /** Chunked download: false while more chunks remain. */
+    done: z.boolean().optional(),
   }),
 });
 

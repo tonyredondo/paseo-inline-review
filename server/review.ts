@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { closeSync, openSync, readSync, readFileSync, statSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
@@ -108,7 +108,7 @@ export async function saveComments(
   return { ok: true };
 }
 
-const MAX_READ_BYTES = 256 * 1024;
+const MAX_READ_BYTES = 5 * 1024 * 1024;
 
 /**
  * Opens a local file on the daemon machine (macOS `open`, xdg-open elsewhere)
@@ -122,6 +122,8 @@ export async function openLocalFile(
   content?: string;
   truncated?: boolean;
   size?: number;
+  binary?: boolean;
+  base64?: string;
 }> {
   const absolutePath = expandHome(input.path);
   if (!absolutePath) {
@@ -129,6 +131,9 @@ export async function openLocalFile(
   }
   if (input.mode === "read") {
     return readLocalFile(absolutePath);
+  }
+  if (input.mode === "download") {
+    return downloadLocalFile(absolutePath, input.offset ?? 0, input.length ?? Number.MAX_SAFE_INTEGER);
   }
   const command =
     process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
@@ -159,12 +164,14 @@ function readLocalFile(absolutePath: string): {
   content?: string;
   truncated?: boolean;
   size?: number;
+  binary?: boolean;
 } {
   try {
     const buffer = readFileSync(absolutePath);
     const size = buffer.byteLength;
     if (isProbablyBinary(buffer.subarray(0, Math.min(1024, buffer.length)))) {
-      return { ok: false, error: "binary file", size };
+      // Binary: no text content. The caller offers a download instead.
+      return { ok: true, binary: true, size };
     }
     const slice = buffer.subarray(0, MAX_READ_BYTES);
     const truncated = size > MAX_READ_BYTES;
@@ -172,6 +179,59 @@ function readLocalFile(absolutePath: string): {
       ok: true,
       content: slice.toString("utf8"),
       truncated,
+      size,
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Download hard cap (client chunks its own reads; this is a safety rail
+ * against absurd sizes, not the transfer mechanism).
+ */
+const MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * Reads one chunk of the file and returns it base64-encoded. The client
+ * drives the loop (offset/length), so no single RPC carries the whole
+ * payload. Chunk sizes must stay multiples of 3 bytes on the client so
+ * independently-encoded base64 chunks concatenate correctly.
+ */
+function downloadLocalFile(
+  absolutePath: string,
+  offset: number,
+  length: number,
+): {
+  ok: boolean;
+  error?: string;
+  base64?: string;
+  done?: boolean;
+  truncated?: boolean;
+  size?: number;
+} {
+  try {
+    const size = statSync(absolutePath).size;
+    if (size > MAX_DOWNLOAD_BYTES) {
+      return { ok: false, error: `File is larger than the ${Math.round(MAX_DOWNLOAD_BYTES / (1024 * 1024))} MB download cap` };
+    }
+    const start = Math.min(offset, size);
+    const end = Math.min(start + length, size);
+    if (start >= end) {
+      return { ok: true, base64: "", done: true, size };
+    }
+    const byteCount = end - start;
+    const buffer = Buffer.alloc(byteCount);
+    const fd = openSync(absolutePath, "r");
+    try {
+      readSync(fd, buffer, 0, byteCount, start);
+    } finally {
+      closeSync(fd);
+    }
+    return {
+      ok: true,
+      base64: buffer.toString("base64"),
+      done: end >= size,
       size,
     };
   } catch (error) {

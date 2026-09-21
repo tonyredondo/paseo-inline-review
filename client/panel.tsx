@@ -37,6 +37,9 @@ function withAlpha(hex: string, alpha: number): string {
 /** Cross-device poll: re-hydrate plugin comments from the daemon this often. */
 const POLL_INTERVAL_MS = 5000;
 
+/** Mirrors the server's download cap (server/review.ts MAX_DOWNLOAD_BYTES). */
+const MAX_DOWNLOAD_TOTAL = 1024 * 1024 * 1024;
+
 /** Full-height file preview shown inside the panel tab (desktop). */
 function PanelFilePreview({
   workspaceId,
@@ -52,11 +55,14 @@ function PanelFilePreview({
   const openFile = useRpc(openLocalFileRpc);
   const toast = useToast();
   const scrollRef = useRef<ScrollView>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [state, setState] = useState<{
     loading: boolean;
     content?: string;
     truncated?: boolean;
     error?: string;
+    binary?: boolean;
+    size?: number;
   }>({ loading: true });
 
   // Auto-scroll to the linked line range once the file content is on screen.
@@ -82,7 +88,9 @@ function PanelFilePreview({
     })
       .then((result) => {
         if (cancelled) return;
-        if (result.ok) {
+        if (result.ok && result.binary) {
+          setState({ loading: false, binary: true, truncated: result.truncated ?? false, size: result.size });
+        } else if (result.ok) {
           setState({ loading: false, content: result.content ?? "", truncated: result.truncated ?? false });
         } else {
           setState({ loading: false, error: result.error ?? "Could not read the file." });
@@ -105,9 +113,86 @@ function PanelFilePreview({
       muted: { color: theme.colors.foregroundMuted, fontSize: 12 } as const,
       error: { color: theme.colors.statusDanger, fontSize: 12 } as const,
       body: { flex: 1 } as const,
+      binaryBox: { gap: 8, paddingVertical: 24, alignItems: "center" } as const,
+      downloadButton: {
+        backgroundColor: theme.colors.accent,
+        borderRadius: 8,
+        paddingHorizontal: 14,
+        paddingVertical: 8,
+      } as const,
     }),
     [theme, layout.compact],
   );
+
+  function formatSize(bytes?: number): string {
+    if (!bytes && bytes !== 0) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  /**
+ * Saves the file via a data: URI anchor (desktop/web). The payload arrives
+ * in base64 chunks the client requests one by one: no single RPC carries
+ * the whole file, so large downloads stay reliable. Chunk sizes are
+ * multiples of 3 bytes so independently encoded base64 chunks concatenate
+ * into a valid stream.
+ */
+const DOWNLOAD_CHUNK_BYTES = 786432; // 0.75 MB, divisible by 3
+
+  function download(): void {
+    void (async () => {
+      const parts: string[] = [];
+      let offset = 0;
+      let size: number | undefined;
+      let last = false;
+      for (;;) {
+        const result = await openFile({
+          path: target.path,
+          mode: "download",
+          offset,
+          length: DOWNLOAD_CHUNK_BYTES,
+        });
+        if (!result.ok || !result.base64) {
+          toast.error(result.error ?? "Could not download the file.");
+          return;
+        }
+        parts.push(result.base64);
+        size = result.size ?? size;
+        last = result.done ?? true;
+        setDownloadProgress(size ? Math.min(1, parts.length * DOWNLOAD_CHUNK_BYTES / size) : null);
+        if (last) break;
+        offset += DOWNLOAD_CHUNK_BYTES;
+        if (offset > MAX_DOWNLOAD_TOTAL) {
+          toast.error("File exceeds the download cap.");
+          return;
+        }
+      }
+      setDownloadProgress(null);
+      const g = globalThis as unknown as {
+        document?: {
+          createElement(tag: string): { href?: string; download?: string; click?(): void; remove?(): void };
+          body?: { appendChild(node: unknown): void; removeChild(node: unknown): void };
+        };
+      };
+      if (!g.document?.body) {
+        toast.error("Download is only available on desktop.");
+        return;
+      }
+      const name = target.path.split("/").pop() ?? "download";
+      const anchor = g.document.createElement("a");
+      anchor.href = `data:application/octet-stream;base64,${parts.join("")}`;
+      anchor.download = name;
+      g.document.body.appendChild(anchor);
+      anchor.click?.();
+      anchor.remove?.();
+      g.document.body.removeChild(anchor);
+      if (size) toast.show(`Downloaded ${formatSize(size)}.`);
+    })().catch(() => {
+      setDownloadProgress(null);
+      toast.error("Could not download the file.");
+    });
+  }
 
   function openLocally(): void {
     void openFile({ path: target.path, mode: "open" }).then((result) => {
@@ -142,6 +227,24 @@ function PanelFilePreview({
         <Text style={styles.muted}>Loading…</Text>
       ) : state.error ? (
         <Text style={styles.error}>{state.error}</Text>
+      ) : state.binary ? (
+        <View style={styles.binaryBox}>
+          <Text style={styles.muted}>
+            {`Binary file${state.size ? ` · ${formatSize(state.size)}` : ""} — nothing to show as text.`}
+          </Text>
+          {downloadProgress === null ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Download the file"
+              onPress={download}
+              style={styles.downloadButton}
+            >
+              <Text style={{ color: theme.colors.accentForeground, fontSize: 12 }}>Download</Text>
+            </Pressable>
+          ) : (
+            <Text style={styles.muted}>{`Downloading… ${Math.round(downloadProgress * 100)}%`}</Text>
+          )}
+        </View>
       ) : (
         <ScrollView ref={scrollRef} style={styles.body} contentContainerStyle={{ padding: 4, gap: 4 }}>
           <FileCodeBlock

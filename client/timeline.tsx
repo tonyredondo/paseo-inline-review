@@ -542,6 +542,10 @@ function ReviewAssistantMessage({
         toast.error(result.error ?? "Could not open the file.");
         return;
       }
+      if (result.binary) {
+        toast.show(`Binary file${result.size ? ` (${result.size} bytes)` : ""} — nothing to preview. Use "Open locally" instead.`);
+        return;
+      }
       setFilePreview({
         path: target.path,
         content: result.content ?? "",
