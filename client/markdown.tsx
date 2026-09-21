@@ -711,7 +711,6 @@ function useStyles(theme: PluginTheme, compact: boolean) {
       tableRow: { flexDirection: "row" } as const,
       headerRow: { backgroundColor: theme.colors.surface2 } as const,
       cellBorder: { borderColor: theme.colors.border } as const,
-      hr: { height: 1, backgroundColor: theme.colors.border, marginVertical: 4 } as const,
       image: { width: "100%" as const, height: 180, borderRadius: 8, marginVertical: 2 } as const,
       paragraphGap: { gap: 0 } as const,
     }),
@@ -1003,7 +1002,9 @@ export function MarkdownText({
               </View>
             );
           case "hr":
-            return <View key={index} style={styles.hr} />;
+            // Host-style "---" rules read as stray lines between messages;
+            // drop them (the paragraph spacing already separates sections).
+            return null;
           case "p":
           default: {
             const single = block.lines.length === 1 && parseInline(block.lines[0]).length === 1 && parseInline(block.lines[0])[0]?.type === "image";
