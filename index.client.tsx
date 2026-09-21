@@ -4,6 +4,7 @@ import { ReviewPanel } from "./client/panel";
 import { getPreviewTarget, subscribe as subscribePreview } from "./client/preview-store";
 import { registerPills } from "./client/pills";
 import { registerTimeline } from "./client/timeline";
+import { WideFrameSettingsScreen } from "./client/wide-frame-settings";
 
 export default function contribute(client: PluginClientContext) {
   // The panel tab title is read live from the plugin registry, so the panel
@@ -28,6 +29,13 @@ export default function contribute(client: PluginClientContext) {
     setPanelTitle(target ? target.path.split("/").pop() ?? "File preview" : "Review summary");
   }
   const removePreviewWatcher = subscribePreview(syncPanelTitle);
+
+  client.addSettingsScreen({
+    id: "wide-frame",
+    title: "Wide reading frame",
+    icon: "Maximize2",
+    Component: WideFrameSettingsScreen,
+  });
 
   registerTimeline(client);
   const removePills = registerPills(client);

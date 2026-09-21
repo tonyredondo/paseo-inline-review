@@ -7,11 +7,12 @@ import {
   useRevealedText,
   useToast,
 } from "@getpaseo/plugin/client/react-native";
-import { useAgent, usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { useAgent, usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
 import { openPreviewPanel, registerPanelOpener, requestPreview } from "./preview-store";
+import { ensureWideFrame, undoWideFrame, wideFrameSettings } from "./wide-frame";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   loadCommentsRpc,
   openLocalFileRpc,
@@ -399,6 +400,23 @@ function ReviewAssistantMessage({
     lineStart?: number;
     lineEnd?: number;
   } | null>(null);
+  // Wide reading frame (user flag): web only — the DOM pass widens the whole
+  // host frame; native platforms (iPad) keep the host's 820px column.
+  const wideFrameState = useSettings(wideFrameSettings);
+  const wideFrameReady = wideFrameState.status === "ready";
+  const wideFrame = wideFrameReady ? wideFrameState.values.wideFrame : false;
+  // A read that raced a plugin reload leaves an error state; retry once.
+  const wideFrameRetried = useRef(false);
+  useEffect(() => {
+    if (!wideFrameReady && !wideFrameRetried.current && wideFrameState.status !== "loading") {
+      wideFrameRetried.current = true;
+      void wideFrameState.reload();
+    }
+  }, [wideFrameReady, wideFrameState]);
+  useEffect(() => {
+    if (layout.platform === "web" && wideFrame) ensureWideFrame();
+    else undoWideFrame();
+  }, [layout.platform, wideFrame]);
   // Host-maintained agent snapshot: agents.ref() reads null until a snapshot
   // arrives, but the host state is always populated.
   const agentWorkspaceId = useAgent(agentId, (agent) => (agent ? agent.workspaceId : null));
@@ -718,7 +736,7 @@ function ReviewAssistantMessage({
 
   return (
     <>
-      <View style={styles.root}>
+      <View testID="inline-review-root" style={styles.root}>
       {paragraphs.map((paragraph, index) => {
         const anchored = comments.filter((comment) =>
           commentAnchorsHere(data, paragraph, index, comment),
@@ -909,6 +927,14 @@ function ReviewAssistantMessage({
   );
 }
 
+/**
+ * EXPERIMENT (web only, NOT for commit): widen the host's reading frame.
+ * Every host element capped at MAX_CONTENT_WIDTH (820px) — stream items,
+ * tool calls, user messages, the composer — is re-capped inline to the
+ * timeline pane width minus breathing room, so the conversation uses the
+ * available space and stays aligned. Re-applied on a timer to catch new
+ * items.
+ */
 export function registerTimeline(client: PluginClientContext): void {
   registerPanelOpener((workspaceId, agentId) => {
     client.openPanel("review", { workspaceId, agentId });
