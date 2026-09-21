@@ -12,6 +12,7 @@ import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-
 import { openFileTab, registerFileTabOpener } from "./preview-store";
 import { ensureWideFrame, undoWideFrame, wideFrameSettings } from "./wide-frame";
 import { userMessageCardsEnabled } from "./user-card-state";
+import { z } from "zod";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
@@ -41,6 +42,15 @@ import {
 } from "./review-store";
 import { FileCodeBlock, MarkdownText } from "./markdown";
 import { extractRefDefs } from "../shared/markdown-parse";
+
+/** Data for the dotted compaction divider replacing the host's hairline. */
+const compactionDividerSchema = z.object({
+  status: z.enum(["loading", "completed"]),
+  trigger: z.string().nullable(),
+  preTokens: z.number().nullable(),
+});
+
+type CompactionDividerData = z.output<typeof compactionDividerSchema>;
 
 type EditingTarget = {
   paragraphIndex: number;
@@ -326,6 +336,41 @@ function parseSentReview(text: string): { note: string; entries: { quote: string
 }
 
 /** Compact card replacing the raw review text in the timeline. */
+/** Dotted-line divider for compaction markers (replaces the host hairline). */
+function CompactionDivider({
+  item,
+  theme,
+}: PluginTimelineItemProps<CompactionDividerData>) {
+  const styles = useMemo(
+    () => ({
+      root: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        paddingVertical: 14,
+      } as const,
+      line: {
+        flex: 1,
+        borderBottomWidth: 4,
+        borderBottomColor: theme.colors.border,
+        borderStyle: "dotted",
+      } as const,
+      label: { color: theme.colors.foregroundMuted, fontSize: 12 } as const,
+    }),
+    [theme],
+  );
+  const label =
+    item.data.status === "loading" ? "Compacting context…" : "Context compacted";
+  return (
+    <View style={styles.root}>
+      <View style={styles.line} />
+      <Icon name="Link" size={12} color={theme.colors.foregroundMuted} />
+      <Text style={styles.label}>{label}</Text>
+      <View style={styles.line} />
+    </View>
+  );
+}
+
 /** Short wall-clock label ("13:38") for the card's trailing row. */
 function timestampLabel(timestamp: Date): string {
   return timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -1070,5 +1115,33 @@ export function registerTimeline(client: PluginClientContext): void {
     version: 1,
     schema: userMessageCardSchema,
     Component: UserMessageCard,
+  });
+  // Compaction divider: same "Context compacted" marker but with dotted
+  // side lines instead of the host's continuous hairline.
+  client.addTimelineTransformer({
+    id: "inline-review-compaction",
+    query: { itemType: "compaction" },
+    transform({ item }) {
+      return {
+        items: [
+          {
+            type: "plugin",
+            kind: "compaction-divider",
+            version: 1,
+            data: {
+              status: item.status,
+              trigger: item.trigger ?? null,
+              preTokens: typeof item.preTokens === "number" ? item.preTokens : null,
+            },
+          },
+        ],
+      };
+    },
+  });
+  client.addTimelineRenderer({
+    kind: "compaction-divider",
+    version: 1,
+    schema: compactionDividerSchema,
+    Component: CompactionDivider,
   });
 }
