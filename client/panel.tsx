@@ -3,7 +3,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import type { ReactNode } from "react";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { loadCommentsRpc, openLocalFileRpc, previewLanguage, saveCommentsRpc, setActiveAgentRpc } from "../shared/review";
 import { formatReview, type ReviewComment } from "../shared/review";
@@ -51,12 +51,25 @@ function PanelFilePreview({
 }): ReactNode {
   const openFile = useRpc(openLocalFileRpc);
   const toast = useToast();
+  const scrollRef = useRef<ScrollView>(null);
   const [state, setState] = useState<{
     loading: boolean;
     content?: string;
     truncated?: boolean;
     error?: string;
   }>({ loading: true });
+
+  // Auto-scroll to the linked line range once the file content is on screen.
+  // Scroll-mode rows are fixed-height (lineHeight 18), so the offset is exact
+  // enough; land a couple of lines above the target for context.
+  useEffect(() => {
+    if (state.loading || !state.content || !target.lineStart) return;
+    const y = Math.max(0, (target.lineStart - 3) * 18);
+    const timer = setTimeout(() => {
+      scrollRef.current?.scrollTo({ y, animated: false });
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [state.loading, state.content, target.requestId, target.lineStart]);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,7 +143,7 @@ function PanelFilePreview({
       ) : state.error ? (
         <Text style={styles.error}>{state.error}</Text>
       ) : (
-        <ScrollView style={styles.body} contentContainerStyle={{ padding: 4, gap: 4 }}>
+        <ScrollView ref={scrollRef} style={styles.body} contentContainerStyle={{ padding: 4, gap: 4 }}>
           <FileCodeBlock
             code={state.content ?? ""}
             language={previewLanguage(target.path)}

@@ -497,7 +497,17 @@ export function CodeBlockView({
                 {lines.map((_, lineIndex) => (
                   <Text
                     key={lineIndex}
-                    style={[mono, { color: gutterColor, fontSize: styles.codeFontSize, lineHeight: 18, textAlign: "right" }]}
+                    style={[
+                      mono,
+                      {
+                        color: gutterColor,
+                        fontSize: styles.codeFontSize,
+                        lineHeight: 18,
+                        textAlign: "right",
+                        // Highlighted rows paint the gutter cell too.
+                        ...(lineIsHighlighted(lineIndex) ? { backgroundColor: withAlpha(theme.colors.accent, 0.22) } : null),
+                      },
+                    ]}
                   >
                     {lineIndex + 1}
                   </Text>
@@ -518,7 +528,12 @@ export function CodeBlockView({
                           color: darkPalette.plain,
                           fontSize: styles.codeFontSize,
                           lineHeight: 18,
-                          ...(lineIsHighlighted(lineIndex) ? { backgroundColor: withAlpha(theme.colors.accent, 0.22) } : null),
+                          // Highlighted rows paint the trailing empty space
+                          // too: stretch the row to the container width
+                          // (the longest line) instead of hugging the text.
+                          ...(lineIsHighlighted(lineIndex)
+                            ? { backgroundColor: withAlpha(theme.colors.accent, 0.22), alignSelf: "stretch" as const }
+                            : null),
                         },
                       ]}
                     >
