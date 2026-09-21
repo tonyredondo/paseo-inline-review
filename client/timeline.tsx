@@ -118,6 +118,19 @@ function useMessageComments(agentId: string, data: ReviewItemData) {
   );
 }
 
+/**
+ * Left-ellipsis for long paths: keep the tail (the file name and its
+ * nearest parent dirs), cutting at a "/" boundary so no segment breaks
+ * mid-word, and prefix with an ellipsis.
+ */
+function startEllipsis(path: string, maxChars: number): string {
+  if (path.length <= maxChars) return path;
+  const cut = path.length - maxChars;
+  const slash = path.indexOf("/", cut);
+  const tail = slash === -1 ? path.slice(-maxChars) : path.slice(slash + 1);
+  return `…/${tail}`;
+}
+
 /** Preview state for a tapped local-file link. */
 type FilePreviewState = {
   path: string;
@@ -630,6 +643,19 @@ function ReviewAssistantMessage({
     })().catch(() => toast.error("Could not download the file."));
   }
 
+  /** Moves the sheet preview into the review panel tab (leaves it open). */
+  function openFileInPanel(): void {
+    if (!filePreview) return;
+    const workspaceId = agentWorkspaceId;
+    if (!workspaceId) {
+      toast.error("The panel is not available right now.");
+      return;
+    }
+    requestPreview(filePreview.path, filePreview.lineStart, filePreview.lineEnd);
+    openPreviewPanel(workspaceId, agentId);
+    setFilePreview(null);
+  }
+
   function save() {
     if (!editing || editing.draft.trim().length === 0) {
       setEditing(null);
@@ -834,19 +860,16 @@ function ReviewAssistantMessage({
           <Modal.Content style={{ padding: 4, gap: 4 }} contentContainerStyle={{ padding: 4, gap: 4 }}>
             {filePreview ? (
               <View style={{ gap: 8 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, flex: 1 }} numberOfLines={2}>
-                    {`${filePreview.path}${filePreview.truncated ? " (truncated)" : ""}`}
+                <View style={{ gap: 6 }}>
+                  {/* Mobile: the full path gets its own line, ellipsized at
+                      the start (the tail matters); links sit on their own
+                      right-aligned row below. */}
+                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }} numberOfLines={1}>
+                    {`${startEllipsis(filePreview.path, 78)}${filePreview.truncated ? " (truncated)" : ""}`}
                   </Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Open the file on the agent machine"
-                    hitSlop={6}
-                    onPress={openFileOnAgentMachine}
-                  >
-                    <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open locally</Text>
-                  </Pressable>
-                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>|</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+                  {/* Mobile: the file lives on the agent machine, so no
+                      "open locally" here — download or move to the tab. */}
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel="Download the file"
@@ -855,6 +878,16 @@ function ReviewAssistantMessage({
                   >
                     <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Download</Text>
                   </Pressable>
+                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>|</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Open the file in the review panel"
+                    hitSlop={6}
+                    onPress={openFileInPanel}
+                  >
+                    <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open in tab</Text>
+                  </Pressable>
+                  </View>
                 </View>
                 <FileCodeBlock
                   code={filePreview.content}
