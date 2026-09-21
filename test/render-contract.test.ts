@@ -20,7 +20,7 @@ test("every code token Text carries the monospace family explicitly", () => {
 });
 
 test("code blocks scroll horizontally and never wrap", () => {
-  assert.match(rendererSource, /<ScrollView horizontal showsHorizontalScrollIndicator>/);
+  assert.match(rendererSource, /<ScrollView horizontal showsHorizontalScrollIndicator/);
   assert.match(rendererSource, /flexDirection: "row"/);
   assert.match(rendererSource, /whiteSpace: "pre"/);
 });

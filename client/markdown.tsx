@@ -32,6 +32,15 @@ const ZWSP = "\u200B";
 /** Code blocks longer than this collapse behind a "Show more" control. */
 const CODE_COLLAPSE_LINES = 40;
 
+/** Converts #rrggbb to rgba() so fills can fade without losing hue. */
+function withAlpha(hex: string, alpha: number): string {
+  const value = hex.replace("#", "");
+  const r = parseInt(value.slice(0, 2), 16);
+  const g = parseInt(value.slice(2, 4), 16);
+  const b = parseInt(value.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function breakLongWords(text: string): string {
   if (Platform.OS !== "ios") return text;
   return text
@@ -343,12 +352,49 @@ function DetailsView({
   );
 }
 
-function CodeBlockView({
+/** Self-contained code block for out-of-module callers (file preview sheet). */
+export function FileCodeBlock({
+  code,
+  language,
+  theme,
+  compact,
+  forceShowAll,
+  highlightStart,
+  highlightEnd,
+}: {
+  code: string;
+  language: string;
+  theme: PluginTheme;
+  compact: boolean;
+  /** Never collapse: render the whole content (file preview). */
+  forceShowAll?: boolean;
+  /** 1-based line range to highlight (from the file link's line suffix). */
+  highlightStart?: number;
+  highlightEnd?: number;
+}): ReactNode {
+  const styles = useStyles(theme, compact);
+  return (
+    <CodeBlockView
+      code={code}
+      language={language}
+      theme={theme}
+      styles={styles}
+      forceShowAll={forceShowAll}
+      highlightStart={highlightStart}
+      highlightEnd={highlightEnd}
+    />
+  );
+}
+
+export function CodeBlockView({
   code,
   language,
   theme,
   styles,
   onComment,
+  forceShowAll,
+  highlightStart,
+  highlightEnd,
 }: {
   code: string;
   language: string;
@@ -356,6 +402,11 @@ function CodeBlockView({
   styles: ReturnType<typeof useStyles>;
   /** Opens the inline review editor for the code block's paragraph. */
   onComment?: () => void;
+  /** Preview mode: never collapse, show the whole file. */
+  forceShowAll?: boolean;
+  /** 1-based line range to highlight (from the file link's line suffix). */
+  highlightStart?: number;
+  highlightEnd?: number;
 }) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<number | null>(null);
@@ -369,8 +420,16 @@ function CodeBlockView({
   const [showAll, setShowAll] = useState(false);
   // Scroll mode is the default everywhere; wrap is the secondary option.
   const [wrapMode, setWrapMode] = useState(false);
-  const collapsed = allLines.length > CODE_COLLAPSE_LINES && !showAll;
+  const collapsed = allLines.length > CODE_COLLAPSE_LINES && !showAll && !forceShowAll;
   const lines = collapsed ? allLines.slice(0, CODE_COLLAPSE_LINES) : allLines;
+  // Line highlight from the file link suffix (`span.go:467`, `#L12-L20`).
+  const highlightFrom = highlightStart ?? null;
+  const highlightTo = highlightEnd ?? highlightStart ?? null;
+  const lineIsHighlighted = (lineIndex: number): boolean => {
+    if (highlightFrom === null || highlightTo === null) return false;
+    const line = lineIndex + 1;
+    return line >= highlightFrom && line <= highlightTo;
+  };
   // Fixed custom palette (One Dark-inspired), vivid on the black background.
   const darkPalette = {
     plain: "#d7dce3",
@@ -452,7 +511,16 @@ function CodeBlockView({
                   {lines.map((line, lineIndex) => (
                     <Text
                       key={lineIndex}
-                      style={[mono, nowrap, { color: darkPalette.plain, fontSize: styles.codeFontSize, lineHeight: 18 }]}
+                      style={[
+                        mono,
+                        nowrap,
+                        {
+                          color: darkPalette.plain,
+                          fontSize: styles.codeFontSize,
+                          lineHeight: 18,
+                          ...(lineIsHighlighted(lineIndex) ? { backgroundColor: withAlpha(theme.colors.accent, 0.22) } : null),
+                        },
+                      ]}
                     >
                       {line.length === 0
                         ? " "
@@ -472,7 +540,13 @@ function CodeBlockView({
         return (
           <View>
             {lines.map((line, lineIndex) => (
-              <View key={lineIndex} style={{ flexDirection: "row" }}>
+              <View
+                key={lineIndex}
+                style={{
+                  flexDirection: "row",
+                  backgroundColor: lineIsHighlighted(lineIndex) ? withAlpha(theme.colors.accent, 0.22) : "transparent",
+                }}
+              >
                 <Text
                   style={[mono, { color: gutterColor, fontSize: styles.codeFontSize, lineHeight: 18, textAlign: "right", width: gutterWidth, paddingRight: 10 }]}
                 >

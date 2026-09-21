@@ -1,9 +1,11 @@
 import type { PluginAgentPanelProps } from "@getpaseo/plugin/client";
+import type { PluginTheme } from "@getpaseo/plugin";
+import type { ReactNode } from "react";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { loadCommentsRpc, saveCommentsRpc, setActiveAgentRpc } from "../shared/review";
+import { loadCommentsRpc, openLocalFileRpc, previewLanguage, saveCommentsRpc, setActiveAgentRpc } from "../shared/review";
 import { formatReview, type ReviewComment } from "../shared/review";
 import {
   clearAgent,
@@ -16,6 +18,12 @@ import {
   subscribe,
   updateComment,
 } from "./review-store";
+import {
+  clearPreview,
+  getPreviewTarget,
+  subscribe as subscribePreview,
+} from "./preview-store";
+import { FileCodeBlock } from "./markdown";
 
 /** Converts #rrggbb to rgba() so borders can fade without losing hue. */
 function withAlpha(hex: string, alpha: number): string {
@@ -29,7 +37,116 @@ function withAlpha(hex: string, alpha: number): string {
 /** Cross-device poll: re-hydrate plugin comments from the daemon this often. */
 const POLL_INTERVAL_MS = 5000;
 
-export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
+/** Full-height file preview shown inside the panel tab (desktop). */
+function PanelFilePreview({
+  workspaceId,
+  target,
+  theme,
+  layout,
+}: {
+  workspaceId: string;
+  target: { path: string; lineStart?: number; lineEnd?: number; requestId: number };
+  theme: PluginTheme;
+  layout: PluginAgentPanelProps["layout"];
+}): ReactNode {
+  const openFile = useRpc(openLocalFileRpc);
+  const toast = useToast();
+  const [state, setState] = useState<{
+    loading: boolean;
+    content?: string;
+    truncated?: boolean;
+    error?: string;
+  }>({ loading: true });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true });
+    void openFile({
+      path: target.path,
+      lineStart: target.lineStart,
+      lineEnd: target.lineEnd,
+      mode: "read",
+    })
+      .then((result) => {
+        if (cancelled) return;
+        if (result.ok) {
+          setState({ loading: false, content: result.content ?? "", truncated: result.truncated ?? false });
+        } else {
+          setState({ loading: false, error: result.error ?? "Could not read the file." });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setState({ loading: false, error: "Could not read the file." });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [target.requestId, target.path, target.lineStart, target.lineEnd, openFile]);
+
+  const styles = useMemo(
+    () => ({
+      root: { flex: 1, padding: layout.compact ? 12 : 20, gap: 8, backgroundColor: theme.colors.surface0 } as const,
+      header: { flexDirection: "row", alignItems: "center", gap: 8 } as const,
+      path: { color: theme.colors.foregroundMuted, fontSize: 11, flex: 1 } as const,
+      link: { color: theme.colors.accent, fontSize: 12 } as const,
+      muted: { color: theme.colors.foregroundMuted, fontSize: 12 } as const,
+      error: { color: theme.colors.statusDanger, fontSize: 12 } as const,
+      body: { flex: 1 } as const,
+    }),
+    [theme, layout.compact],
+  );
+
+  function openLocally(): void {
+    void openFile({ path: target.path, mode: "open" }).then((result) => {
+      if (!result.ok) toast.error(result.error ?? "Could not open the file.");
+    }).catch(() => toast.error("Could not open the file."));
+  }
+
+  return (
+    <View style={styles.root}>
+      <View style={styles.header}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Back to the review"
+          hitSlop={6}
+          onPress={clearPreview}
+        >
+          <Text style={styles.link}>‹ Review</Text>
+        </Pressable>
+        <Text style={styles.path} numberOfLines={2}>
+          {`${target.path}${state.truncated ? " (truncated)" : ""}`}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open the file on the agent machine"
+          hitSlop={6}
+          onPress={openLocally}
+        >
+          <Text style={styles.link}>Open locally</Text>
+        </Pressable>
+      </View>
+      {state.loading ? (
+        <Text style={styles.muted}>Loading…</Text>
+      ) : state.error ? (
+        <Text style={styles.error}>{state.error}</Text>
+      ) : (
+        <ScrollView style={styles.body} contentContainerStyle={{ padding: 4, gap: 4 }}>
+          <FileCodeBlock
+            code={state.content ?? ""}
+            language={previewLanguage(target.path)}
+            theme={theme}
+            compact={layout.compact}
+            forceShowAll
+            highlightStart={target.lineStart}
+            highlightEnd={target.lineEnd}
+          />
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+
+export function ReviewPanel({ agentId, workspaceId, theme, layout }: PluginAgentPanelProps) {
   const paseo = usePaseo();
   const toast = useToast();
   const load = useRpc(loadCommentsRpc);
@@ -171,6 +288,20 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
     markAgentCommentsSent(agentId);
     setEditingId(null);
     toast.show("Marked as sent.", { variant: "success" });
+  }
+
+  // A file link tapped in the timeline puts its target here; the panel then
+  // shows the file preview (full height) until the user goes back.
+  const previewTarget = useSyncExternalStore(subscribePreview, getPreviewTarget);
+  if (previewTarget) {
+    return (
+      <PanelFilePreview
+        workspaceId={workspaceId}
+        target={previewTarget}
+        theme={theme}
+        layout={layout}
+      />
+    );
   }
 
   return (

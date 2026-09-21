@@ -7,10 +7,11 @@ import {
   useRevealedText,
   useToast,
 } from "@getpaseo/plugin/client/react-native";
-import { usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { useAgent, usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { openPreviewPanel, registerPanelOpener, requestPreview } from "./preview-store";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   loadCommentsRpc,
   openLocalFileRpc,
@@ -20,6 +21,7 @@ import {
   splitParagraphs,
   looksLikeSentReview,
   type ReviewComment,
+  previewLanguage,
   type ReviewItemData,
   type SentReviewData,
 } from "../shared/review";
@@ -33,7 +35,7 @@ import {
   subscribe,
   updateComment,
 } from "./review-store";
-import { MarkdownText } from "./markdown";
+import { FileCodeBlock, MarkdownText } from "./markdown";
 import { extractRefDefs } from "../shared/markdown-parse";
 
 type EditingTarget = {
@@ -113,6 +115,114 @@ function useMessageComments(agentId: string, data: ReviewItemData) {
   return useMemo(
     () => all.filter((comment) => comment.agentId === agentId && commentBelongsToMessage(data, comment)),
     [all, agentId, data.text, data.messageId],
+  );
+}
+
+/** Preview state for a tapped local-file link. */
+type FilePreviewState = {
+  path: string;
+  content: string;
+  truncated: boolean;
+  size: number;
+  lineStart?: number;
+  lineEnd?: number;
+};
+
+/**
+ * Desktop (web) file preview. The host AdaptiveModalSheet caps its card at
+ * 520px wide and the plugin Modal.Content exposes no size props, so on web the
+ * plugin draws its own full-viewport overlay with a big, inner-scrolling card.
+ */
+function WebFilePreviewOverlay({
+  filePreview,
+  theme,
+  compact,
+  onClose,
+  onOpenLocally,
+}: {
+  filePreview: FilePreviewState;
+  theme: PluginTheme;
+  compact: boolean;
+  onClose(): void;
+  onOpenLocally(): void;
+}): ReactNode {
+  // Escape closes the overlay.
+  useEffect(() => {
+    const g = globalThis as unknown as {
+      addEventListener(type: string, listener: (event: { key: string }) => void): void;
+      removeEventListener(type: string, listener: (event: { key: string }) => void): void;
+    };
+    const listener = (event: { key: string }): void => {
+      if (event.key === "Escape") onClose();
+    };
+    g.addEventListener("keydown", listener);
+    return () => g.removeEventListener("keydown", listener);
+  }, [onClose]);
+  return (
+    <View
+      style={{
+        // RN types say "absolute"; RN Web renders "fixed" as-is (viewport overlay).
+        ...( { position: "fixed", top: 0, left: 0, right: 0, bottom: 0 } as object),
+        backgroundColor: "rgba(0,0,0,0.6)",
+        zIndex: 60,
+        justifyContent: "center",
+        alignItems: "center",
+        padding: 24,
+      }}
+      // Backdrop press closes; the card claims the responder first, so
+      // presses inside the card never reach the backdrop.
+      onStartShouldSetResponder={() => true}
+      onResponderRelease={onClose}
+    >
+      <View
+        style={{
+          width: "94%",
+          maxWidth: 1500,
+          height: "92%",
+          backgroundColor: theme.colors.surface1,
+          borderColor: theme.colors.border,
+          borderWidth: 1,
+          borderRadius: 12,
+          overflow: "hidden",
+          padding: 8,
+          gap: 6,
+        }}
+        onStartShouldSetResponder={() => true}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, flex: 1 }} numberOfLines={2}>
+            {`${filePreview.path}${filePreview.truncated ? " (truncated)" : ""}`}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Open the file on the agent machine"
+            hitSlop={6}
+            onPress={onOpenLocally}
+          >
+            <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open locally</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close the file preview"
+            hitSlop={6}
+            onPress={onClose}
+          >
+            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 14 }}>✕</Text>
+          </Pressable>
+        </View>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 4, gap: 4 }}>
+          <FileCodeBlock
+            code={filePreview.content}
+            language={previewLanguage(filePreview.path)}
+            theme={theme}
+            compact={compact}
+            forceShowAll
+            highlightStart={filePreview.lineStart}
+            highlightEnd={filePreview.lineEnd}
+          />
+        </ScrollView>
+      </View>
+    </View>
   );
 }
 
@@ -262,7 +372,12 @@ function ReviewAssistantMessage({
     content: string;
     truncated: boolean;
     size: number;
+    lineStart?: number;
+    lineEnd?: number;
   } | null>(null);
+  // Host-maintained agent snapshot: agents.ref() reads null until a snapshot
+  // arrives, but the host state is always populated.
+  const agentWorkspaceId = useAgent(agentId, (agent) => (agent ? agent.workspaceId : null));
   // The workspace root lives on the daemon machine; relative file links
   // resolve against it.
   const workspaceRoot = useMemo(
@@ -403,8 +518,20 @@ function ReviewAssistantMessage({
   }
 
   function handleLocalFilePress(target: LocalFileTarget): void {
-    // Content preview is always the default: it works local and remote. The
-    // sheet offers the explicit "open on the agent machine" action.
+    // Desktop: open the review panel tab with the file preview — the panel is
+    // the large surface (the host sheet caps at 520px with no size escape).
+    if (layout.platform === "web") {
+      // The client handle from agents.ref() reads null until a snapshot
+      // arrives; useAgent() reads the host-maintained state instead.
+      const workspaceId = agentWorkspaceId;
+      if (workspaceId) {
+        requestPreview(target.path, target.lineStart, target.lineEnd);
+        openPreviewPanel(workspaceId, agentId);
+        return;
+      }
+    }
+    // Mobile: content preview in the host bottom sheet, which offers the
+    // explicit "open on the agent machine" action.
     void openLocalFile({
       path: target.path,
       lineStart: target.lineStart,
@@ -420,6 +547,8 @@ function ReviewAssistantMessage({
         content: result.content ?? "",
         truncated: result.truncated ?? false,
         size: result.size ?? 0,
+        lineStart: target.lineStart,
+        lineEnd: target.lineEnd,
       });
     }).catch(() => {
       toast.error("Could not open the file.");
@@ -620,45 +749,64 @@ function ReviewAssistantMessage({
           </View>
         );
       })}
-      <Modal
-        title="File preview"
-        icon={<Icon name="FileText" size={14} color={theme.colors.accent} />}
-        open={filePreview !== null}
-        onOpenChange={(open) => {
-          if (!open) setFilePreview(null);
-        }}
-      >
-        <Modal.Content>
-          {filePreview ? (
-            <View style={{ gap: 8 }}>
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, flex: 1 }} numberOfLines={2}>
-                  {`${filePreview.path}${filePreview.truncated ? " (truncated)" : ""}`}
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Open the file on the agent machine"
-                  hitSlop={6}
-                  onPress={openFileOnAgentMachine}
-                >
-                  <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open locally</Text>
-                </Pressable>
+      {layout.platform === "web" ? (
+        filePreview ? (
+          <WebFilePreviewOverlay
+            filePreview={filePreview}
+            theme={theme}
+            compact={layout.compact}
+            onClose={() => setFilePreview(null)}
+            onOpenLocally={openFileOnAgentMachine}
+          />
+        ) : null
+      ) : (
+        <Modal
+          title="File preview"
+          icon={<Icon name="FileText" size={14} color={theme.colors.accent} />}
+          open={filePreview !== null}
+          onOpenChange={(open) => {
+            if (!open) setFilePreview(null);
+          }}
+        >
+          <Modal.Content style={{ padding: 4, gap: 4 }} contentContainerStyle={{ padding: 4, gap: 4 }}>
+            {filePreview ? (
+              <View style={{ gap: 8 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, flex: 1 }} numberOfLines={2}>
+                    {`${filePreview.path}${filePreview.truncated ? " (truncated)" : ""}`}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Open the file on the agent machine"
+                    hitSlop={6}
+                    onPress={openFileOnAgentMachine}
+                  >
+                    <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open locally</Text>
+                  </Pressable>
+                </View>
+                <FileCodeBlock
+                  code={filePreview.content}
+                  language={previewLanguage(filePreview.path)}
+                  theme={theme}
+                  compact={layout.compact}
+                  forceShowAll
+                  highlightStart={filePreview.lineStart}
+                  highlightEnd={filePreview.lineEnd}
+                />
               </View>
-              <View style={styles.input}>
-                <Text style={{ color: theme.colors.foreground, fontSize: 12 }} selectable>
-                  {filePreview.content}
-                </Text>
-              </View>
-            </View>
-          ) : null}
-        </Modal.Content>
-      </Modal>
+            ) : null}
+          </Modal.Content>
+        </Modal>
+      )}
       </View>
       </>
   );
 }
 
 export function registerTimeline(client: PluginClientContext): void {
+  registerPanelOpener((workspaceId, agentId) => {
+    client.openPanel("review", { workspaceId, agentId });
+  });
   client.addTimelineTransformer({
     id: "inline-review",
     query: { itemType: "assistant_message" },

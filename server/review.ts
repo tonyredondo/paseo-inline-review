@@ -167,10 +167,11 @@ function readLocalFile(absolutePath: string): {
       return { ok: false, error: "binary file", size };
     }
     const slice = buffer.subarray(0, MAX_READ_BYTES);
+    const truncated = size > MAX_READ_BYTES;
     return {
       ok: true,
       content: slice.toString("utf8"),
-      truncated: size > MAX_READ_BYTES,
+      truncated,
       size,
     };
   } catch (error) {

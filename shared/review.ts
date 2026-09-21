@@ -159,3 +159,10 @@ export function isValidHttpUrl(url: string): boolean {
     return false;
   }
 }
+
+/** Best-effort syntax-highlight language for a file path (extension). */
+export function previewLanguage(path: string): string {
+  const base = path.split("/").pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "txt";
+}
