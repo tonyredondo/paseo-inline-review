@@ -11,6 +11,7 @@ import { useAgent, usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client
 import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
 import { openFileTab, registerFileTabOpener } from "./preview-store";
 import { ensureWideFrame, undoWideFrame, wideFrameSettings } from "./wide-frame";
+import { userMessageCardsEnabled } from "./user-card-state";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
@@ -19,6 +20,8 @@ import {
   reviewItemSchema,
   saveCommentsRpc,
   sentReviewSchema,
+  userMessageCardSchema,
+  type UserMessageCardData,
   splitParagraphs,
   looksLikeSentReview,
   type ReviewComment,
@@ -323,6 +326,61 @@ function parseSentReview(text: string): { note: string; entries: { quote: string
 }
 
 /** Compact card replacing the raw review text in the timeline. */
+/** Short wall-clock label ("13:38") for the card's trailing row. */
+function timestampLabel(timestamp: Date): string {
+  return timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * Review-style card for plain user messages (user flag, ALL platforms):
+ * right-aligned fit-content card, raised surface, hairline border on the
+ * other sides and a 5px accent border on the left — the desktop DOM look,
+ * now rendered natively.
+ */
+function UserMessageCard({
+  item,
+  timestamp,
+  theme,
+}: PluginTimelineItemProps<UserMessageCardData>) {
+  const styles = useMemo(
+    () => ({
+      root: {
+        alignSelf: "flex-end",
+        maxWidth: "100%",
+        backgroundColor: theme.colors.surface2,
+        borderRadius: 8,
+        borderTopWidth: 1,
+        borderRightWidth: 1,
+        borderBottomWidth: 1,
+        borderTopColor: theme.colors.border,
+        borderRightColor: theme.colors.border,
+        borderBottomColor: theme.colors.border,
+        borderLeftWidth: 5,
+        borderLeftColor: withAlpha(theme.colors.accent, 0.35),
+        paddingLeft: 10,
+        paddingRight: 10,
+        paddingTop: 12,
+        paddingBottom: 2,
+        marginVertical: 2,
+      } as const,
+      time: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 11,
+        textAlign: "right",
+        paddingTop: 2,
+        paddingBottom: 6,
+      } as const,
+    }),
+    [theme],
+  );
+  return (
+    <View style={styles.root}>
+      <MarkdownText text={item.data.text} theme={theme} compact={false} />
+      <Text style={styles.time}>{timestampLabel(timestamp)}</Text>
+    </View>
+  );
+}
+
 function SentReviewCard({
   item,
   theme,
@@ -974,12 +1032,26 @@ export function registerTimeline(client: PluginClientContext): void {
     id: "inline-review-sent",
     query: { itemType: "user_message" },
     transform({ item }) {
-      if (!looksLikeSentReview(item.text)) return undefined;
+      if (looksLikeSentReview(item.text)) {
+        return {
+          items: [
+            {
+              type: "plugin",
+              kind: "inline-review-sent",
+              version: 1,
+              data: { messageId: item.messageId ?? null, text: item.text },
+            },
+          ],
+        };
+      }
+      // User flag: render every user message as a review-style card on ALL
+      // platforms (desktop web, iPhone, iPad) — native included.
+      if (!userMessageCardsEnabled()) return undefined;
       return {
         items: [
           {
             type: "plugin",
-            kind: "inline-review-sent",
+            kind: "user-message-card",
             version: 1,
             data: { messageId: item.messageId ?? null, text: item.text },
           },
@@ -992,5 +1064,11 @@ export function registerTimeline(client: PluginClientContext): void {
     version: 1,
     schema: sentReviewSchema,
     Component: SentReviewCard,
+  });
+  client.addTimelineRenderer({
+    kind: "user-message-card",
+    version: 1,
+    schema: userMessageCardSchema,
+    Component: UserMessageCard,
   });
 }

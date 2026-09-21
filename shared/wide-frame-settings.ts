@@ -7,5 +7,8 @@ export const wideFrameSettings = defineSettings({
   scope: "host",
   version: 1,
     // Per-field default: an empty store reads as disabled instead of invalid.
-  schema: z.object({ wideFrame: z.boolean().default(false) }),
+  schema: z.object({
+    wideFrame: z.boolean().default(false),
+    userMessageCards: z.boolean().default(false),
+  }),
 });

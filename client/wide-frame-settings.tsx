@@ -3,12 +3,14 @@ import { useEffect, useState } from "react";
 import { useSettings } from "@getpaseo/plugin/client";
 import { Pressable, Switch, Text, View } from "react-native";
 import { wideFrameSettings } from "./wide-frame";
+import { setUserMessageCardsEnabled } from "./user-card-state";
 
 /** Settings screen: enables/disables the wide reading-frame experiment. */
 export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
   const settings = useSettings(wideFrameSettings);
   const values = settings.status === "ready" ? settings.values : null;
   const enabled = values?.wideFrame ?? false;
+  const cards = values?.userMessageCards ?? false;
   // A read that raced a plugin reload caches an error state; retry once.
   const [retried, setRetried] = useState(false);
   useEffect(() => {
@@ -17,6 +19,10 @@ export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
       void settings.reload();
     }
   }, [settings.status, retried, settings]);
+  // Mirror the flag for the timeline transformer (registered once, outside React).
+  useEffect(() => {
+    setUserMessageCardsEnabled(cards);
+  }, [cards]);
 
   const styles = {
     root: { flex: 1, padding: 24, gap: 16, backgroundColor: theme.colors.surface0 } as const,
@@ -29,7 +35,12 @@ export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
 
   function toggle(): void {
     if (settings.status !== "ready") return;
-    void settings.save({ wideFrame: !enabled }, settings.revision);
+    void settings.save({ ...settings.values, wideFrame: !enabled }, settings.revision);
+  }
+
+  function toggleCards(): void {
+    if (settings.status !== "ready") return;
+    void settings.save({ ...settings.values, userMessageCards: !cards }, settings.revision);
   }
 
   return (
@@ -50,6 +61,16 @@ export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
       ) : (
         <Text style={styles.muted}>{settings.status === "loading" ? "Loading…" : "Settings unavailable."}</Text>
       )}
+      <View style={styles.row}>
+        <Text style={styles.label}>User message cards</Text>
+        <Switch value={cards} onValueChange={toggleCards} />
+      </View>
+      <Text style={styles.muted}>
+        {`Render every user message as a review-style card (right-aligned, accent border, raised surface) on all platforms: desktop, iPhone and iPad. Replaces the host's edit/copy actions on user messages while enabled.`}
+      </Text>
+      {cards ? (
+        <Text style={styles.state}>Cards enabled — restart the app if messages look unchanged.</Text>
+      ) : null}
       <Pressable onPress={toggle} hitSlop={6}>
         <Text style={styles.state}>{enabled ? "Tap the switch to disable" : "Tap the switch to enable"}</Text>
       </Pressable>

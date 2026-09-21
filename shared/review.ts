@@ -96,6 +96,14 @@ export const sentReviewSchema = z.object({
 
 export type SentReviewData = z.output<typeof sentReviewSchema>;
 
+/** Data for the plugin-owned card replacing a plain user message (user flag). */
+export const userMessageCardSchema = z.object({
+  messageId: z.string().nullable(),
+  text: z.string(),
+});
+
+export type UserMessageCardData = z.output<typeof userMessageCardSchema>;
+
 /** Matches the user messages produced by formatReview (optionally after a note). */
 export function looksLikeSentReview(text: string): boolean {
   return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: "/.test(text);
