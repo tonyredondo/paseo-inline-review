@@ -36,7 +36,7 @@ export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
     <View style={styles.root}>
       <Text style={styles.title}>Wide reading frame</Text>
       <Text style={styles.muted}>
-        {`Widen the timeline past the host's fixed 820px column so messages, tool calls and user messages use the available window width. Desktop only — native platforms keep the host's fixed column.`}
+        {`Widen the timeline past the host's fixed 820px column so messages, tool calls and user messages use the available window width, and style user messages like the plugin's review cards (left accent border, card surface). Desktop only.`}
       </Text>
       {settings.status === "error" || settings.status === "invalid" ? (
         <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>{settings.error}</Text>

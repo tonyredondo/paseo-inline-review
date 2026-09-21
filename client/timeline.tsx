@@ -414,9 +414,17 @@ function ReviewAssistantMessage({
     }
   }, [wideFrameReady, wideFrameState]);
   useEffect(() => {
-    if (layout.platform === "web" && wideFrame) ensureWideFrame();
-    else undoWideFrame();
-  }, [layout.platform, wideFrame]);
+    if (layout.platform === "web" && wideFrame) {
+      ensureWideFrame({
+        accent: theme.colors.accent ?? "#58a6ff",
+        surface: theme.colors.surface1,
+        raised: theme.colors.surface2,
+        border: theme.colors.border,
+      });
+    } else {
+      undoWideFrame();
+    }
+  }, [layout.platform, wideFrame, theme]);
   // Host-maintained agent snapshot: agents.ref() reads null until a snapshot
   // arrives, but the host state is always populated.
   const agentWorkspaceId = useAgent(agentId, (agent) => (agent ? agent.workspaceId : null));
