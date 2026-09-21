@@ -189,10 +189,23 @@ function styleTurnFinalCards(doc: WDoc): void {
       if (!up) break;
       node = up;
     }
-    // Turn-final iff the next flat item holds a user message (or the list
-    // ends — the thread's last message is also the turn's last).
-    const next = node.parentElement ? node.nextElementSibling : null;
-    if (next && !containsUserMessage(next)) continue;
+    // Turn-final iff, skipping neutral items (tool rows, turn stats,
+    // compaction), the next item holds a user message — or no user/agent
+    // item follows at all (the thread's last message is also the last of
+    // the final turn).
+    let next: WNode | null = node.parentElement ? node.nextElementSibling : null;
+    let isFinal = true;
+    while (next) {
+      if (containsUserMessage(next)) {
+        break; // a user message follows: last agent message of this turn
+      }
+      if (containsAssistant(next)) {
+        isFinal = false; // another agent message follows: not final
+        break;
+      }
+      next = next.nextElementSibling;
+    }
+    if (!isFinal) continue;
     // Card styles on OUR OWN plugin root element (React-managed styles are
     // wiped on re-render and re-applied by the observer, like widening).
     // Sent-review-card surface (dimmer than the pending raised surface).
@@ -227,7 +240,12 @@ function containsAssistant(node: WNode): boolean {
 
 function containsUserMessage(node: WNode): boolean {
   const u = node as unknown as { querySelectorAll(s: string): ArrayLike<WNode> };
-  return u.querySelectorAll('[data-testid="user-message"]').length > 0;
+  // Host user messages, sent-review cards and native user cards are all
+  // user-side turn boundaries.
+  return (
+    u.querySelectorAll('[data-testid="user-message"]').length > 0 ||
+    u.querySelectorAll('[data-testid="inline-review-sent"]').length > 0
+  );
 }
 
 function unstyleTurnFinalCards(doc: WDoc): void {

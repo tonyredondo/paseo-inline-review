@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactN
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   loadCommentsRpc,
+  debugHairlinesRpc,
   openLocalFileRpc,
   reviewItemSchema,
   saveCommentsRpc,
@@ -419,7 +420,7 @@ function UserMessageCard({
     [theme],
   );
   return (
-    <View style={styles.root}>
+    <View testID="inline-review-sent" style={styles.root}>
       <MarkdownText text={item.data.text} theme={theme} compact={false} />
       <Text style={styles.time}>{timestampLabel(timestamp)}</Text>
     </View>
@@ -460,7 +461,7 @@ function SentReviewCard({
   );
   const count = parsed.entries.length;
   return (
-    <View style={styles.card}>
+    <View testID="inline-review-sent" style={styles.card}>
       <Pressable accessibilityRole="button" onPress={() => setOpen((value) => !value)} style={styles.header}>
         <Icon name="MessageSquareQuote" size={14} color={theme.colors.accent} />
         <Text style={styles.title}>{`Review sent`}</Text>
@@ -493,6 +494,11 @@ function ReviewAssistantMessage({
   const load = useRpc(loadCommentsRpc);
   const persistComments = useRpc(saveCommentsRpc);
   const openLocalFile = useRpc(openLocalFileRpc);
+  const sendSepDump = useRpc(debugHairlinesRpc);
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).__sendSepDump = (dump: string) => void sendSepDump({ dump });
+  }, [sendSepDump]);
   const toast = useToast();
   const paseo = usePaseo();
   const [filePreview, setFilePreview] = useState<{
@@ -528,6 +534,39 @@ function ReviewAssistantMessage({
       undoWideFrame();
     }
   }, [layout.platform, wideFrame, theme]);
+  // TEMP AUDIT: turn-card detection dump.
+  const audit = useRef(false);
+  useEffect(() => {
+    if (layout.platform !== "web" || audit.current) return;
+    audit.current = true;
+    const timer = setTimeout(() => {
+      const g2 = globalThis as unknown as { document?: any };
+      const doc2 = g2.document;
+      if (!doc2) return;
+      const out2: string[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const send = (globalThis as any).__sendSepDump;
+      const roots = Array.from(doc2.querySelectorAll('[data-testid="inline-review-root"]')) as any[];
+      for (const r3 of roots) {
+        let n3: any = r3;
+        while (n3.parentElement && n3.parentElement.childElementCount === 1) n3 = n3.parentElement;
+        const kinds: string[] = [];
+        let sib: any = n3.nextElementSibling;
+        let count = 0;
+        while (sib && count < 6) {
+          const hasU = sib.querySelectorAll('[data-testid="user-message"]').length > 0;
+          const hasA = sib.querySelectorAll('[data-testid="inline-review-root"]').length > 0;
+          kinds.push(hasU ? "U" : hasA ? "A" : "?");
+          sib = sib.nextElementSibling;
+          count += 1;
+        }
+        out2.push(`ROOT card=${r3.dataset.inlineReviewTurnCard ?? "none"} next=[${kinds.join(",")}] text=${String(r3.textContent).slice(0, 40)}`);
+      }
+      void (globalThis as any).__sendSepDump?.(out2.join("\n") || "no roots");
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [layout.platform]);
+  // Host-maintained agent snapshot: agents.ref() reads null until a snapshot
   // Host-maintained agent snapshot: agents.ref() reads null until a snapshot
   // arrives, but the host state is always populated.
   const agentWorkspaceId = useAgent(agentId, (agent) => (agent ? agent.workspaceId : null));
