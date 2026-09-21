@@ -124,9 +124,16 @@ export function splitParagraphs(text: string): string[] {
   const chunks: string[] = [];
   let current: string[] = [];
   let inFence = false;
+  let fenceLength = 3;
   for (const line of text.split("\n")) {
-    if (/^\s*```/.test(line)) {
-      inFence = !inFence;
+    const fence = /^\s*(`{3,})/.exec(line);
+    if (fence) {
+      if (!inFence) {
+        inFence = true;
+        fenceLength = fence[1].length;
+      } else if (fence[1].length >= fenceLength) {
+        inFence = false;
+      }
       current.push(line);
       continue;
     }

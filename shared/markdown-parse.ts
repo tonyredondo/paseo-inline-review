@@ -43,7 +43,7 @@ export type Block =
   | { kind: "table"; header: TableCell[]; rows: TableCell[][] }
   | { kind: "hr" };
 
-const fencePattern = /^\s*```/;
+const fencePattern = /^\s*(`{3,})/;
 const indentedCodePattern = /^(?:    |\t)/;
 const headingPattern = /^(#{1,6})\s+(.*)$/;
 const bulletPattern = /^(\s*)[-*+]\s+(.*)$/;
@@ -131,11 +131,16 @@ export function parseBlocks(text: string): Block[] {
       blocks.push({ kind: "details", summary, lines: body });
       continue;
     }
-    if (fencePattern.test(line)) {
-      const language = /^\s*```\s*([\w#+.-]*)/.exec(line)?.[1] ?? null;
+    const openFence = fencePattern.exec(line);
+    if (openFence) {
+      // CommonMark: a fence is closed only by a backtick run at least as
+      // long as the opener — so ````markdown blocks can contain ``` code.
+      const fenceLength = openFence[1].length;
+      const closeFence = new RegExp("^\\s*`{" + fenceLength + ",}");
+      const language = /^\s*`{3,}\s*([\w#+.-]*)/.exec(line)?.[1] ?? null;
       index += 1;
       const code: string[] = [];
-      while (index < lines.length && !fencePattern.test(lines[index])) {
+      while (index < lines.length && !closeFence.test(lines[index])) {
         code.push(lines[index]);
         index += 1;
       }
@@ -373,9 +378,16 @@ export function extractRefDefs(text: string): Map<string, string> {
   const refs = new Map<string, string>();
   const lines = text.split("\n");
   let inFence = false;
+  let fenceLength = 3;
   for (const line of lines) {
-    if (/^\s*```/.test(line)) {
-      inFence = !inFence;
+    const fence = /^\s*(`{3,})/.exec(line);
+    if (fence) {
+      if (!inFence) {
+        inFence = true;
+        fenceLength = fence[1].length;
+      } else if (fence[1].length >= fenceLength) {
+        inFence = false;
+      }
       continue;
     }
     if (inFence) continue;

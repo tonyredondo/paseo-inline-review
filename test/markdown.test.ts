@@ -30,6 +30,17 @@ test("fenced code block consumes language tag", () => {
   assert.equal(block.text, "const a = 1;");
 });
 
+test("4-backtick fence contains 3-backtick fences (CommonMark)", () => {
+  const blocks = parseBlocks(
+    "````markdown\nintro\n```bash\ndu -sh /tmp\n```\nmore text\n````\nafter\n",
+  );
+  const block = first(blocks);
+  if (block.kind !== "code") throw new Error("expected code");
+  assert.equal(block.text, "intro\n```bash\ndu -sh /tmp\n```\nmore text");
+  const next = blocks[1];
+  assert.equal(next.kind, "p");
+});
+
 test("unclosed fence while streaming consumes to the end", () => {
   const blocks = parseBlocks("```\npartial code without close");
   const block = first(blocks);
