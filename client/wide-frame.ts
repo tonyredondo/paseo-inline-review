@@ -88,7 +88,7 @@ function styleUserMessages(doc: WDoc, win: WWin): void {
     el.style.borderBottomWidth = "1px";
     el.style.borderBottomStyle = "solid";
     el.style.borderBottomColor = userCardBorder;
-    el.style.borderLeftWidth = "3px";
+    el.style.borderLeftWidth = "5px";
     el.style.borderLeftStyle = "solid";
     el.style.borderLeftColor = withAlpha(userCardAccent, 0.35);
     // The card surface goes on the OUTSIDE element; the host's own inner
