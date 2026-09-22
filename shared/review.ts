@@ -152,6 +152,27 @@ export const sentReviewSchema = z.object({
 
 export type SentReviewData = z.output<typeof sentReviewSchema>;
 
+/** Data for the plugin-owned native card replacing a plain user message. */
+export const userMessageCardSchema = z.object({
+  messageId: z.string().nullable(),
+  text: z.string(),
+});
+
+export type UserMessageCardData = z.output<typeof userMessageCardSchema>;
+
+/**
+ * Newer clients may attach host-owned media metadata to a user timeline item
+ * before the public transformer type learns about it. Keep those rows native:
+ * replacing one would discard images, attachment actions, and their viewer.
+ */
+export function userMessageHasHostAttachments(item: unknown): boolean {
+  if (item === null || typeof item !== "object") return false;
+  const record = item as Record<string, unknown>;
+  return [record.images, record.attachments].some((value) =>
+    Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null,
+  );
+}
+
 /** Matches the user messages produced by formatReview (optionally after a note). */
 export function looksLikeSentReview(text: string): boolean {
   return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: /.test(text);

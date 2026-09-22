@@ -10,6 +10,7 @@ import {
   reviewCommentSchema,
   shortenQuote,
   splitParagraphs,
+  userMessageHasHostAttachments,
 } from "../shared/review.ts";
 
 test("splitParagraphs splits on blank lines and trims empties", () => {
@@ -102,6 +103,13 @@ test("file RPC carries source identity and caps each transfer at 5 MB", () => {
     fileVersion: "v1",
   });
   assert.equal(parsed.fileVersion, "v1");
+});
+
+test("native user cards defer to host-owned attachment rows", () => {
+  assert.equal(userMessageHasHostAttachments({ text: "plain" }), false);
+  assert.equal(userMessageHasHostAttachments({ text: "plain", images: [] }), false);
+  assert.equal(userMessageHasHostAttachments({ text: "image", images: [{ mimeType: "image/png" }] }), true);
+  assert.equal(userMessageHasHostAttachments({ text: "file", attachments: { count: 1 } }), true);
 });
 
 test("formatted reviews round-trip quotes, backslashes and multiline comments", () => {

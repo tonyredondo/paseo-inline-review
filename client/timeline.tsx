@@ -21,11 +21,13 @@ import {
 } from "./turn-final-store";
 import { z } from "zod";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   openLocalFileRpc,
   reviewItemSchema,
   sentReviewSchema,
+  userMessageCardSchema,
+  userMessageHasHostAttachments,
   commentBelongsToReviewSource,
   findReviewCommentParagraphIndex,
   reviewCommentMatchesParagraph,
@@ -36,6 +38,7 @@ import {
   previewLanguage,
   type ReviewItemData,
   type SentReviewData,
+  type UserMessageCardData,
 } from "../shared/review";
 import {
   addComment,
@@ -367,6 +370,59 @@ function CompactionDivider({
       <Icon name="Link" size={12} color={theme.colors.foregroundMuted} />
       <Text style={styles.label}>{label}</Text>
       <View style={styles.line} />
+    </View>
+  );
+}
+
+/** Short wall-clock label ("13:38") for the native user card. */
+function timestampLabel(timestamp: Date): string {
+  return timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * Native equivalent of the desktop user-message card. Web keeps Paseo's host
+ * row so its image rail and edit/copy controls remain available; iOS and
+ * Android need a React Native renderer because there is no DOM styling pass.
+ */
+function UserMessageCard({
+  item,
+  timestamp,
+  theme,
+  layout,
+}: PluginTimelineItemProps<UserMessageCardData>) {
+  const styles = useMemo(
+    () => ({
+      root: {
+        alignSelf: "flex-end",
+        maxWidth: "100%",
+        backgroundColor: theme.colors.surface2,
+        borderRadius: 8,
+        borderTopWidth: 1,
+        borderRightWidth: 1,
+        borderBottomWidth: 1,
+        borderTopColor: theme.colors.border,
+        borderRightColor: theme.colors.border,
+        borderBottomColor: theme.colors.border,
+        borderLeftWidth: 5,
+        borderLeftColor: withAlpha(theme.colors.accent, 0.35),
+        paddingHorizontal: 10,
+        paddingTop: 12,
+        paddingBottom: 8,
+        marginVertical: 2,
+      } as const,
+      time: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 11,
+        textAlign: "right",
+        paddingTop: 2,
+      } as const,
+    }),
+    [theme],
+  );
+  return (
+    <View testID="inline-review-user-message" style={styles.root}>
+      <MarkdownText text={item.data.text} theme={theme} compact={layout.compact} />
+      <Text style={styles.time}>{timestampLabel(timestamp)}</Text>
     </View>
   );
 }
@@ -1074,8 +1130,8 @@ export function registerTimeline(client: PluginClientContext): void {
     schema: reviewItemSchema,
     Component: ReviewAssistantMessage,
   });
-  // Reviews we send through the panel or the fastpath pill become a compact
-  // card instead of the plain user bubble. Other user messages stay native.
+  // Reviews sent through the panel become a compact review card. Plain user
+  // messages keep the host row on web and use the native card below on mobile.
   client.addTimelineTransformer({
     id: "inline-review-sent",
     query: { itemType: "user_message" },
@@ -1092,10 +1148,20 @@ export function registerTimeline(client: PluginClientContext): void {
           ],
         };
       }
-      // Plain message attachments are host-owned and are not exposed through
-      // the transformer contract. Preserve the native row so its text, images,
-      // timestamp and actions remain together.
-      return undefined;
+      // Web owns the attachment rail, lightbox, timestamp and actions. Native
+      // has no DOM pass, so use the cross-platform card unless the client has
+      // supplied host-owned attachment metadata that must stay native.
+      if (Platform.OS === "web" || userMessageHasHostAttachments(item)) return undefined;
+      return {
+        items: [
+          {
+            type: "plugin",
+            kind: "user-message-card",
+            version: 1,
+            data: { messageId: item.messageId ?? null, text: item.text },
+          },
+        ],
+      };
     },
   });
   client.addTimelineRenderer({
@@ -1103,6 +1169,12 @@ export function registerTimeline(client: PluginClientContext): void {
     version: 1,
     schema: sentReviewSchema,
     Component: SentReviewCard,
+  });
+  client.addTimelineRenderer({
+    kind: "user-message-card",
+    version: 1,
+    schema: userMessageCardSchema,
+    Component: UserMessageCard,
   });
   // Compaction divider: same "Context compacted" marker but with dotted
   // side lines instead of the host's continuous hairline.

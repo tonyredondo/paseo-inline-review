@@ -96,7 +96,7 @@ test("external links open on the client and nested styles retain file handlers",
   assert.equal(boldCase.match(/onLocalFilePress=\{onLocalFilePress\}/g)?.length, 3);
 });
 
-test("plain user messages remain host-rendered so Paseo preserves attachments", () => {
+test("plain user messages use native cards without replacing web or attachment rows", () => {
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx"), "utf8"));
   const sharedSource = String(readFileSync(path.resolve("shared/review.ts"), "utf8"));
   const transformerStart = timelineSource.indexOf('id: "inline-review-sent"');
@@ -106,17 +106,72 @@ test("plain user messages remain host-rendered so Paseo preserves attachments", 
   );
   const transformer = timelineSource.slice(transformerStart, transformerEnd);
   assert.match(transformer, /if \(looksLikeSentReview\(item\.text\)\)/);
-  assert.match(transformer, /return undefined/);
-  assert.ok(!timelineSource.includes('kind: "user-message-card"'));
-  assert.ok(!sharedSource.includes("userMessageCardSchema"));
+  assert.match(
+    transformer,
+    /if \(Platform\.OS === "web" \|\| userMessageHasHostAttachments\(item\)\) return undefined/,
+  );
+  assert.match(transformer, /kind: "user-message-card"/);
+  assert.match(timelineSource, /kind: "user-message-card"[\s\S]{0,180}Component: UserMessageCard/);
+  assert.match(sharedSource, /export const userMessageCardSchema/);
+  assert.match(sharedSource, /export function userMessageHasHostAttachments/);
+});
+
+test("image user messages contain their controls and shrink within the timeline", () => {
+  const wideFrameSource = String(readFileSync(path.resolve("client/wide-frame.ts")));
+  assert.match(wideFrameSource, /const USER_CARD_IMAGE_OVERLAP = 6/);
+  assert.match(wideFrameSource, /const USER_CARD_TEXT_VERTICAL_PADDING = 5/);
+  assert.match(wideFrameSource, /const USER_CARD_CONTROLS_BOTTOM_PADDING = 8/);
+  assert.match(wideFrameSource, /\[aria-label="Open image attachment"\]/);
+  assert.match(wideFrameSource, /el\.style\.boxSizing = "border-box"/);
+  assert.match(wideFrameSource, /cardBubble\.style\.display = "grid"/);
+  assert.match(wideFrameSource, /cardBubble\.style\.gridTemplateColumns = "minmax\(0, 1fr\)"/);
+  assert.match(wideFrameSource, /cardBubble\.style\.width = "100%"/);
+  assert.match(wideFrameSource, /cardBubble\.style\.minWidth = "0px"/);
+  assert.match(wideFrameSource, /imageRow\.style\.display = "flex"/);
+  assert.match(wideFrameSource, /imageRow\.style\.flexWrap = "nowrap"/);
+  assert.match(wideFrameSource, /imageRow\.style\.width = "max-content"/);
+  assert.match(wideFrameSource, /imageRow\.style\.paddingTop = "5px"/);
+  assert.match(wideFrameSource, /imageRow\.style\.marginBottom = "4px"/);
+  assert.match(wideFrameSource, /image\.style\.flexShrink = "0"/);
+  assert.match(wideFrameSource, /inlineReviewUserBackdrop = "1"/);
+  assert.match(wideFrameSource, /backdrop\.style\.top/);
+  assert.match(
+    wideFrameSource,
+    /Math\.max\(imageRow\.clientHeight - USER_CARD_IMAGE_OVERLAP, 0\)/,
+  );
+  assert.match(
+    wideFrameSource,
+    /el\.style\.paddingTop = "0px";\s+el\.style\.paddingBottom = `\$\{USER_CARD_CONTROLS_BOTTOM_PADDING\}px`/,
+  );
+  assert.match(
+    wideFrameSource,
+    /cardBubble\.style\.paddingTop = `\$\{USER_CARD_TEXT_VERTICAL_PADDING\}px`;\s+cardBubble\.style\.paddingBottom = `\$\{USER_CARD_TEXT_VERTICAL_PADDING\}px`/,
+  );
+  assert.match(wideFrameSource, /inlineReviewUserImages = "1"/);
+  assert.match(
+    wideFrameSource,
+    /rootEl\.insertBefore\(backdrop, rootEl\.children\[0\] \?\? null\)/,
+  );
+  assert.doesNotMatch(wideFrameSource, /cardBubble\.insertBefore\(backdrop/);
+  assert.match(wideFrameSource, /backdrop\.style\.right = "0px"/);
+  assert.match(wideFrameSource, /backdrop\.style\.left = "0px"/);
+  assert.match(wideFrameSource, /imageRow\.style\.paddingTop = ""/);
+  assert.doesNotMatch(wideFrameSource, /imageRow\.style\.position = "absolute"/);
+  assert.doesNotMatch(wideFrameSource, /el\.style\.marginTop = `\$\{/);
+  assert.doesNotMatch(wideFrameSource, /insertBefore\(imageRow/);
 });
 
 test("timeline rows use scoped agent state and one elected wide-frame controller", () => {
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  const controllerSource = String(readFileSync(path.resolve("client/wide-frame-controller.tsx")));
+  const entrySource = String(readFileSync(path.resolve("index.client.tsx")));
   assert.ok(!timelineSource.includes("useSettings("));
   assert.ok(!timelineSource.includes("(agent) => agent)"));
   assert.match(timelineSource, /subscribeTurnIndex\(agentId, listener\)/);
   assert.match(timelineSource, /useWideFrameControllerOwner\(\)/);
+  assert.doesNotMatch(controllerSource, /return \(\) => undoWideFrame\(\)/);
+  assert.match(controllerSource, /enabled === null/);
+  assert.match(entrySource, /return async \(\) => \{[\s\S]{0,240}undoWideFrame\(\)/);
 });
 
 test("assistant renderers never suppress host timeline rows", () => {

@@ -9,6 +9,7 @@ import {
 } from "./client/preview-store";
 import { registerPills } from "./client/pills";
 import { registerTimeline } from "./client/timeline";
+import { undoWideFrame } from "./client/wide-frame";
 import { WideFrameSettingsScreen } from "./client/wide-frame-settings";
 
 export default function contribute(client: PluginClientContext) {
@@ -100,6 +101,9 @@ export default function contribute(client: PluginClientContext) {
   registerTimeline(client);
   const removePills = registerPills(client);
   return async () => {
+    // Wide-frame is host-scoped rather than owned by a virtualized timeline
+    // row, so the plugin entrypoint is its final lifecycle boundary.
+    undoWideFrame();
     unregisterFileTabOpener();
     panelRegistration?.();
     panelRegistration = null;

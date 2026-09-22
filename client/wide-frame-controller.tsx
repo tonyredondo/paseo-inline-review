@@ -39,7 +39,7 @@ export function useWideFrameControllerOwner(): boolean {
 export function WideFrameController({ theme, layout }: Pick<PluginHostProps, "theme" | "layout">) {
   const settings = useSettings(wideFrameSettings);
   const retried = useRef(false);
-  const enabled = settings.status === "ready" ? settings.values.wideFrame : false;
+  const enabled = settings.status === "ready" ? settings.values.wideFrame : null;
 
   useEffect(() => {
     if (settings.status !== "ready" && settings.status !== "loading" && !retried.current) {
@@ -49,7 +49,11 @@ export function WideFrameController({ theme, layout }: Pick<PluginHostProps, "th
   }, [settings]);
 
   useEffect(() => {
-    if (layout.platform === "web" && enabled) {
+    // The controller is elected from virtualized timeline rows, but the DOM
+    // policy is host-wide. Row unmounts and transient settings states must not
+    // tear it down; an explicit disabled value or plugin cleanup owns that.
+    if (layout.platform !== "web" || enabled === null) return;
+    if (enabled) {
       ensureWideFrame({
         accent: theme.colors.accent ?? theme.colors.foreground,
         raised: theme.colors.surface2,
@@ -58,7 +62,6 @@ export function WideFrameController({ theme, layout }: Pick<PluginHostProps, "th
     } else {
       undoWideFrame();
     }
-    return () => undoWideFrame();
   }, [enabled, layout.platform, theme]);
 
   return null;

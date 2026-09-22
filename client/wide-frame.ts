@@ -21,13 +21,16 @@ export interface WideFrameColors {
 }
 
 type WNode = {
+  clientHeight: number;
   clientWidth: number;
+  children: ArrayLike<WNode>;
   parentElement: WNode | null;
   previousElementSibling: WNode | null;
   nextElementSibling: WNode | null;
   childElementCount: number;
   style: Record<string, string>;
   dataset: Record<string, string>;
+  setAttribute(name: string, value: string): void;
   insertBefore(node: WNode, before: WNode | null): void;
   remove(): void;
 };
@@ -53,6 +56,9 @@ type WWin = {
 };
 
 const BREATHING = 160; // 80px of air per side
+const USER_CARD_IMAGE_OVERLAP = 6;
+const USER_CARD_TEXT_VERTICAL_PADDING = 5;
+const USER_CARD_CONTROLS_BOTTOM_PADDING = 8;
 
 /** Converts #rrggbb to rgba() so fills can fade without losing hue. */
 function withAlpha(hex: string, alpha: number): string {
@@ -71,7 +77,8 @@ let userCardBorder = "#30363d";
 /**
  * Styles host user messages like the plugin's review cards: rounded card,
  * dimmed accent border on the left, and the card surface. The host renders
- * user messages right-aligned; this only changes the bubble's box style.
+ * user messages right-aligned. Image attachments remain owned by the host,
+ * but sit in a rail above the card instead of inside its painted surface.
  */
 function styleUserMessages(doc: WDoc, win: WWin): void {
   type UNode = WNode & {
@@ -106,7 +113,10 @@ function styleUserMessages(doc: WDoc, win: WWin): void {
     // pane width for long text.
     el.style.width = "fit-content";
     el.style.maxWidth = "100%";
+    el.style.boxSizing = "border-box";
     el.style.marginLeft = "auto";
+    el.style.position = "relative";
+    el.style.overflow = "visible";
     el.style.paddingLeft = "10px";
     el.style.paddingRight = "10px";
     // The trailing row leaves dead space at the bottom; pad the top so the
@@ -117,14 +127,149 @@ function styleUserMessages(doc: WDoc, win: WWin): void {
     // Clear the first painted descendant (the host bubble background) and
     // tighten its vertical padding — the card ran taller than its text.
     const rootEl = el as unknown as UNode;
-    for (const inner of Array.from(rootEl.querySelectorAll("*"))) {
-      const bg = cs.getComputedStyle(inner).backgroundColor;
-      if (bg && bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)") {
-        inner.style.backgroundColor = "transparent";
-        inner.dataset.inlineReviewUserInner = "1";
-        inner.style.paddingTop = "6px";
-        inner.style.paddingBottom = "6px";
-        break;
+    let cardBubble =
+      Array.from(rootEl.querySelectorAll('[data-inline-review-user-inner="1"]'))[0] ?? null;
+    if (!cardBubble) {
+      for (const inner of Array.from(rootEl.querySelectorAll("*"))) {
+        const bg = cs.getComputedStyle(inner).backgroundColor;
+        if (bg && bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)") {
+          cardBubble = inner;
+          inner.dataset.inlineReviewUserInner = "1";
+          break;
+        }
+      }
+    }
+    if (cardBubble) {
+      cardBubble.style.backgroundColor = "transparent";
+      cardBubble.style.paddingTop = "6px";
+      cardBubble.style.paddingBottom = "6px";
+    }
+    // Keep the host attachment buttons and their lightbox behavior intact.
+    // The attachment row and text already share this painted host container,
+    // so a one-column grid can size itself to whichever one is wider.
+    const imageButtons = Array.from(
+      rootEl.querySelectorAll('[aria-label="Open image attachment"]'),
+    );
+    const imageButton = imageButtons[0];
+    let imageRow: WNode | null = imageButton ?? null;
+    while (imageRow && imageRow.parentElement !== cardBubble) {
+      imageRow = imageRow.parentElement;
+    }
+    for (const previous of Array.from(
+      rootEl.querySelectorAll('[data-inline-review-user-images="1"]'),
+    )) {
+      previous.style.position = "";
+      previous.style.bottom = "";
+      previous.style.left = "";
+      previous.style.zIndex = "";
+      previous.style.display = "";
+      previous.style.flexDirection = "";
+      previous.style.flexWrap = "";
+      previous.style.gap = "";
+      previous.style.overflowX = "";
+      previous.style.transform = "";
+      previous.style.width = "";
+      previous.style.maxWidth = "";
+      previous.style.paddingTop = "";
+      previous.style.marginBottom = "";
+      previous.dataset.inlineReviewUserImages = "";
+    }
+    for (const previousImage of Array.from(
+      rootEl.querySelectorAll('[data-inline-review-user-image="1"]'),
+    )) {
+      if (imageButtons.includes(previousImage)) continue;
+      previousImage.style.flexShrink = "";
+      previousImage.dataset.inlineReviewUserImage = "";
+    }
+    const previousBackdrops = Array.from(
+      rootEl.querySelectorAll('[data-inline-review-user-backdrop="1"]'),
+    );
+    for (const previousBackdrop of previousBackdrops.slice(1)) {
+      previousBackdrop.remove();
+    }
+    if (cardBubble && imageRow?.parentElement === cardBubble) {
+      // The inert backdrop spans the complete host message, including its
+      // trailing controls; its top edge still leaves the gallery protruding.
+      // No Paseo content node is moved.
+      el.style.backgroundColor = "transparent";
+      el.style.borderTopWidth = "0px";
+      el.style.borderRightWidth = "0px";
+      el.style.borderBottomWidth = "0px";
+      el.style.borderLeftWidth = "0px";
+      el.style.paddingTop = "0px";
+      el.style.paddingBottom = `${USER_CARD_CONTROLS_BOTTOM_PADDING}px`;
+      el.style.isolation = "isolate";
+      cardBubble.style.display = "grid";
+      cardBubble.style.gridTemplateColumns = "minmax(0, 1fr)";
+      cardBubble.style.gridAutoFlow = "row";
+      cardBubble.style.justifyItems = "start";
+      cardBubble.style.position = "relative";
+      cardBubble.style.zIndex = "1";
+      cardBubble.style.width = "100%";
+      cardBubble.style.maxWidth = "100%";
+      cardBubble.style.minWidth = "0px";
+      cardBubble.style.overflowWrap = "anywhere";
+      cardBubble.style.paddingTop = `${USER_CARD_TEXT_VERTICAL_PADDING}px`;
+      cardBubble.style.paddingBottom = `${USER_CARD_TEXT_VERTICAL_PADDING}px`;
+
+      for (const image of imageButtons) {
+        image.style.flexShrink = "0";
+        image.dataset.inlineReviewUserImage = "1";
+      }
+      imageRow.style.display = "flex";
+      imageRow.style.flexDirection = "row";
+      imageRow.style.flexWrap = "nowrap";
+      imageRow.style.gap = "8px";
+      imageRow.style.overflowX = "auto";
+      imageRow.style.position = "relative";
+      imageRow.style.zIndex = "2";
+      imageRow.style.width = "max-content";
+      imageRow.style.maxWidth = "100%";
+      imageRow.style.minWidth = "0px";
+      // Bring the gallery slightly into the card. The compact gap and balanced
+      // text padding keep the images tied to the message without excess height.
+      imageRow.style.paddingTop = "5px";
+      imageRow.style.marginBottom = "4px";
+      imageRow.dataset.inlineReviewUserImages = "1";
+
+      let backdrop = previousBackdrops[0] ?? null;
+      if (!backdrop) {
+        backdrop = doc.createElement("div");
+        backdrop.dataset.inlineReviewUserBackdrop = "1";
+        backdrop.setAttribute("aria-hidden", "true");
+      }
+      if (backdrop.parentElement !== rootEl) {
+        rootEl.insertBefore(backdrop, rootEl.children[0] ?? null);
+      }
+      backdrop.style.position = "absolute";
+      backdrop.style.top = `${Math.max(imageRow.clientHeight - USER_CARD_IMAGE_OVERLAP, 0)}px`;
+      backdrop.style.right = "0px";
+      backdrop.style.bottom = "0px";
+      backdrop.style.left = "0px";
+      backdrop.style.zIndex = "0";
+      backdrop.style.pointerEvents = "none";
+      backdrop.style.backgroundColor = userCardRaised;
+      backdrop.style.borderRadius = "8px";
+      backdrop.style.borderTop = `1px solid ${userCardBorder}`;
+      backdrop.style.borderRight = `1px solid ${userCardBorder}`;
+      backdrop.style.borderBottom = `1px solid ${userCardBorder}`;
+      backdrop.style.borderLeft = `5px solid ${withAlpha(userCardAccent, 0.35)}`;
+    } else {
+      el.style.minWidth = "";
+      el.style.isolation = "";
+      for (const backdrop of previousBackdrops) backdrop.remove();
+      if (cardBubble) {
+        cardBubble.style.display = "";
+        cardBubble.style.gridTemplateColumns = "";
+        cardBubble.style.gridAutoFlow = "";
+        cardBubble.style.justifyItems = "";
+        cardBubble.style.position = "";
+        cardBubble.style.isolation = "";
+        cardBubble.style.zIndex = "";
+        cardBubble.style.width = "";
+        cardBubble.style.maxWidth = "";
+        cardBubble.style.minWidth = "";
+        cardBubble.style.overflowWrap = "";
       }
     }
     // The trailing row (timestamp + actions) adds a band under the text;
@@ -133,6 +278,8 @@ function styleUserMessages(doc: WDoc, win: WWin): void {
     if (trail) {
       trail.style.marginTop = "-10px";
       trail.style.marginBottom = "0px";
+      trail.style.position = "relative";
+      trail.style.zIndex = "2";
     }
   }
 }
@@ -190,21 +337,71 @@ function unstyleUserMessages(doc: WDoc): void {
     el.style.backgroundColor = "";
     el.style.width = "";
     el.style.maxWidth = "";
+    el.style.minWidth = "";
+    el.style.boxSizing = "";
+    el.style.position = "";
+    el.style.overflow = "";
+    el.style.isolation = "";
     el.style.paddingLeft = "";
     el.style.paddingRight = "";
     el.style.paddingTop = "";
     el.style.paddingBottom = "";
     el.dataset.inlineReviewUser = "";
     el.style.marginLeft = "";
+    el.style.marginTop = "";
     for (const inner of Array.from(rootEl.querySelectorAll('[data-inline-review-user-inner="1"]'))) {
       inner.style.backgroundColor = "";
       inner.style.paddingTop = "";
       inner.style.paddingBottom = "";
+      inner.style.display = "";
+      inner.style.gridTemplateColumns = "";
+      inner.style.gridAutoFlow = "";
+      inner.style.justifyItems = "";
+      inner.style.position = "";
+      inner.style.isolation = "";
+      inner.style.zIndex = "";
+      inner.style.width = "";
+      inner.style.maxWidth = "";
+      inner.style.minWidth = "";
+      inner.style.overflowWrap = "";
       inner.dataset.inlineReviewUserInner = "";
+    }
+    for (const imageRow of Array.from(
+      rootEl.querySelectorAll('[data-inline-review-user-images="1"]'),
+    )) {
+      imageRow.style.position = "";
+      imageRow.style.bottom = "";
+      imageRow.style.left = "";
+      imageRow.style.zIndex = "";
+      imageRow.style.display = "";
+      imageRow.style.flexDirection = "";
+      imageRow.style.flexWrap = "";
+      imageRow.style.gap = "";
+      imageRow.style.overflowX = "";
+      imageRow.style.transform = "";
+      imageRow.style.width = "";
+      imageRow.style.maxWidth = "";
+      imageRow.style.minWidth = "";
+      imageRow.style.paddingTop = "";
+      imageRow.style.marginBottom = "";
+      imageRow.dataset.inlineReviewUserImages = "";
+    }
+    for (const image of Array.from(
+      rootEl.querySelectorAll('[data-inline-review-user-image="1"]'),
+    )) {
+      image.style.flexShrink = "";
+      image.dataset.inlineReviewUserImage = "";
+    }
+    for (const backdrop of Array.from(
+      rootEl.querySelectorAll('[data-inline-review-user-backdrop="1"]'),
+    )) {
+      backdrop.remove();
     }
     for (const trail of Array.from(rootEl.querySelectorAll('[data-testid="user-message-trailing-row"]'))) {
       trail.style.marginTop = "";
       trail.style.marginBottom = "";
+      trail.style.position = "";
+      trail.style.zIndex = "";
     }
   }
 }

@@ -2,10 +2,10 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { useSettings } from "@getpaseo/plugin/client";
 import { Switch, Text, View } from "react-native";
-import { wideFrameSettings } from "./wide-frame";
+import { ensureWideFrame, undoWideFrame, wideFrameSettings } from "./wide-frame";
 
 /** Settings screen: enables/disables the wide reading-frame experiment. */
-export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
+export function WideFrameSettingsScreen({ theme, layout }: PluginSurfaceProps) {
   const settings = useSettings(wideFrameSettings);
   const values = settings.status === "ready" ? settings.values : null;
   const enabled = values?.wideFrame ?? false;
@@ -26,9 +26,23 @@ export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
     state: { color: theme.colors.accent, fontSize: 13 } as const,
   };
 
-  function toggle(): void {
+  async function toggle(): Promise<void> {
     if (settings.status !== "ready") return;
-    void settings.save({ ...settings.values, wideFrame: !enabled }, settings.revision);
+    const nextEnabled = !enabled;
+    const saved = await settings.save(
+      { ...settings.values, wideFrame: nextEnabled },
+      settings.revision,
+    );
+    if (!saved || layout.platform !== "web") return;
+    if (nextEnabled) {
+      ensureWideFrame({
+        accent: theme.colors.accent ?? theme.colors.foreground,
+        raised: theme.colors.surface2,
+        border: theme.colors.border,
+      });
+    } else {
+      undoWideFrame();
+    }
   }
 
   return (
@@ -42,15 +56,15 @@ export function WideFrameSettingsScreen({ theme }: PluginSurfaceProps) {
       ) : null}
       <View style={styles.row}>
         <Text style={styles.label}>Widen the timeline</Text>
-        <Switch value={enabled} onValueChange={toggle} />
+        <Switch value={enabled} onValueChange={() => void toggle()} />
       </View>
       {values ? (
-        <Text style={styles.state}>{enabled ? "Widening enabled — restart the app window if items look unchanged." : "Widening disabled"}</Text>
+        <Text style={styles.state}>{enabled ? "Widening enabled" : "Widening disabled"}</Text>
       ) : (
         <Text style={styles.muted}>{settings.status === "loading" ? "Loading…" : "Settings unavailable."}</Text>
       )}
       <Text style={styles.muted}>
-        {`User messages render as review-style cards (right-aligned, accent border, raised surface) on all platforms: desktop, iPhone and iPad. This replaces the host's edit/copy actions on user messages.`}
+        {`User messages render as review-style cards on desktop, iPhone and iPad. Web keeps Paseo's native image and action controls; native rows with host-owned attachments remain untouched.`}
       </Text>
     </View>
   );
