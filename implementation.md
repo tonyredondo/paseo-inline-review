@@ -7,7 +7,7 @@ Primary clients: Paseo Desktop/Web and compact native clients, especially iPhone
 
 ## Implementation result (2026-09-22)
 
-The planned plugin work is implemented in the working tree. It remains uncommitted because this implementation request did not authorize Git publication. The code preserves host-owned attachment rows and does not attempt to hide the native pre-plugin paint, which remains a Paseo lifecycle boundary.
+The initial performance work was published in `92c74ce`. The code preserves host-owned attachment rows and does not attempt to hide the native pre-plugin paint, which remains a Paseo lifecycle boundary.
 
 | Phase | Implemented result |
 | --- | --- |
@@ -17,13 +17,13 @@ The planned plugin work is implemented in the working tree. It remains uncommitt
 | 3 | Added a bounded thumbnail RPC and client/server stores with mount delay, singleflight, concurrency 2, stale-result rejection, byte-bounded LRU caches, file-identity verification, retry, and a 100 KiB output cap. Compact remote images and every full-resolution local image require interaction. |
 | 4 | Comment and file I/O now use asynchronous handles. Comment mutations use delta saves while the full RPC remains for compatibility. Downloads use 768 KiB compact and 2 MiB desktop chunks, sequential progressive writes, source-version validation, and destination abort on failure. |
 | 5 | Added compiled Markdown and inline-token caches bounded by 2,000,000 source characters, completed-message reuse, 50 ms streaming coalescing with immediate final publication, prefix-only collapsed highlighting, large-block virtualization, agent/message comment indexes, and stable re-anchor tracking. |
-| 6 | Timeline registration is the first contribution, every contribution is cleaned up, and the client import audit excludes server/Node/image-processor code. Added an authoritative installed-catalog size check. |
-| 7 | Desktop observes the smallest common timeline ancestor, classifies only relevant mutation scopes, repairs style-only rewrites without a document scan, and replaces the fixed sweep with a 2.5-to-60-second adaptive fallback. Cleanup restores every owned style, marker, listener, observer, timer, and frame. |
+| 6 | Timeline registration is the first contribution, renderers are registered before transformers can replace native rows, every contribution is cleaned up, and the client import audit excludes server/Node/image-processor code. Added an authoritative installed-catalog size check. |
+| 7 | Desktop observes the smallest common timeline ancestor, classifies only relevant mutation scopes, repairs style-only rewrites without a document scan, and replaces the fixed sweep with a 2.5-to-60-second adaptive fallback. Controller election and styling happen before paint; workspace re-entry immediately rebinds and rescans instead of waiting for the fallback. Cleanup restores every owned style, marker, listener, observer, timer, and frame. |
 | 8 | The complete automated matrix, 25 repeated lifecycle/concurrency iterations, exact plugin reload, log inspection, and a final Desktop visual check passed. The physical iPhone matrix is still a manual release gate because no iPhone surface is available in this environment. |
 
 ### Final measured evidence
 
-- `npm test`: 211 tests passed, including all pre-existing parser/render/persistence contracts and the new synchronization, lazy history, thumbnail, progressive download, streaming, and fake-DOM regressions.
+- `npm test`: 214 tests passed, including all pre-existing parser/render/persistence contracts and the new synchronization, lazy history, thumbnail, progressive download, streaming, startup-order, pre-paint, and fake-DOM regressions.
 - `npm run typecheck` and `git diff --check`: passed.
 - Stress: 25 consecutive iterations passed for comment synchronization, thumbnail client/server singleflight and eviction, progressive download abort/order, adaptive sweeps, mutation routing, and turn-index lifecycle.
 - Comment synchronization: 1, 9, and 100 agents each produce one RPC per tick; unchanged foreground state backs off to one request per minute and background state produces none.
@@ -31,8 +31,18 @@ The planned plugin work is implemented in the working tree. It remains uncommitt
 - Images: zero automatic full-resolution RPCs. Thumbnail work and client fetches are each capped at two concurrent operations; remounts hit bounded memory caches.
 - Markdown: a 500 KiB completed fixture reuses its compiled document on remount; the collapsed 500-line fixture highlights only 40 lines.
 - Downloads: a 5 MiB compact transfer uses seven bounded chunks; desktop uses three. Tests prove ordered writes and abort-on-error behavior.
-- Plugin: reloaded from this checkout, reported `running`, and logged `Plugin ready` at `2026-09-22T18:27:18.721Z` without a new processor error.
+- Plugin: reloaded from this checkout, reported `running`, and logged `Plugin ready` at `2026-09-22T20:04:04.067Z` without a new processor error.
 - Desktop: the post-reload timeline rendered at the widened stable width with plugin messages visible and no blank-row regression.
+
+### Re-entry paint follow-up
+
+A real re-entry still exposed three visible phases: native rows, partial plugin styling, and cards. Three red-capable regressions isolated the plugin-controlled causes:
+
+- The elected wide-frame owner used a passive effect, so the controller did not mount until after the first browser paint. Ownership and DOM styling now both use layout effects.
+- An already installed wide-frame controller returned without scanning or rebinding when Paseo replaced the workspace DOM. Re-entry now reinstalls synchronously against the current subtree instead of waiting up to the adaptive fallback interval.
+- Transformers were installed before their renderers. Renderers now exist first, so a host that publishes registrations incrementally never sees a plugin timeline item without its component.
+
+The installed bundle is 246,418 raw bytes and 52,084 gzip bytes. Twenty local catalog samples measured 1.04 ms median / 2.01 ms p95; twenty parse/compile samples measured 1.90 ms median / 2.19 ms p95. Those values rule out plugin catalog lookup or JavaScript compilation as the source of a large local delay. A cold native frame painted before Paseo loads the client bundle remains host-owned; plugin-local persistence cannot execute early enough to remove it, and caching settings independently would risk painting the wrong saved state.
 
 ### Bundle warning analysis
 
@@ -44,7 +54,7 @@ The installed client bundle changed from 216,783 to 246,418 raw bytes and from 4
 - A disk thumbnail cache was not added: the measured bounded memory caches remove remount work, while a cold restart costs one bounded platform process per cache miss. There was no evidence that justified persistent data and cleanup complexity.
 - Generic text compression was rejected after a measured round trip. Revision metadata, delta saves, thumbnails, and smaller chunks remove the large payloads without adding a client decompressor or double-compressing images.
 - Two-chunk download prefetch was not added because ordered sequential writes already bound frames and no high-latency measurement justified parallel reads over the shared WebSocket.
-- The native-to-plugin flash cannot be removed from this repository. Registering the timeline first and eliminating plugin-started eager work minimizes only the plugin-controlled portion.
+- The native-to-plugin flash cannot be fully removed from this repository. Registering the timeline first, making renderers available before transformers, and applying web styling in the pre-paint layout phase remove the plugin-controlled intermediate states; caching or preloading the bundle before the first native timeline paint requires a Paseo host hook.
 
 ### Remaining release proof
 

@@ -125,6 +125,23 @@ test("plain user messages use native cards without replacing web or attachment r
   assert.match(sharedSource, /export function userMessageHasHostAttachments/);
 });
 
+test("timeline renderers are available before transformers can replace native rows", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx"), "utf8"));
+  const registrationSource = timelineSource.slice(timelineSource.indexOf("export function registerTimeline"));
+  const registrations = [...registrationSource.matchAll(/client\.addTimeline(Renderer|Transformer)\(/g)]
+    .map((match) => match[1]);
+  const firstTransformer = registrations.indexOf("Transformer");
+  assert.ok(firstTransformer > 0);
+  assert.ok(
+    registrations.slice(0, firstTransformer).every((kind) => kind === "Renderer"),
+    `expected renderers first, got ${registrations.join(", ")}`,
+  );
+  assert.ok(
+    registrations.slice(firstTransformer).every((kind) => kind === "Transformer"),
+    `expected transformers last, got ${registrations.join(", ")}`,
+  );
+});
+
 test("image user messages contain their controls and shrink within the timeline", () => {
   const wideFrameSource = String(readFileSync(path.resolve("client/wide-frame.ts")));
   assert.match(wideFrameSource, /const USER_CARD_IMAGE_OVERLAP = 6/);
@@ -183,6 +200,16 @@ test("timeline rows use scoped agent state and one elected wide-frame controller
   assert.match(entrySource, /return async \(\) => \{[\s\S]{0,240}undoWideFrame\(\)/);
   assert.match(entrySource, /const removeSettingsScreen = client\.addSettingsScreen/);
   assert.match(entrySource, /removeSettingsScreen\(\)/);
+});
+
+test("wide-frame ownership is elected before the browser can paint", () => {
+  const controllerSource = String(readFileSync(path.resolve("client/wide-frame-controller.tsx")));
+  const ownerHook = controllerSource.slice(
+    controllerSource.indexOf("export function useWideFrameControllerOwner"),
+    controllerSource.indexOf("export function WideFrameController"),
+  );
+  assert.match(ownerHook, /useLayoutEffect\(\(\) => \{/);
+  assert.doesNotMatch(ownerHook, /useEffect\(\(\) => \{/);
 });
 
 test("assistant renderers never suppress host timeline rows", () => {

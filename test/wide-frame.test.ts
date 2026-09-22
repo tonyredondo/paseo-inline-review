@@ -115,6 +115,60 @@ function append(parent: FakeElement, ...children: FakeElement[]): void {
   for (const child of children) parent.insertBefore(child, null);
 }
 
+test("the wide-frame controller installs during the pre-paint layout phase", async () => {
+  const sourcePath = resolve(testDirectory, "../client/wide-frame-controller.tsx");
+  const layoutEffects: Array<() => void | (() => void)> = [];
+  const passiveEffects: Array<() => void | (() => void)> = [];
+  const globals = globalThis as unknown as Record<string, unknown>;
+  globals.__wideFrameLayoutEffects = layoutEffects;
+  globals.__wideFramePassiveEffects = passiveEffects;
+  globals.__wideFrameEnsureCalls = 0;
+  globals.__wideFrameSettings = {
+    status: "ready",
+    values: { wideFrame: true },
+    reload: async () => {},
+  };
+  const source = readFileSync(sourcePath, "utf8")
+    .replace(/import type \{ PluginHostProps \}[^;]+;/, "type PluginHostProps = any;")
+    .replace(/import \{ useSettings \}[^;]+;/, `
+      const useSettings = () => globalThis.__wideFrameSettings;
+    `)
+    .replace(/import \{[^}]*useEffect[^}]*useRef[^}]*useState[^}]*\}[^;]+;/, `
+      const useEffect = (effect: () => void | (() => void)) => {
+        globalThis.__wideFramePassiveEffects.push(effect);
+      };
+      const useLayoutEffect = (effect: () => void | (() => void)) => {
+        globalThis.__wideFrameLayoutEffects.push(effect);
+      };
+      const useRef = (value: unknown) => ({ current: value });
+      const useState = (value: unknown) => [value, () => {}];
+    `)
+    .replace(/import \{ ensureWideFrame, undoWideFrame \}[^;]+;/, `
+      const ensureWideFrame = () => { globalThis.__wideFrameEnsureCalls += 1; };
+      const undoWideFrame = () => {};
+    `)
+    .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};");
+  const output = transpileModule(source, {
+    compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
+  }).outputText;
+  const controller = await import(
+    `data:text/javascript;base64,${Buffer.from(output).toString("base64")}#wide-frame-layout-${Date.now()}`
+  );
+
+  controller.WideFrameController({
+    theme: { colors: { accent: "#123456", foreground: "#ffffff", surface2: "#222222", border: "#333333" } },
+    layout: { platform: "web", compact: false },
+  });
+  assert.equal(globals.__wideFrameEnsureCalls, 0);
+  for (const effect of layoutEffects) effect();
+  assert.equal(globals.__wideFrameEnsureCalls, 1);
+
+  delete globals.__wideFrameLayoutEffects;
+  delete globals.__wideFramePassiveEffects;
+  delete globals.__wideFrameEnsureCalls;
+  delete globals.__wideFrameSettings;
+});
+
 test("a virtualized timeline controller unmount cannot tear down the host-wide frame", async () => {
   const sourcePath = resolve(testDirectory, "../client/wide-frame-controller.tsx");
   const cleanups: Array<() => void> = [];
@@ -132,11 +186,12 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
     .replace(/import \{ useSettings \}[^;]+;/, `
       const useSettings = () => globalThis.__wideFrameSettings;
     `)
-    .replace(/import \{ useEffect, useRef, useState \}[^;]+;/, `
+    .replace(/import \{[^}]*useEffect[^}]*useRef[^}]*useState[^}]*\}[^;]+;/, `
       const useEffect = (effect: () => void | (() => void)) => {
         const cleanup = effect();
         if (typeof cleanup === "function") globalThis.__wideFrameCleanups.push(cleanup);
       };
+      const useLayoutEffect = useEffect;
       const useRef = (value: unknown) => ({ current: value });
       const useState = (value: unknown) => [value, () => {}];
     `)
@@ -285,7 +340,16 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(trail.style.position, "relative");
   assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
 
+  const reenteredCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const reenteredMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
+  const reenteredBubble = fakeElement({ backgroundColor: "rgb(36, 38, 54)" });
+  append(reenteredMessage, reenteredBubble);
+  append(reenteredCapped, reenteredMessage);
+  append(pane, reenteredCapped);
+
   module.ensureWideFrame();
+  assert.equal(reenteredCapped.style.maxWidth, "1040px");
+  assert.equal(reenteredMessage.style.backgroundColor, "#242636");
   assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
   assert.equal(resizeListeners.size, 1);
 

@@ -1,6 +1,6 @@
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { useSettings } from "@getpaseo/plugin/client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ensureWideFrame, undoWideFrame } from "./wide-frame";
 import { wideFrameSettings } from "../shared/wide-frame-settings";
 
@@ -16,7 +16,7 @@ export function useWideFrameControllerOwner(): boolean {
   if (idRef.current === null) idRef.current = nextOwnerId++;
   const id = idRef.current;
   const [active, setActive] = useState(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const owner: Owner = { id, setActive };
     owners.push(owner);
     if (activeOwnerId === null) {
@@ -48,10 +48,11 @@ export function WideFrameController({ theme, layout }: Pick<PluginHostProps, "th
     }
   }, [settings]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // The controller is elected from virtualized timeline rows, but the DOM
     // policy is host-wide. Row unmounts and transient settings states must not
     // tear it down; an explicit disabled value or plugin cleanup owns that.
+    // A layout effect applies the current DOM policy before the browser paints.
     if (layout.platform !== "web" || enabled === null) return;
     if (enabled) {
       ensureWideFrame({

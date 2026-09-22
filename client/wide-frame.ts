@@ -414,12 +414,11 @@ let undo: (() => void) | null = null;
 /** Installs the web widening pass (idempotent). Colors refresh card styling. */
 export function ensureWideFrame(colors?: WideFrameColors): void {
   if (undo) {
-    if (colors) {
-      if (colors.accent) userCardAccent = colors.accent;
-      if (colors.raised) userCardRaised = colors.raised;
-      if (colors.border) userCardBorder = colors.border;
-    }
-    return;
+    // A workspace/timeline re-entry can replace the observed DOM subtree while
+    // this host-wide installation remains alive. Reinstall synchronously so the
+    // current document is scanned and the observer follows its new root instead
+    // of waiting for the adaptive fallback sweep.
+    undoWideFrame();
   }
   if (Platform.OS !== "web") return;
   const g = globalThis as unknown as WWin & { document?: WDoc };

@@ -1124,6 +1124,34 @@ function ReviewAssistantMessage({
  */
 export function registerTimeline(client: PluginClientContext): () => void {
   const cleanups: Array<() => void> = [];
+  // Make every renderer available before a transformer can replace a native
+  // row. Hosts that publish registrations incrementally never observe a plugin
+  // item without the component that draws it.
+  cleanups.push(client.addTimelineRenderer({
+    kind: "inline-review",
+    version: 1,
+    schema: reviewItemSchema,
+    Component: ReviewAssistantMessage,
+  }));
+  cleanups.push(client.addTimelineRenderer({
+    kind: "inline-review-sent",
+    version: 1,
+    schema: sentReviewSchema,
+    Component: SentReviewCard,
+  }));
+  cleanups.push(client.addTimelineRenderer({
+    kind: "user-message-card",
+    version: 1,
+    schema: userMessageCardSchema,
+    Component: UserMessageCard,
+  }));
+  cleanups.push(client.addTimelineRenderer({
+    kind: "compaction-divider",
+    version: 1,
+    schema: compactionDividerSchema,
+    Component: CompactionDivider,
+  }));
+
   cleanups.push(client.addTimelineTransformer({
     id: "inline-review",
     query: { itemType: "assistant_message" },
@@ -1149,12 +1177,6 @@ export function registerTimeline(client: PluginClientContext): () => void {
         ],
       };
     },
-  }));
-  cleanups.push(client.addTimelineRenderer({
-    kind: "inline-review",
-    version: 1,
-    schema: reviewItemSchema,
-    Component: ReviewAssistantMessage,
   }));
   // Reviews sent through the panel become a compact review card. Plain user
   // messages keep the host row on web and use the native card below on mobile.
@@ -1190,18 +1212,6 @@ export function registerTimeline(client: PluginClientContext): () => void {
       };
     },
   }));
-  cleanups.push(client.addTimelineRenderer({
-    kind: "inline-review-sent",
-    version: 1,
-    schema: sentReviewSchema,
-    Component: SentReviewCard,
-  }));
-  cleanups.push(client.addTimelineRenderer({
-    kind: "user-message-card",
-    version: 1,
-    schema: userMessageCardSchema,
-    Component: UserMessageCard,
-  }));
   // Compaction divider: same "Context compacted" marker but with dotted
   // side lines instead of the host's continuous hairline.
   cleanups.push(client.addTimelineTransformer({
@@ -1223,12 +1233,6 @@ export function registerTimeline(client: PluginClientContext): () => void {
         ],
       };
     },
-  }));
-  cleanups.push(client.addTimelineRenderer({
-    kind: "compaction-divider",
-    version: 1,
-    schema: compactionDividerSchema,
-    Component: CompactionDivider,
   }));
   return () => {
     for (const cleanup of cleanups.reverse()) cleanup();
