@@ -1,15 +1,20 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 
-import { formatReview, loadCommentsRpc, saveCommentsRpc } from "../shared/review";
+import { formatReview, saveCommentDeltaRpc, syncCommentsRpc } from "../shared/review";
 import {
   clearAgent,
   getComments,
-  hydrateFromServer,
+  hasPendingSaves,
+  hydrate,
   markCommentsSent,
   persistAgentNow,
   registerPersist,
   subscribe,
+  subscribePersistence,
 } from "./review-store";
+import { createCommentSyncController } from "./comment-sync";
+import { AppState } from "react-native";
+import { createCommentDeltaAdapter } from "./comment-delta";
 
 type PillHandle = { remove(): void; update(patch: { label?: string; disabled?: boolean }): void };
 
@@ -26,15 +31,26 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
 
   // Store-owned persistence: every mutation saves through the client context,
   // so sent statuses reach the daemon even when the panel is not open.
-  const unregisterPersist = registerPersist((input) => client.rpc(saveCommentsRpc, input));
+  const delta = createCommentDeltaAdapter((input) => client.rpc(saveCommentDeltaRpc, input));
+  const unregisterPersist = registerPersist((input) => delta.save(input));
 
-  // Plugin data has no push channel, so poll the daemon for comment changes
-  // (new comments, status flips, deletions from other devices) while the app
-  // is running. hydrate() is idempotent and tombstones stop stale copies.
-  const load = (input: { agentId: string }) => client.rpc(loadCommentsRpc, input);
-  const poll = setInterval(() => {
-    for (const agentId of pills.keys()) hydrateFromServer(agentId, load);
-  }, 5000);
+  // Plugin data has no push channel. One revision-aware request refreshes all
+  // agent pills without the previous per-agent five-second RPC burst.
+  const commentSync = createCommentSyncController({
+    sync: (input) => client.rpc(syncCommentsRpc, input),
+    hydrate(agentId, comments, deleted) {
+      delta.seed(agentId, comments, deleted);
+      hydrate(agentId, comments, deleted);
+    },
+    hasPendingSaves,
+  });
+  commentSync.setActive(AppState.currentState === "active");
+  const appStateSubscription = AppState.addEventListener("change", (state) => {
+    commentSync.setActive(state === "active");
+  });
+  const unsubscribePersistence = subscribePersistence((agentId, pending) => {
+    if (!pending) commentSync.notifySaveSettled(agentId);
+  });
 
   function refreshLabels(): void {
     const counts = new Map<string, number>();
@@ -64,7 +80,7 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
 
   function registerFor(agentId: string, workspaceId: string): void {
     if (pills.has(agentId)) return;
-    hydrateFromServer(agentId, load);
+    commentSync.addAgent(agentId);
     pills.set(
       agentId,
       client.addComposerPill({
@@ -138,6 +154,8 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
         const agent = entry.agent;
         if (agent.workspaceId) registerFor(agent.id, agent.workspaceId);
       }
+      commentSync.start();
+      void commentSync.refresh();
       refreshLabels();
     })
     .catch(() => {});
@@ -148,6 +166,8 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
       pills.delete(update.agentId);
       sendPills.get(update.agentId)?.remove();
       sendPills.delete(update.agentId);
+      commentSync.removeAgent(update.agentId);
+      delta.clear(update.agentId);
       clearAgent(update.agentId);
       return;
     }
@@ -155,11 +175,14 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
     const { id: agentId, workspaceId } = update.agent;
     if (pills.has(agentId)) return;
     registerFor(agentId, workspaceId);
+    void commentSync.refresh();
     refreshLabels();
   });
 
   return async () => {
-    clearInterval(poll);
+    appStateSubscription.remove();
+    unsubscribePersistence();
+    commentSync.stop();
     unsubscribeComments();
     unsubscribeAgents();
     for (const pill of pills.values()) pill.remove();

@@ -201,3 +201,75 @@ test("stale comment revisions cannot overwrite newer server state", async () => 
   assert.equal(loaded.comments[0].text, "new");
   assert.equal(loaded.comments[0].revision, 2);
 });
+
+test("comment sync revisions change only for semantic mutations", async () => {
+  const root = tempRoot();
+  process.env.PASEO_HOME = root;
+  const server = await importServer("comment-sync-revisions");
+  const comment = {
+    id: "c1", agentId: "a1", messageId: "m1", paragraphIndex: 0, itemIndex: null,
+    paragraphText: "p", text: "first", createdAt: "2026-09-22T00:00:00.000Z",
+    updatedAt: "2026-09-22T00:00:00.000Z", revision: 1, status: "pending" as const,
+  };
+  const initial = await server.syncComments({ agents: [{ agentId: "a1" }] });
+  assert.equal(initial.buckets[0].revision, 0);
+  await server.saveComments({ agentId: "a1", comments: [comment] });
+  const changed = await server.syncComments({ epoch: initial.epoch, agents: [{ agentId: "a1", revision: 0 }] });
+  assert.equal(changed.buckets[0].revision, 1);
+  await server.saveComments({ agentId: "a1", comments: [comment] });
+  const unchanged = await server.syncComments({
+    epoch: initial.epoch,
+    agents: [{ agentId: "a1", revision: changed.buckets[0].revision }],
+  });
+  assert.deepEqual(unchanged.buckets, []);
+  await server.saveComments({ agentId: "a1", comments: [], deleted: ["c1"] });
+  const deleted = await server.syncComments({
+    epoch: initial.epoch,
+    agents: [{ agentId: "a1", revision: changed.buckets[0].revision }],
+  });
+  assert.equal(deleted.buckets[0].revision, 2);
+  assert.deepEqual(deleted.buckets[0].deleted, ["c1"]);
+});
+
+test("a daemon epoch replacement forces a complete comment refresh", async () => {
+  const root = tempRoot();
+  process.env.PASEO_HOME = root;
+  const first = await importServer("comment-sync-first-process");
+  const firstSync = await first.syncComments({ agents: [{ agentId: "a1" }] });
+  const restarted = await importServer("comment-sync-restarted-process");
+  const afterRestart = await restarted.syncComments({
+    epoch: firstSync.epoch,
+    agents: [{ agentId: "a1", revision: 0 }],
+  });
+  assert.notEqual(afterRestart.epoch, firstSync.epoch);
+  assert.equal(afterRestart.buckets.length, 1);
+});
+
+test("delta saves merge only changed comments and keep tombstones authoritative", async () => {
+  const root = tempRoot();
+  process.env.PASEO_HOME = root;
+  const server = await importServer("comment-delta-server");
+  const base = {
+    agentId: "a1", messageId: "m1", paragraphIndex: 0, itemIndex: null,
+    paragraphText: "p", createdAt: "2026-09-22T00:00:00.000Z", status: "pending" as const,
+  };
+  const first = { ...base, id: "one", text: "one", revision: 1, updatedAt: "2026-09-22T00:00:01.000Z" };
+  const second = { ...base, id: "two", text: "two", revision: 1, updatedAt: "2026-09-22T00:00:01.000Z" };
+  await server.saveComments({ agentId: "a1", comments: [first, second] });
+  await server.saveCommentDelta({
+    agentId: "a1",
+    upserts: [{ ...second, text: "two edited", revision: 2, updatedAt: "2026-09-22T00:00:02.000Z" }],
+    deleted: ["one"],
+  });
+  const loaded = await server.loadComments({ agentId: "a1" });
+  assert.deepEqual(loaded.comments.map((comment: { id: string; text: string }) => [comment.id, comment.text]), [["two", "two edited"]]);
+  assert.deepEqual(loaded.deleted, ["one"]);
+  await server.saveCommentDelta({ agentId: "a1", upserts: [first], deleted: [] });
+  assert.deepEqual((await server.loadComments({ agentId: "a1" })).comments.map((comment: { id: string }) => comment.id), ["two"]);
+});
+
+test("server file and store I/O uses asynchronous handles", () => {
+  const source = readFileSync(join(process.cwd(), "server/review.ts"), "utf8");
+  assert.doesNotMatch(source, /\b(?:open|read|writeFile|readFile|stat|rename|mkdir|close)Sync\b/);
+  assert.match(source, /node:fs\/promises/);
+});

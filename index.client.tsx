@@ -9,10 +9,17 @@ import {
 } from "./client/preview-store";
 import { registerPills } from "./client/pills";
 import { registerTimeline } from "./client/timeline";
+import { disposeTurnIndexes } from "./client/turn-final-store";
+import { disposeImagePreviews } from "./client/image-preview-store";
+import { clearMarkdownCache } from "./client/markdown-compile";
 import { undoWideFrame } from "./client/wide-frame";
 import { WideFrameSettingsScreen } from "./client/wide-frame-settings";
 
 export default function contribute(client: PluginClientContext) {
+  // Timeline replacement is the only startup-critical contribution. Register
+  // it before panels and background synchronization to shorten the native-to-
+  // plugin render gap owned by this bundle.
+  const removeTimeline = registerTimeline(client);
   // The panel tab title is read live from the plugin registry, so panels
   // can be re-registered with a new title and open tabs update at once.
   let panelRegistration: PluginCleanup | null = null;
@@ -28,7 +35,7 @@ export default function contribute(client: PluginClientContext) {
   }
   setPanelTitle("Review summary");
 
-  client.addSettingsScreen({
+  const removeSettingsScreen = client.addSettingsScreen({
     id: "wide-frame",
     title: "Feature flags",
     icon: "ToggleRight",
@@ -98,13 +105,17 @@ export default function contribute(client: PluginClientContext) {
     client.openPanel(id, { workspaceId, agentId });
   });
 
-  registerTimeline(client);
   const removePills = registerPills(client);
   return async () => {
     // Wide-frame is host-scoped rather than owned by a virtualized timeline
     // row, so the plugin entrypoint is its final lifecycle boundary.
     undoWideFrame();
+    removeTimeline();
+    disposeTurnIndexes();
+    disposeImagePreviews();
+    clearMarkdownCache();
     unregisterFileTabOpener();
+    removeSettingsScreen();
     panelRegistration?.();
     panelRegistration = null;
     for (const [id, remove] of previewPanels) {

@@ -24,6 +24,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Image, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   openLocalFileRpc,
+  COMPACT_FILE_TRANSFER_CHUNK_BYTES,
+  DESKTOP_FILE_TRANSFER_CHUNK_BYTES,
   reviewItemSchema,
   sentReviewSchema,
   userMessageCardSchema,
@@ -42,7 +44,7 @@ import {
 } from "../shared/review";
 import {
   addComment,
-  getComments,
+  getCommentsForAgent,
   relocateComment,
   removeComment,
   subscribe,
@@ -51,6 +53,7 @@ import {
 import { FileCodeBlock, MarkdownText } from "./markdown";
 import { extractRefDefs } from "../shared/markdown-parse";
 import { downloadLocalFileProgressively, formatFileSize } from "./file-download";
+import { createStreamingTextCoalescer } from "./stream-text";
 import { DownloadCancelledError } from "./web";
 import { WideFrameController, useWideFrameControllerOwner } from "./wide-frame-controller";
 
@@ -117,7 +120,8 @@ function listItemComments(
 }
 
 function useMessageComments(agentId: string, data: ReviewItemData, sourceKey: string) {
-  const all = useSyncExternalStore(subscribe, getComments);
+  const getAgentSnapshot = useCallback(() => getCommentsForAgent(agentId), [agentId]);
+  const all = useSyncExternalStore(subscribe, getAgentSnapshot, getAgentSnapshot);
   return useMemo(
     () => all.filter(
       (comment) => comment.agentId === agentId && commentBelongsToReviewSource(comment, data.messageId, sourceKey),
@@ -127,6 +131,20 @@ function useMessageComments(agentId: string, data: ReviewItemData, sourceKey: st
 }
 
 let nextMessageSourceKey = 1;
+
+/** Bounds streaming reparse frequency while returning the final snapshot synchronously. */
+function useCoalescedStreamingText(text: string, phase: ReviewItemData["phase"]): string {
+  const [coalesced, setCoalesced] = useState(text);
+  const coalescer = useRef<ReturnType<typeof createStreamingTextCoalescer> | null>(null);
+  if (!coalescer.current) {
+    coalescer.current = createStreamingTextCoalescer({ publish: setCoalesced });
+  }
+  useEffect(() => {
+    coalescer.current?.update(text, phase === "complete");
+  }, [text, phase]);
+  useEffect(() => () => coalescer.current?.dispose(), []);
+  return phase === "complete" ? text : coalesced;
+}
 
 /**
  * Left-ellipsis for long paths: keep the tail (the file name and its
@@ -553,16 +571,17 @@ function ReviewAssistantMessage({
   // resolve against it.
   const workspaceRoot = agentSnapshot?.cwd ?? null;
   const refs = useMemo(() => extractRefDefs(data.text), [data.text]);
-  const revealed = useRevealedText(data.text, data.phase);
+  const revealedRaw = useRevealedText(data.text, data.phase);
+  const revealed = useCoalescedStreamingText(revealedRaw, data.phase);
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
   const comments = useMessageComments(agentId, data, sourceKey);
+  const reanchoredVersions = useRef(new Map<string, string>());
   // Re-anchor streaming-time comments once the complete message exists: bind
   // id-less comments to this message and heal paragraph-index drift caused by
   // re-chunking between the streaming and complete snapshots.
   useEffect(() => {
     if (data.messageId === null) return;
-    const candidates = getComments().filter((comment) =>
-      comment.agentId === agentId &&
+    const candidates = comments.filter((comment) =>
       (
         comment.messageId === data.messageId ||
         (
@@ -572,6 +591,8 @@ function ReviewAssistantMessage({
       ),
     );
     for (const comment of candidates) {
+      const anchorKey = `${comment.revision}:${data.messageId}:${paragraphs.length}:${comment.paragraphText}`;
+      if (reanchoredVersions.current.get(comment.id) === anchorKey) continue;
       const index = findReviewCommentParagraphIndex(comment, paragraphs);
       if (index !== -1 && (
         comment.messageId !== data.messageId ||
@@ -580,8 +601,9 @@ function ReviewAssistantMessage({
       )) {
         relocateComment(comment.id, data.messageId, index);
       }
+      reanchoredVersions.current.set(comment.id, anchorKey);
     }
-  }, [agentId, paragraphs, data.messageId, sourceKey]);
+  }, [comments, paragraphs, data.messageId, sourceKey]);
   const [editing, setEditing] = useState<EditingTarget | null>(null);
   // Web: scroll the open editor into the viewport (DOM scrollIntoView). On
   // native the timeline ScrollView is host-owned and the SDK exposes no scroll
@@ -799,6 +821,7 @@ function ReviewAssistantMessage({
     void downloadLocalFileProgressively({
       path: filePreview.path,
       openFile: openLocalFile,
+      chunkBytes: layout.compact ? COMPACT_FILE_TRANSFER_CHUNK_BYTES : DESKTOP_FILE_TRANSFER_CHUNK_BYTES,
     }).then((size) => {
       toast.show(`Downloaded ${formatFileSize(size)}.`);
     }).catch((error) => {
@@ -910,6 +933,7 @@ function ReviewAssistantMessage({
               >
                 <MarkdownText
                   text={paragraph}
+                  cacheKey={data.phase === "complete" ? `${data.messageId ?? sourceKey}:${index}` : undefined}
                   theme={theme}
                   compact={layout.compact}
                   refs={refs}
@@ -947,6 +971,7 @@ function ReviewAssistantMessage({
               <View>
                 <MarkdownText
                   text={paragraph}
+                  cacheKey={data.phase === "complete" ? `${data.messageId ?? sourceKey}:${index}` : undefined}
                   theme={theme}
                   compact={layout.compact}
                   refs={refs}
@@ -1097,8 +1122,9 @@ function ReviewAssistantMessage({
  * available space and stays aligned. Re-applied on a timer to catch new
  * items.
  */
-export function registerTimeline(client: PluginClientContext): void {
-  client.addTimelineTransformer({
+export function registerTimeline(client: PluginClientContext): () => void {
+  const cleanups: Array<() => void> = [];
+  cleanups.push(client.addTimelineTransformer({
     id: "inline-review",
     query: { itemType: "assistant_message" },
     transform({ item, phase }) {
@@ -1123,16 +1149,16 @@ export function registerTimeline(client: PluginClientContext): void {
         ],
       };
     },
-  });
-  client.addTimelineRenderer({
+  }));
+  cleanups.push(client.addTimelineRenderer({
     kind: "inline-review",
     version: 1,
     schema: reviewItemSchema,
     Component: ReviewAssistantMessage,
-  });
+  }));
   // Reviews sent through the panel become a compact review card. Plain user
   // messages keep the host row on web and use the native card below on mobile.
-  client.addTimelineTransformer({
+  cleanups.push(client.addTimelineTransformer({
     id: "inline-review-sent",
     query: { itemType: "user_message" },
     transform({ item }) {
@@ -1163,22 +1189,22 @@ export function registerTimeline(client: PluginClientContext): void {
         ],
       };
     },
-  });
-  client.addTimelineRenderer({
+  }));
+  cleanups.push(client.addTimelineRenderer({
     kind: "inline-review-sent",
     version: 1,
     schema: sentReviewSchema,
     Component: SentReviewCard,
-  });
-  client.addTimelineRenderer({
+  }));
+  cleanups.push(client.addTimelineRenderer({
     kind: "user-message-card",
     version: 1,
     schema: userMessageCardSchema,
     Component: UserMessageCard,
-  });
+  }));
   // Compaction divider: same "Context compacted" marker but with dotted
   // side lines instead of the host's continuous hairline.
-  client.addTimelineTransformer({
+  cleanups.push(client.addTimelineTransformer({
     id: "inline-review-compaction",
     query: { itemType: "compaction" },
     transform({ item }) {
@@ -1197,11 +1223,14 @@ export function registerTimeline(client: PluginClientContext): void {
         ],
       };
     },
-  });
-  client.addTimelineRenderer({
+  }));
+  cleanups.push(client.addTimelineRenderer({
     kind: "compaction-divider",
     version: 1,
     schema: compactionDividerSchema,
     Component: CompactionDivider,
-  });
+  }));
+  return () => {
+    for (const cleanup of cleanups.reverse()) cleanup();
+  };
 }

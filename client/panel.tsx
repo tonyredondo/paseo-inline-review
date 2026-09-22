@@ -5,7 +5,7 @@ import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Image, Platform, Pressable, ScrollView, Text, View } from "react-native";
-import { openLocalFileRpc, previewLanguage } from "../shared/review";
+import { COMPACT_FILE_TRANSFER_CHUNK_BYTES, DESKTOP_FILE_TRANSFER_CHUNK_BYTES, openLocalFileRpc, previewLanguage } from "../shared/review";
 import { formatReview, type ReviewComment } from "../shared/review";
 import {
   clearAgent,
@@ -143,6 +143,7 @@ function PanelFilePreview({
       path: target.path,
       openFile,
       onProgress: setDownloadProgress,
+      chunkBytes: layout.compact ? COMPACT_FILE_TRANSFER_CHUNK_BYTES : DESKTOP_FILE_TRANSFER_CHUNK_BYTES,
     }).then((size) => {
       toast.show(`Downloaded ${formatFileSize(size)}.`);
     }).catch((error) => {

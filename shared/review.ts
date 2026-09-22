@@ -96,6 +96,29 @@ export const loadCommentsRpc = defineRpc({
   }),
 });
 
+const commentSyncBucketSchema = z.object({
+  agentId: z.string(),
+  revision: z.number().int().nonnegative(),
+  comments: z.array(reviewCommentSchema),
+  deleted: z.array(z.string()),
+});
+
+/** Batches cross-device comment refreshes and omits unchanged agent payloads. */
+export const syncCommentsRpc = defineRpc({
+  name: "review.sync-comments",
+  input: z.object({
+    epoch: z.string().optional(),
+    agents: z.array(z.object({
+      agentId: z.string(),
+      revision: z.number().int().nonnegative().optional(),
+    })),
+  }),
+  output: z.object({
+    epoch: z.string(),
+    buckets: z.array(commentSyncBucketSchema),
+  }),
+});
+
 /** Replaces the stored comments for one agent. */
 export const saveCommentsRpc = defineRpc({
   name: "review.save-comments",
@@ -107,10 +130,48 @@ export const saveCommentsRpc = defineRpc({
   }),
   output: z.object({ ok: z.boolean() }),
 });
+
+/** Applies only changed comment records and new tombstones. */
+export const saveCommentDeltaRpc = defineRpc({
+  name: "review.save-comment-delta",
+  input: z.object({
+    agentId: z.string(),
+    upserts: z.array(reviewCommentSchema),
+    deleted: z.array(z.string()),
+  }),
+  output: z.object({ ok: z.boolean() }),
+});
 /** Maximum bytes carried by one file-transfer RPC. */
 export const FILE_TRANSFER_CHUNK_BYTES = 5 * 1024 * 1024;
+export const COMPACT_FILE_TRANSFER_CHUNK_BYTES = 768 * 1024;
+export const DESKTOP_FILE_TRANSFER_CHUNK_BYTES = 2 * 1024 * 1024;
 /** Total-size safety rail for one download. */
 export const MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024;
+export const IMAGE_THUMBNAIL_MAX_BYTES = 100 * 1024;
+
+export const localImagePreviewRpc = defineRpc({
+  name: "review.local-image-preview",
+  input: z.object({
+    path: z.string(),
+    maxEdge: z.number().int().min(64).max(1280).optional(),
+    quality: z.number().int().min(35).max(95).optional(),
+    knownFileVersion: z.string().optional(),
+  }),
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().optional(),
+    fileVersion: z.string().optional(),
+    originalSize: z.number().int().nonnegative().optional(),
+    originalWidth: z.number().int().positive().optional(),
+    originalHeight: z.number().int().positive().optional(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+    mimeType: z.string().optional(),
+    base64: z.string().optional(),
+    thumbnailSize: z.number().int().nonnegative().max(IMAGE_THUMBNAIL_MAX_BYTES).optional(),
+    unchanged: z.boolean().optional(),
+  }),
+});
 
 export const openLocalFileRpc = defineRpc({
   name: "review.open-local-file",

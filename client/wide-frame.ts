@@ -11,6 +11,8 @@
  */
 import { Platform } from "react-native";
 import { wideFrameSettings } from "../shared/wide-frame-settings";
+import { createAdaptiveSweep } from "./adaptive-sweep";
+import { classifyWideFrameMutations, type WideFrameMutation } from "./wide-frame-mutations";
 
 export { wideFrameSettings };
 
@@ -33,6 +35,7 @@ type WNode = {
   setAttribute(name: string, value: string): void;
   insertBefore(node: WNode, before: WNode | null): void;
   remove(): void;
+  querySelectorAll?(selector: string): ArrayLike<WNode>;
 };
 type WDoc = {
   querySelectorAll(selector: string): ArrayLike<WNode>;
@@ -576,52 +579,46 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   // "old width" flash while items mount.
   const Observer = g.MutationObserver;
   if (Observer && doc.body) {
+    const markerSelector = '[data-testid="inline-review-root"], [data-testid="user-message"], [data-testid="tool-call-group"]';
+    const markerNodes = Array.from(doc.querySelectorAll(markerSelector));
+    const ancestry = (node: WNode): WNode[] => {
+      const result: WNode[] = [];
+      for (let current: WNode | null = node; current; current = current.parentElement) result.push(current);
+      return result;
+    };
+    const firstAncestors = markerNodes[0] ? ancestry(markerNodes[0]) : [];
+    const observerRoot = firstAncestors.find((candidate) =>
+      markerNodes.every((node) => ancestry(node).includes(candidate)),
+    ) ?? doc.body;
+    const adaptiveSweep = createAdaptiveSweep({ run: () => schedule() });
+    adaptiveSweep.start();
+    observerCbs.push(() => adaptiveSweep.stop());
     const observer = new Observer((raw: unknown) => {
-      type MutationNode = {
-        parentElement: WNode | null;
-        style?: Record<string, string>;
-        dataset?: Record<string, string>;
-      };
-      const mutations = raw as Array<{
-        addedNodes: ArrayLike<MutationNode>;
-        target: WNode;
-        attributeName?: string;
-      }>;
+      const mutations = raw as WideFrameMutation[];
       // React re-renders rewrite the host wrappers' style props and wipe
       // our inline max-width, snapping items back to the 820px frame until
       // they are re-widened. Style flips on already-widened elements are
       // fixed by a targeted sweep; new nodes get a scoped scan.
-      let sawStyleOnWidened = false;
-      for (const mutation of mutations) {
-        if (
-          mutation.attributeName === "style" &&
-          mutation.target.dataset.inlineReviewWide === "1"
-        ) {
-          sawStyleOnWidened = true;
-        }
-      }
-      if (sawStyleOnWidened) scheduleStyleOnly();
-      for (const mutation of mutations) {
-        for (const node of Array.from(mutation.addedNodes)) {
-          const element = node.style && node.dataset ? (node as WNode) : node.parentElement;
-          if (element) schedule(element);
-        }
-      }
+      const work = classifyWideFrameMutations<WNode>({
+        mutations,
+        markerSelector,
+        getMaxWidth: (element) => g.getComputedStyle(element).maxWidth,
+      });
+      if (work.repairWidenedStyles) scheduleStyleOnly();
+      for (const scope of work.scopes) schedule(scope);
+      if (work.repairWidenedStyles || work.scopes.length > 0) adaptiveSweep.wake();
     });
-    observer.observe(doc.body, {
+    observer.observe(observerRoot, {
       childList: true,
       subtree: true,
       attributes: true,
       attributeFilter: ["style"],
     });
     observerCbs.push(() => observer.disconnect());
-    // Periodic full sweep: catches anything the scoped scans missed at a
-    // low cadence instead of per mutation batch.
-    const sweep = setInterval(() => schedule(), 2500);
-    observerCbs.push(() => clearInterval(sweep));
   }
-  g.addEventListener("resize", schedule);
-  observerCbs.push(() => g.removeEventListener("resize", schedule));
+  const onResize = (): void => schedule();
+  g.addEventListener("resize", onResize);
+  observerCbs.push(() => g.removeEventListener("resize", onResize));
 
   undo = () => {
     disposed = true;

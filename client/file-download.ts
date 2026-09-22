@@ -1,8 +1,13 @@
 import {
-  FILE_TRANSFER_CHUNK_BYTES,
+  DESKTOP_FILE_TRANSFER_CHUNK_BYTES,
   MAX_DOWNLOAD_BYTES,
-} from "../shared/review";
-import { openProgressiveDownload } from "./web";
+} from "../shared/review.ts";
+
+type ProgressiveDownload = {
+  writeBase64(value: string): Promise<number>;
+  close(): Promise<void>;
+  abort(): Promise<void>;
+};
 
 type OpenFile = (input: {
   path: string;
@@ -19,18 +24,29 @@ type OpenFile = (input: {
   fileVersion?: string;
 }>;
 
+type OpenDestination = (fileName: string) => Promise<ProgressiveDownload>;
+
+const openDefaultDestination: OpenDestination = async (fileName) => {
+  const { openProgressiveDownload } = await import("./web.ts");
+  return openProgressiveDownload(fileName);
+};
+
 /** Transfers at most 5 MB at a time and writes each decoded chunk immediately. */
 export async function downloadLocalFileProgressively({
   path,
   openFile,
   onProgress,
+  chunkBytes = DESKTOP_FILE_TRANSFER_CHUNK_BYTES,
+  openDestination = openDefaultDestination,
 }: {
   path: string;
   openFile: OpenFile;
   onProgress?(progress: number | null): void;
+  chunkBytes?: number;
+  openDestination?: OpenDestination;
 }): Promise<number> {
   const fileName = path.split(/[\\/]/).pop() || "download";
-  const destination = await openProgressiveDownload(fileName);
+  const destination = await openDestination(fileName);
   let offset = 0;
   let expectedSize: number | null = null;
   let fileVersion: string | undefined;
@@ -41,7 +57,7 @@ export async function downloadLocalFileProgressively({
         path,
         mode: "download",
         offset,
-        length: FILE_TRANSFER_CHUNK_BYTES,
+        length: chunkBytes,
         fileVersion,
       });
       if (!result.ok || result.base64 === undefined) {

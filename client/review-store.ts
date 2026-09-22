@@ -3,7 +3,9 @@ import { compareReviewCommentVersions, type ReviewComment } from "../shared/revi
 type Listener = () => void;
 
 let comments: ReviewComment[] = [];
+let commentsByAgent = new Map<string, ReviewComment[]>();
 const listeners = new Set<Listener>();
+const persistenceListeners = new Set<(agentId: string, pending: boolean) => void>();
 /**
  * Comment ids deleted on any device (this one included). They travel with
  * every save and block resurrection from stale device copies.
@@ -18,6 +20,13 @@ function addTombstones(agentId: string, ids: string[]): void {
 }
 
 function emit(): void {
+  const nextByAgent = new Map<string, ReviewComment[]>();
+  for (const comment of comments) {
+    const bucket = nextByAgent.get(comment.agentId) ?? [];
+    bucket.push(comment);
+    nextByAgent.set(comment.agentId, bucket);
+  }
+  commentsByAgent = nextByAgent;
   for (const listener of listeners) listener();
 }
 
@@ -37,9 +46,28 @@ export function subscribe(listener: Listener): () => void {
   };
 }
 
+export function subscribePersistence(
+  listener: (agentId: string, pending: boolean) => void,
+): () => void {
+  persistenceListeners.add(listener);
+  return () => persistenceListeners.delete(listener);
+}
+
+function emitPersistence(agentId: string): void {
+  const pending = hasPendingSaves(agentId);
+  for (const listener of persistenceListeners) listener(agentId, pending);
+}
+
 export function getComments(): ReviewComment[] {
   return comments;
 }
+
+/** Stable per-agent snapshots prevent every mounted message filtering globally. */
+export function getCommentsForAgent(agentId: string): ReviewComment[] {
+  return commentsByAgent.get(agentId) ?? EMPTY_COMMENTS;
+}
+
+const EMPTY_COMMENTS: ReviewComment[] = [];
 
 let nextId = 0;
 
@@ -233,6 +261,7 @@ export function registerPersist(fn: PersistFn): () => Promise<void> {
 function autoSave(agentId: string): void {
   dirtyAgents.add(agentId);
   localVersions.set(agentId, (localVersions.get(agentId) ?? 0) + 1);
+  emitPersistence(agentId);
   if (persistFn) scheduleSave(agentId, SAVE_DEBOUNCE_MS);
 }
 
@@ -330,6 +359,7 @@ function finishSave(
     console.error("inline-review: comment save failed", error);
   }
   if (saveChains.get(agentId) === operation) saveChains.delete(agentId);
+  emitPersistence(agentId);
   if (persistFn !== save || !dirtyAgents.has(agentId)) return;
   if (succeeded) {
     scheduleSave(agentId, 0);

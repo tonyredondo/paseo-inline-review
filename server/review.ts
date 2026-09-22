@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { closeSync, fstatSync, openSync, readSync, readFileSync, statSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { open, readFile, mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
@@ -7,12 +9,16 @@ import {
   FILE_TRANSFER_CHUNK_BYTES,
   compareReviewCommentVersions,
   loadCommentsRpc,
+  localImagePreviewRpc,
   MAX_DOWNLOAD_BYTES,
   openLocalFileRpc,
   reviewCommentSchema,
   saveCommentsRpc,
+  saveCommentDeltaRpc,
+  syncCommentsRpc,
   type ReviewComment,
 } from "../shared/review.ts";
+import { imagePreviewService } from "./image-preview.ts";
 
 type StoredAgents = Record<string, ReviewComment[]>;
 /** Per-agent deleted-comment ids: deletions must beat stale copies on other devices. */
@@ -26,12 +32,17 @@ const dataPath = path.join(
 );
 
 let cache: { agents: StoredAgents; deleted: Tombstones } | null = null;
+let loadPromise: Promise<{ agents: StoredAgents; deleted: Tombstones }> | null = null;
 let writeChain: Promise<void> = Promise.resolve();
+const syncEpoch = randomUUID();
+const agentRevisions = new Map<string, number>();
 
-function load(): { agents: StoredAgents; deleted: Tombstones } {
+async function load(): Promise<{ agents: StoredAgents; deleted: Tombstones }> {
   if (cache) return cache;
-  try {
-    const parsed = JSON.parse(readFileSync(dataPath, "utf8")) as unknown;
+  if (loadPromise) return loadPromise;
+  loadPromise = (async () => {
+    try {
+      const parsed = JSON.parse(await readFile(dataPath, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("comment store root must be an object");
     }
@@ -58,31 +69,42 @@ function load(): { agents: StoredAgents; deleted: Tombstones } {
         deleted[agentId] = value;
       }
     }
-    cache = { agents, deleted };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      cache = { agents: {}, deleted: {} };
-    } else {
-      throw new Error(`Could not load inline-review comments from ${dataPath}`, { cause: error });
+      cache = { agents, deleted };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        cache = { agents: {}, deleted: {} };
+      } else {
+        throw new Error(`Could not load inline-review comments from ${dataPath}`, { cause: error });
+      }
     }
+    return cache;
+  })();
+  try {
+    return await loadPromise;
+  } finally {
+    loadPromise = null;
   }
-  return cache;
 }
 
 function persist(): Promise<void> {
-  const operation = writeChain.catch(() => {}).then(() => {
-    mkdirSync(path.dirname(dataPath), { recursive: true });
+  const operation = writeChain.catch(() => {}).then(async () => {
+    await mkdir(path.dirname(dataPath), { recursive: true });
     // Atomic replace: a crash mid-write must not truncate the store.
     const tmp = `${dataPath}.tmp`;
-    writeFileSync(tmp, JSON.stringify(load(), null, 2));
-    renameSync(tmp, dataPath);
+    try {
+      await writeFile(tmp, JSON.stringify(await load(), null, 2));
+      await rename(tmp, dataPath);
+    } catch (error) {
+      await unlink(tmp).catch(() => {});
+      throw error;
+    }
   });
   writeChain = operation;
   return operation;
 }
 
-export function getAgentComments(agentId: string): ReviewComment[] {
-  return load().agents[agentId] ?? [];
+export async function getAgentComments(agentId: string): Promise<ReviewComment[]> {
+  return (await load()).agents[agentId] ?? [];
 }
 
 /** Keeps tombstones bounded: deletions are repair metadata, not history. */
@@ -96,9 +118,13 @@ async function setAgentComments(
   agentId: string,
   comments: ReviewComment[],
   deleted: string[] = [],
-): Promise<void> {
+): Promise<boolean> {
   const validated = comments.map((comment) => reviewCommentSchema.parse(comment));
-  const store = load();
+  const store = await load();
+  const before = JSON.stringify({
+    comments: store.agents[agentId] ?? [],
+    deleted: store.deleted[agentId] ?? [],
+  });
   // A stale device re-sending a deleted comment must not resurrect it: the
   // tombstone wins over any comment body.
   const tombstones = new Set(store.deleted[agentId] ?? []);
@@ -121,14 +147,21 @@ async function setAgentComments(
   } else {
     store.agents[agentId] = alive.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
+  const after = JSON.stringify({
+    comments: store.agents[agentId] ?? [],
+    deleted: store.deleted[agentId] ?? [],
+  });
+  if (before === after) return false;
+  agentRevisions.set(agentId, (agentRevisions.get(agentId) ?? 0) + 1);
   await persist();
+  return true;
 }
 
 export async function loadComments(
   input: RpcInput<typeof loadCommentsRpc>,
 ): Promise<{ comments: ReviewComment[]; deleted: string[] }> {
-  const store = load();
-  return { comments: getAgentComments(input.agentId), deleted: store.deleted[input.agentId] ?? [] };
+  const store = await load();
+  return { comments: store.agents[input.agentId] ?? [], deleted: store.deleted[input.agentId] ?? [] };
 }
 
 export async function saveComments(
@@ -136,6 +169,51 @@ export async function saveComments(
 ): Promise<{ ok: boolean }> {
   await setAgentComments(input.agentId, input.comments, input.deleted ?? []);
   return { ok: true };
+}
+
+export async function saveCommentDelta(
+  input: RpcInput<typeof saveCommentDeltaRpc>,
+): Promise<{ ok: boolean }> {
+  await setAgentComments(input.agentId, input.upserts, input.deleted);
+  return { ok: true };
+}
+
+function agentRevision(agentId: string, store: { agents: StoredAgents; deleted: Tombstones }): number {
+  const existing = agentRevisions.get(agentId);
+  if (existing !== undefined) return existing;
+  const initial = (store.agents[agentId]?.length ?? 0) > 0 || (store.deleted[agentId]?.length ?? 0) > 0 ? 1 : 0;
+  agentRevisions.set(agentId, initial);
+  return initial;
+}
+
+/** Returns only buckets whose opaque server revision differs from the client. */
+export async function syncComments(
+  input: RpcInput<typeof syncCommentsRpc>,
+): Promise<{
+  epoch: string;
+  buckets: Array<{ agentId: string; revision: number; comments: ReviewComment[]; deleted: string[] }>;
+}> {
+  const store = await load();
+  const epochChanged = input.epoch !== syncEpoch;
+  const buckets = input.agents.flatMap(({ agentId, revision: knownRevision }) => {
+    const revision = agentRevision(agentId, store);
+    if (!epochChanged && knownRevision === revision) return [];
+    return [{
+      agentId,
+      revision,
+      comments: store.agents[agentId] ?? [],
+      deleted: store.deleted[agentId] ?? [],
+    }];
+  });
+  return { epoch: syncEpoch, buckets };
+}
+
+export async function localImagePreview(
+  input: RpcInput<typeof localImagePreviewRpc>,
+) {
+  const absolutePath = expandHome(input.path);
+  if (!absolutePath) return { ok: false, error: "path could not be resolved to an absolute location" };
+  return imagePreviewService.request({ ...input, path: absolutePath });
 }
 
 const MAX_READ_BYTES = FILE_TRANSFER_CHUNK_BYTES;
@@ -227,18 +305,22 @@ function imageMimeType(buffer: Buffer): string | null {
   return null;
 }
 
+function fileVersion(stats: Stats): string {
+  return [stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.ctimeMs].join(":");
+}
+
 /** Returns one complete, validated image. Partial image payloads cannot decode. */
-function readLocalImage(absolutePath: string): {
+async function readLocalImage(absolutePath: string): Promise<{
   ok: boolean;
   error?: string;
   size?: number;
   base64?: string;
   mimeType?: string;
-} {
-  let fd: number | null = null;
+}> {
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
   try {
-    fd = openSync(absolutePath, "r");
-    const stats = fstatSync(fd);
+    handle = await open(absolutePath, "r");
+    const stats = await handle.stat();
     if (!stats.isFile()) return { ok: false, error: "Path is not a regular file" };
     if (stats.size > MAX_READ_BYTES) {
       return { ok: false, error: "Image is larger than the 5 MB inline preview limit", size: stats.size };
@@ -246,13 +328,13 @@ function readLocalImage(absolutePath: string): {
     const buffer = Buffer.alloc(stats.size);
     let bytesRead = 0;
     while (bytesRead < buffer.length) {
-      const count = readSync(fd, buffer, bytesRead, buffer.length - bytesRead, bytesRead);
-      if (count === 0) break;
-      bytesRead += count;
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
     }
-    const finalStats = fstatSync(fd);
-    const initialVersion = [stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.ctimeMs].join(":");
-    const finalVersion = [finalStats.dev, finalStats.ino, finalStats.size, finalStats.mtimeMs, finalStats.ctimeMs].join(":");
+    const finalStats = await handle.stat();
+    const initialVersion = fileVersion(stats);
+    const finalVersion = fileVersion(finalStats);
     if (initialVersion !== finalVersion || bytesRead !== stats.size) {
       return { ok: false, error: "The image changed while it was being read" };
     }
@@ -263,11 +345,11 @@ function readLocalImage(absolutePath: string): {
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   } finally {
-    if (fd !== null) closeSync(fd);
+    await handle?.close().catch(() => {});
   }
 }
 
-function readLocalFile(absolutePath: string): {
+async function readLocalFile(absolutePath: string): Promise<{
   ok: boolean;
   error?: string;
   content?: string;
@@ -276,22 +358,22 @@ function readLocalFile(absolutePath: string): {
   binary?: boolean;
   base64?: string;
   mimeType?: string;
-} {
+}> {
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
   try {
-    const stats = statSync(absolutePath);
+    handle = await open(absolutePath, "r");
+    const stats = await handle.stat();
     if (!stats.isFile()) return { ok: false, error: "Path is not a regular file" };
     const size = stats.size;
     const buffer = Buffer.alloc(Math.min(size, MAX_READ_BYTES));
     let bytesRead = 0;
-    const fd = openSync(absolutePath, "r");
-    try {
-      while (bytesRead < buffer.length) {
-        const count = readSync(fd, buffer, bytesRead, buffer.length - bytesRead, bytesRead);
-        if (count === 0) break;
-        bytesRead += count;
-      }
-    } finally {
-      closeSync(fd);
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
+    }
+    if (fileVersion(await handle.stat()) !== fileVersion(stats)) {
+      return { ok: false, error: "The file changed while it was being read" };
     }
     const content = buffer.subarray(0, bytesRead);
     const mimeType = imageMimeType(content);
@@ -322,6 +404,8 @@ function readLocalFile(absolutePath: string): {
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    await handle?.close().catch(() => {});
   }
 }
 
@@ -330,12 +414,12 @@ function readLocalFile(absolutePath: string): {
  * against absurd sizes, not the transfer mechanism).
  */
 /** Reads and returns one independently decoded file chunk. */
-function downloadLocalFile(
+async function downloadLocalFile(
   absolutePath: string,
   offset: number,
   length: number,
   expectedVersion?: string,
-): {
+): Promise<{
   ok: boolean;
   error?: string;
   base64?: string;
@@ -343,18 +427,18 @@ function downloadLocalFile(
   truncated?: boolean;
   size?: number;
   fileVersion?: string;
-} {
-  let fd: number | null = null;
+}> {
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
   try {
     if (length > FILE_TRANSFER_CHUNK_BYTES) {
       return { ok: false, error: "Requested file chunk exceeds the 5 MB limit" };
     }
-    fd = openSync(absolutePath, "r");
-    const stats = fstatSync(fd);
+    handle = await open(absolutePath, "r");
+    const stats = await handle.stat();
     if (!stats.isFile()) return { ok: false, error: "Path is not a regular file" };
     const size = stats.size;
-    const fileVersion = [stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.ctimeMs].join(":");
-    if (expectedVersion !== undefined && expectedVersion !== fileVersion) {
+    const currentVersion = fileVersion(stats);
+    if (expectedVersion !== undefined && expectedVersion !== currentVersion) {
       return { ok: false, error: "The file changed during download" };
     }
     if (size > MAX_DOWNLOAD_BYTES) {
@@ -363,19 +447,18 @@ function downloadLocalFile(
     const start = Math.min(offset, size);
     const end = Math.min(start + length, size);
     if (start >= end) {
-      return { ok: true, base64: "", done: true, size, fileVersion };
+      return { ok: true, base64: "", done: true, size, fileVersion: currentVersion };
     }
     const byteCount = end - start;
     const buffer = Buffer.alloc(byteCount);
     let bytesRead = 0;
     while (bytesRead < byteCount) {
-      const count = readSync(fd, buffer, bytesRead, byteCount - bytesRead, start + bytesRead);
-      if (count === 0) break;
-      bytesRead += count;
+      const result = await handle.read(buffer, bytesRead, byteCount - bytesRead, start + bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
     }
-    const finalStats = fstatSync(fd);
-    const finalVersion = [finalStats.dev, finalStats.ino, finalStats.size, finalStats.mtimeMs, finalStats.ctimeMs].join(":");
-    if (finalVersion !== fileVersion) {
+    const finalVersion = fileVersion(await handle.stat());
+    if (finalVersion !== currentVersion) {
       return { ok: false, error: "The file changed during download" };
     }
     return {
@@ -383,12 +466,12 @@ function downloadLocalFile(
       base64: buffer.subarray(0, bytesRead).toString("base64"),
       done: start + bytesRead >= size || bytesRead < byteCount,
       size,
-      fileVersion,
+      fileVersion: currentVersion,
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   } finally {
-    if (fd !== null) closeSync(fd);
+    await handle?.close().catch(() => {});
   }
 }
 

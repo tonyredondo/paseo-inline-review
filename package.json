@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types test/markdown.test.ts && node --experimental-strip-types test/review.test.ts && node --experimental-strip-types test/review-store.test.ts && node --experimental-strip-types test/preview-store.test.ts && node --experimental-strip-types test/turn-final-store.test.ts && node --experimental-strip-types test/server-review.test.ts && node --experimental-strip-types test/render-contract.test.ts && node --experimental-strip-types test/wide-frame.test.ts"
+    "perf": "node --experimental-strip-types scripts/perf-baseline.ts",
+    "size:client": "node --experimental-strip-types scripts/client-size.ts",
+    "size:installed": "node --experimental-strip-types scripts/installed-client-size.ts",
+    "test": "node --experimental-strip-types test/markdown.test.ts && node --experimental-strip-types test/markdown-performance.test.ts && node --experimental-strip-types test/review.test.ts && node --experimental-strip-types test/review-store.test.ts && node --experimental-strip-types test/comment-sync.test.ts && node --experimental-strip-types test/comment-delta.test.ts && node --experimental-strip-types test/preview-store.test.ts && node --experimental-strip-types test/image-preview-store.test.ts && node --experimental-strip-types test/turn-final-store.test.ts && node --experimental-strip-types test/server-review.test.ts && node --experimental-strip-types test/server-image-preview.test.ts && node --experimental-strip-types test/file-download.test.ts && node --experimental-strip-types test/stream-text.test.ts && node --experimental-strip-types test/render-contract.test.ts && node --experimental-strip-types test/adaptive-sweep.test.ts && node --experimental-strip-types test/wide-frame-mutations.test.ts && node --experimental-strip-types test/wide-frame.test.ts"
   },
   "devDependencies": {
     "@getpaseo/plugin": "^0.8.0",

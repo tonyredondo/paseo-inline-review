@@ -4,16 +4,21 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View, type ImageStyle, type StyleProp, type ViewStyle } from "react-native";
 import { MarkdownSpan } from "./markdown-span";
-import { isValidHttpUrl, openLocalFileRpc } from "../shared/review";
+import { isValidHttpUrl, localImagePreviewRpc } from "../shared/review";
 import type { LocalFileTarget } from "../shared/markdown-parse";
 import {
-  parseBlocks,
-  parseInline,
   type Block,
 } from "../shared/markdown-parse";
 import { highlightCode, type CodeToken } from "../shared/syntax";
 import { copyText, FlatList, Icon } from "@getpaseo/plugin/client/react-native";
 import { openExternalUrlOnWeb } from "./web";
+import { compileMarkdown } from "./markdown-compile";
+import { codeHighlightWindow } from "../shared/code-window";
+import {
+  retainImagePreview,
+  retryImagePreview,
+  type ThumbnailState,
+} from "./image-preview-store";
 
 /**
  * Renders parsed markdown blocks with React Native primitives. Paseo does not
@@ -544,13 +549,19 @@ export function CodeBlockView({
       if (timerRef.current !== null) clearTimeout(timerRef.current);
     };
   }, []);
-  const allLines = useMemo(() => highlightCode(code, language), [code, language]);
   // Very long dumps collapse: first COLLAPSE_LINES + an expander.
   const [showAll, setShowAll] = useState(false);
+  const codeWindow = useMemo(
+    () => codeHighlightWindow(code, showAll, CODE_COLLAPSE_LINES),
+    [code, showAll],
+  );
+  const lines = useMemo(
+    () => highlightCode(codeWindow.code, language),
+    [codeWindow.code, language],
+  );
   // Scroll mode is the default everywhere; wrap is the secondary option.
   const [wrapMode, setWrapMode] = useState(false);
-  const collapsed = allLines.length > CODE_COLLAPSE_LINES && !showAll;
-  const lines = collapsed ? allLines.slice(0, CODE_COLLAPSE_LINES) : allLines;
+  const collapsed = codeWindow.collapsed;
   // Line highlight from the file link suffix (`span.go:467`, `#L12-L20`).
   const highlightFrom = highlightStart ?? null;
   const highlightTo = highlightEnd ?? highlightStart ?? null;
@@ -615,6 +626,45 @@ export function CodeBlockView({
         const gutterWidth = Math.max(2, digits) * styles.codeFontSize * 0.68 + 16;
         const gutterColor = "#565e69";
         const gutterRule = "rgba(139,148,158,0.25)";
+        if (showAll && lines.length > 200 && !wrapMode) {
+          return (
+            <ScrollView horizontal style={{ maxHeight: 720 }} contentContainerStyle={{ minWidth: "100%" }}>
+              <FlatList
+                data={lines}
+                initialNumToRender={40}
+                maxToRenderPerBatch={40}
+                windowSize={7}
+                getItemLayout={(_data, index) => ({ length: VIRTUAL_LINE_HEIGHT, offset: VIRTUAL_LINE_HEIGHT * index, index })}
+                keyExtractor={(_line, index) => String(index)}
+                renderItem={({ item: line, index: lineIndex }) => (
+                  <View style={{ flexDirection: "row", height: VIRTUAL_LINE_HEIGHT }}>
+                    <Text style={[mono, {
+                      width: gutterWidth,
+                      paddingRight: 10,
+                      color: gutterColor,
+                      borderRightWidth: StyleSheet.hairlineWidth,
+                      borderRightColor: gutterRule,
+                      fontSize: styles.codeFontSize,
+                      lineHeight: VIRTUAL_LINE_HEIGHT,
+                      textAlign: "right",
+                    }]}>{lineIndex + 1}</Text>
+                    <Text numberOfLines={1} style={[mono, nowrap, {
+                      color: darkPalette.plain,
+                      fontSize: styles.codeFontSize,
+                      lineHeight: VIRTUAL_LINE_HEIGHT,
+                      paddingLeft: 10,
+                    }]}>
+                      {line.length === 0 ? " " : line.map((token, tokenIndex) => (
+                        <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type] }]}>{token.text}</Text>
+                      ))}
+                    </Text>
+                  </View>
+                )}
+                style={{ minWidth: "100%", height: 720 }}
+              />
+            </ScrollView>
+          );
+        }
         if (!wrapMode) {
           return (
             <View style={{ flexDirection: "row", alignItems: "stretch" }}>
@@ -745,7 +795,7 @@ export function CodeBlockView({
           style={{ paddingTop: 6 }}
         >
           <Text style={{ color: "#58a6ff", fontSize: 11 }}>
-            {`Show ${allLines.length - lines.length} more lines`}
+            {`Show ${codeWindow.totalLines - codeWindow.visibleLines} more lines`}
           </Text>
         </Pressable>
       ) : null}
@@ -885,34 +935,13 @@ function LocalMarkdownImage({
   cardStyle: StyleProp<ViewStyle>;
   onPress?: (target: LocalFileTarget) => void;
 }) {
-  const openLocalFile = useRpc(openLocalFileRpc);
-  const [state, setState] = useState<
-    { status: "loading" } |
-    { status: "ready"; dataUri: string } |
-    { status: "error"; message: string }
-  >({ status: "loading" });
+  const loadThumbnail = useRpc(localImagePreviewRpc);
+  const [state, setState] = useState<ThumbnailState>({ status: "idle" });
   const label = alt.trim() || target.path.split(/[\\/]/).pop() || "Image";
 
   useEffect(() => {
-    let cancelled = false;
-    setState({ status: "loading" });
-    void openLocalFile({ path: target.path, mode: "image" }).then((result) => {
-      if (cancelled) return;
-      if (!result.ok || !result.base64 || !result.mimeType) {
-        setState({ status: "error", message: result.error ?? "Could not load the image" });
-        return;
-      }
-      setState({
-        status: "ready",
-        dataUri: `data:${result.mimeType};base64,${result.base64}`,
-      });
-    }).catch(() => {
-      if (!cancelled) setState({ status: "error", message: "Could not load the image" });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [openLocalFile, target.path]);
+    return retainImagePreview(target.path, loadThumbnail, setState);
+  }, [loadThumbnail, target.path]);
 
   if (state.status === "ready") {
     const dataUri = state.dataUri;
@@ -928,17 +957,70 @@ function LocalMarkdownImage({
     );
   }
 
+  if (state.status === "error") {
+    return (
+      <View style={cardStyle} accessibilityLabel={`Local image ${label} could not be loaded`}>
+        <Text style={{ color: theme.colors.statusDanger }}>{`${label}: ${state.message}`}</Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 8 }}>
+          <Pressable accessibilityRole="button" onPress={() => retryImagePreview(target.path)}>
+            <Text style={{ color: theme.colors.accent }}>Retry thumbnail</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" onPress={() => onPress?.(target)}>
+            <Text style={{ color: theme.colors.accent }}>Open full image</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <Pressable
       accessibilityRole="link"
-      accessibilityLabel={`Open local image ${label}`}
+      accessibilityLabel={`Loading local image ${label}`}
       style={cardStyle}
-      onPress={() => onPress?.(target)}
     >
-      <Text style={{ color: state.status === "error" ? theme.colors.statusDanger : theme.colors.foregroundMuted }}>
-        {state.status === "loading" ? `Loading ${label}…` : `${label}: ${state.message}`}
-      </Text>
+      <Text style={{ color: theme.colors.foregroundMuted }}>{`Loading ${label}…`}</Text>
     </Pressable>
+  );
+}
+
+function RemoteMarkdownImage({
+  url,
+  alt,
+  compact,
+  style,
+  cardStyle,
+  theme,
+}: {
+  url: string;
+  alt: string;
+  compact: boolean;
+  style: StyleProp<ImageStyle>;
+  cardStyle: StyleProp<ViewStyle>;
+  theme: PluginTheme;
+}) {
+  const [loaded, setLoaded] = useState(!compact);
+  if (!loaded) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Load remote image ${alt || "image"}`}
+        style={cardStyle}
+        onPress={() => setLoaded(true)}
+      >
+        <Text style={{ color: theme.colors.accent }}>Load image</Text>
+      </Pressable>
+    );
+  }
+  return (
+    <View style={cardStyle}>
+      <Image
+        source={{ uri: url }}
+        style={style}
+        resizeMode="contain"
+        accessibilityLabel={alt}
+      />
+    </View>
   );
 }
 
@@ -954,6 +1036,7 @@ export function MarkdownText({
   listItemExtras,
   localFileResolver,
   onLocalFilePress,
+  cacheKey,
 }: {
   text: string;
   theme: PluginTheme;
@@ -974,15 +1057,18 @@ export function MarkdownText({
   localFileResolver?: (href: string) => LocalFileTarget | null;
   /** Pressed a local file link: (path, lineStart?, lineEnd?). */
   onLocalFilePress?: (target: LocalFileTarget) => void;
+  /** Stable only for complete history; streaming text is never globally cached. */
+  cacheKey?: string;
 }) {
-  const blocks = useMemo(() => parseBlocks(text), [text]);
+  const compiled = useMemo(() => compileMarkdown(text, refs, cacheKey), [text, refs, cacheKey]);
+  const blocks = compiled.blocks;
   const styles = useStyles(theme, compact);
 
   function renderTextLines(lines: string[], style: object): ReactNode {
     return lines.map((line, index) => (
       <MarkdownSpan key={index} style={style} selectable={selectable} onPress={onChunkPress}>
         <InlineRun
-          tokens={parseInline(line, refs)}
+          tokens={compiled.inline(line)}
           theme={theme}
           styles={styles}
           refs={refs}
@@ -1038,7 +1124,7 @@ export function MarkdownText({
                       : block.level === 1 ? 22 : block.level === 2 ? 19 : block.level === 3 ? 17 : 16,
                   }}
                 >
-                  <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
+                  <InlineRun tokens={compiled.inline(block.text)} theme={theme} styles={styles} refs={refs} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
                 </MarkdownSpan>
                 {block.level <= 2 ? (
                   <View
@@ -1131,7 +1217,7 @@ export function MarkdownText({
                 <MarkdownSpan style={{ color: theme.colors.foregroundMuted, fontSize: compact ? 12 : 13 }} selectable={selectable}>
                   <Text style={{ color: theme.colors.accent, fontWeight: "700" }}>{`[^${block.label}]`}</Text>
                   {" "}
-                  <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} selectable={selectable} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
+                  <InlineRun tokens={compiled.inline(block.text)} theme={theme} styles={styles} refs={refs} selectable={selectable} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
                 </MarkdownSpan>
               </View>
             );
@@ -1230,9 +1316,10 @@ export function MarkdownText({
             return null;
           case "p":
           default: {
-            const single = block.lines.length === 1 && parseInline(block.lines[0]).length === 1 && parseInline(block.lines[0])[0]?.type === "image";
+            const singleTokens = block.lines.length === 1 ? compiled.inline(block.lines[0]) : [];
+            const single = singleTokens.length === 1 && singleTokens[0]?.type === "image";
             if (single) {
-              const token = parseInline(block.lines[0], refs)[0];
+              const token = singleTokens[0];
               if (token.type === "image") {
                 const localTarget = localFileResolver?.(token.url) ?? null;
                 if (localTarget) {
@@ -1249,12 +1336,14 @@ export function MarkdownText({
                   );
                 }
                 return (
-                  <Image
+                  <RemoteMarkdownImage
                     key={index}
-                    source={{ uri: token.url }}
-                    style={[styles.image, blockSpacing ?? null]}
-                    resizeMode="contain"
-                    accessibilityLabel={token.alt}
+                    url={token.url}
+                    alt={token.alt}
+                    compact={compact}
+                    theme={theme}
+                    style={styles.image}
+                    cardStyle={[styles.localImageCard, blockSpacing ?? null]}
                   />
                 );
               }

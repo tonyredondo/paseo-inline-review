@@ -7,6 +7,114 @@ import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 
+type FakeElement = {
+  clientHeight: number;
+  clientWidth: number;
+  children: FakeElement[];
+  parentElement: FakeElement | null;
+  previousElementSibling: FakeElement | null;
+  nextElementSibling: FakeElement | null;
+  childElementCount: number;
+  style: Record<string, string>;
+  dataset: Record<string, string>;
+  attributes: Record<string, string>;
+  computedMaxWidth: string;
+  computedBackgroundColor: string;
+  setAttribute(name: string, value: string): void;
+  insertBefore(node: FakeElement, before: FakeElement | null): void;
+  remove(): void;
+  querySelectorAll(selector: string): FakeElement[];
+};
+
+function dataKey(name: string): string {
+  return name.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+}
+
+function matches(node: FakeElement, selector: string): boolean {
+  if (selector === "*") return true;
+  const attribute = /^\[([^=]+)="([^"]+)"\]$/.exec(selector);
+  if (!attribute) return false;
+  const [, name, expected] = attribute;
+  const actual = name.startsWith("data-") ? node.dataset[dataKey(name)] : node.attributes[name];
+  return actual === expected;
+}
+
+function fakeElement({
+  width = 0,
+  height = 0,
+  maxWidth = "none",
+  backgroundColor = "transparent",
+  attributes = {},
+}: {
+  width?: number;
+  height?: number;
+  maxWidth?: string;
+  backgroundColor?: string;
+  attributes?: Record<string, string>;
+} = {}): FakeElement {
+  const node: FakeElement = {
+    clientHeight: height,
+    clientWidth: width,
+    children: [],
+    parentElement: null,
+    previousElementSibling: null,
+    nextElementSibling: null,
+    childElementCount: 0,
+    style: {},
+    dataset: {},
+    attributes: { ...attributes },
+    computedMaxWidth: maxWidth,
+    computedBackgroundColor: backgroundColor,
+    setAttribute(name, value) {
+      if (name.startsWith("data-")) this.dataset[dataKey(name)] = value;
+      else this.attributes[name] = value;
+    },
+    insertBefore(child, before) {
+      child.remove();
+      const index = before ? this.children.indexOf(before) : -1;
+      if (index >= 0) this.children.splice(index, 0, child);
+      else this.children.push(child);
+      child.parentElement = this;
+      relink(this);
+    },
+    remove() {
+      const parent = this.parentElement;
+      if (!parent) return;
+      const index = parent.children.indexOf(this);
+      if (index >= 0) parent.children.splice(index, 1);
+      this.parentElement = null;
+      relink(parent);
+    },
+    querySelectorAll(selector) {
+      const selectors = selector.split(",").map((value) => value.trim());
+      const result: FakeElement[] = [];
+      const visit = (current: FakeElement): void => {
+        for (const child of current.children) {
+          if (selectors.some((candidate) => matches(child, candidate))) result.push(child);
+          visit(child);
+        }
+      };
+      visit(this);
+      return result;
+    },
+  };
+  for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+  return node;
+}
+
+function relink(parent: FakeElement): void {
+  parent.childElementCount = parent.children.length;
+  parent.children.forEach((child, index) => {
+    child.parentElement = parent;
+    child.previousElementSibling = parent.children[index - 1] ?? null;
+    child.nextElementSibling = parent.children[index + 1] ?? null;
+  });
+}
+
+function append(parent: FakeElement, ...children: FakeElement[]): void {
+  for (const child of children) parent.insertBefore(child, null);
+}
+
 test("a virtualized timeline controller unmount cannot tear down the host-wide frame", async () => {
   const sourcePath = resolve(testDirectory, "../client/wide-frame-controller.tsx");
   const cleanups: Array<() => void> = [];
@@ -91,4 +199,113 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
   delete globals.__wideFrameEnsureCalls;
   delete globals.__wideFrameUndoCalls;
   delete globals.__wideFrameSettings;
+});
+
+test("wide-frame styling is idempotent, bounded, and completely reversible", async () => {
+  const pane = fakeElement({ width: 1200 });
+  const capped = fakeElement({ width: 820, maxWidth: "820px" });
+  const message = fakeElement({ attributes: { "data-testid": "user-message" } });
+  const bubble = fakeElement({ backgroundColor: "rgb(36, 38, 54)" });
+  const images = fakeElement({ height: 90 });
+  const imageOne = fakeElement({ attributes: { "aria-label": "Open image attachment" } });
+  const imageTwo = fakeElement({ attributes: { "aria-label": "Open image attachment" } });
+  const trail = fakeElement({ attributes: { "data-testid": "user-message-trailing-row" } });
+  append(images, imageOne, imageTwo);
+  append(bubble, images, trail);
+  append(message, bubble);
+  append(capped, message);
+  append(pane, capped);
+
+  const resizeListeners = new Set<() => void>();
+  const frames = new Map<number, () => void>();
+  let nextFrame = 1;
+  const document = {
+    body: pane,
+    createElement: () => fakeElement(),
+    querySelectorAll: (selector: string) => pane.querySelectorAll(selector),
+  };
+  const globals = globalThis as unknown as Record<string, unknown>;
+  globals.__wideFramePlatform = { OS: "web" };
+  globals.__wideFrameDocument = document;
+  globals.__wideFrameWindow = {
+    document,
+    innerWidth: 1200,
+    getComputedStyle: (node: FakeElement) => ({
+      maxWidth: node.computedMaxWidth,
+      backgroundColor: node.computedBackgroundColor,
+    }),
+    requestAnimationFrame(callback: () => void) {
+      const id = nextFrame++;
+      frames.set(id, callback);
+      return id;
+    },
+    cancelAnimationFrame(id: number) { frames.delete(id); },
+    addEventListener(type: string, listener: () => void) {
+      if (type === "resize") resizeListeners.add(listener);
+    },
+    removeEventListener(type: string, listener: () => void) {
+      if (type === "resize") resizeListeners.delete(listener);
+    },
+  };
+
+  const sourcePath = resolve(testDirectory, "../client/wide-frame.ts");
+  const source = readFileSync(sourcePath, "utf8")
+    .replace('import { Platform } from "react-native";', "const Platform = globalThis.__wideFramePlatform;")
+    .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};")
+    .replace(/import \{ createAdaptiveSweep \}[^;]+;/, `
+      const createAdaptiveSweep = () => ({ start() {}, stop() {}, wake() {} });
+    `)
+    .replace(/import \{ classifyWideFrameMutations[^;]+;/, `
+      const classifyWideFrameMutations = () => ({ repairWidenedStyles: false, scopes: [] });
+    `)
+    .replace(
+      "const g = globalThis as unknown as WWin & { document?: WDoc };",
+      "const g = globalThis.__wideFrameWindow as WWin & { document?: WDoc };",
+    );
+  const output = transpileModule(source, {
+    compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
+  }).outputText;
+  const module = await import(
+    `data:text/javascript;base64,${Buffer.from(output).toString("base64")}#wide-frame-dom-${Date.now()}`
+  );
+
+  module.ensureWideFrame({ accent: "#58a6ff", raised: "#242636", border: "#30363d" });
+  assert.equal(capped.style.maxWidth, "1040px");
+  assert.equal(message.style.maxWidth, "100%");
+  assert.equal(message.style.paddingBottom, "8px");
+  assert.equal(bubble.style.paddingTop, "5px");
+  assert.equal(bubble.style.paddingBottom, "5px");
+  assert.equal(images.style.display, "flex");
+  assert.equal(images.style.flexWrap, "nowrap");
+  assert.equal(images.style.overflowX, "auto");
+  assert.equal(images.style.maxWidth, "100%");
+  assert.equal(images.style.paddingTop, "5px");
+  assert.equal(images.style.marginBottom, "4px");
+  assert.equal(imageOne.style.flexShrink, "0");
+  assert.equal(trail.style.position, "relative");
+  assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
+
+  module.ensureWideFrame();
+  assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
+  assert.equal(resizeListeners.size, 1);
+
+  const staleResize = [...resizeListeners][0];
+  module.undoWideFrame();
+  assert.equal(resizeListeners.size, 0);
+  assert.equal(capped.style.maxWidth, "");
+  assert.equal(capped.dataset.inlineReviewWide, "");
+  assert.equal(message.style.paddingBottom, "");
+  assert.equal(bubble.style.paddingTop, "");
+  assert.equal(images.style.overflowX, "");
+  assert.equal(imageOne.style.flexShrink, "");
+  assert.equal(trail.style.position, "");
+  assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 0);
+
+  staleResize();
+  for (const callback of frames.values()) callback();
+  assert.equal(capped.style.maxWidth, "");
+
+  delete globals.__wideFramePlatform;
+  delete globals.__wideFrameDocument;
+  delete globals.__wideFrameWindow;
 });

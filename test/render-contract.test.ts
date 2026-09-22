@@ -12,6 +12,7 @@ import { test } from "node:test";
 import * as path from "node:path";
 const rendererSource = String(readFileSync(path.resolve("client/markdown.tsx"), "utf8"));
 const webSource = String(readFileSync(path.resolve("client/web.ts"), "utf8"));
+const wideFrameMutationSource = String(readFileSync(path.resolve("client/wide-frame-mutations.ts"), "utf8"));
 
 test("every code token Text carries the monospace family explicitly", () => {
   // react-native-web nested Texts do NOT inherit fontFamily: each token must
@@ -68,7 +69,9 @@ test("downloads stream chunks instead of accumulating a data URI", () => {
   assert.ok(!timelineSource.includes("parts.push"));
   assert.ok(!panelSource.includes("data:application/octet-stream"));
   assert.ok(!timelineSource.includes("data:application/octet-stream"));
-  assert.match(downloadSource, /length: FILE_TRANSFER_CHUNK_BYTES/);
+  assert.match(downloadSource, /length: chunkBytes/);
+  assert.match(downloadSource, /chunkBytes = DESKTOP_FILE_TRANSFER_CHUNK_BYTES/);
+  assert.match(panelSource, /COMPACT_FILE_TRANSFER_CHUNK_BYTES/);
   assert.match(downloadSource, /fileVersion/);
   assert.match(downloadSource, /await destination\.writeBase64\(result\.base64\)/);
 });
@@ -83,6 +86,12 @@ test("file previews virtualize lines and highlight only rendered rows", () => {
   assert.ok(!timelineSource.includes("forceShowAll"));
   assert.equal(panelSource.match(/virtualized/g)?.length, 1);
   assert.equal(timelineSource.match(/virtualized/g)?.length, 2);
+});
+
+test("expanded large inline code blocks virtualize rendered rows", () => {
+  assert.match(rendererSource, /showAll && lines\.length > 200/);
+  assert.match(rendererSource, /maxToRenderPerBatch=\{40\}/);
+  assert.match(rendererSource, /codeHighlightWindow\(code, showAll, CODE_COLLAPSE_LINES\)/);
 });
 
 test("external links open on the client and nested styles retain file handlers", () => {
@@ -172,6 +181,8 @@ test("timeline rows use scoped agent state and one elected wide-frame controller
   assert.doesNotMatch(controllerSource, /return \(\) => undoWideFrame\(\)/);
   assert.match(controllerSource, /enabled === null/);
   assert.match(entrySource, /return async \(\) => \{[\s\S]{0,240}undoWideFrame\(\)/);
+  assert.match(entrySource, /const removeSettingsScreen = client\.addSettingsScreen/);
+  assert.match(entrySource, /removeSettingsScreen\(\)/);
 });
 
 test("assistant renderers never suppress host timeline rows", () => {
@@ -185,16 +196,25 @@ test("assistant renderers never suppress host timeline rows", () => {
   );
 });
 
-test("local markdown images load through the daemon and remain visible", () => {
-  const branchStart = rendererSource.indexOf("const single = block.lines.length === 1");
+test("local markdown images load bounded thumbnails and full images stay explicit", () => {
+  const branchStart = rendererSource.indexOf("const singleTokens = block.lines.length === 1");
   const singleImageBranch = rendererSource.slice(branchStart, branchStart + 2_000);
   assert.match(singleImageBranch, /localFileResolver\?\.\(token\.url\)/);
   assert.match(singleImageBranch, /<LocalMarkdownImage/);
   assert.match(singleImageBranch, /cardStyle=\{\[styles\.localImageCard, blockSpacing \?\? null\]\}/);
-  assert.match(rendererSource, /mode: "image"/);
+  assert.match(rendererSource, /useRpc\(localImagePreviewRpc\)/);
+  assert.doesNotMatch(rendererSource, /mode: "image"/);
+  assert.match(rendererSource, /retainImagePreview\(target\.path/);
   assert.match(rendererSource, /source=\{\{ uri: dataUri \}\}/);
+  assert.match(rendererSource, />Open full image<\/Text>/);
   assert.match(rendererSource, /localImageCard:[\s\S]{0,200}alignSelf: "flex-start"/);
   assert.match(rendererSource, /localImageCard:[\s\S]{0,400}backgroundColor: theme\.colors\.surface1/);
+});
+
+test("compact remote markdown images wait for explicit interaction", () => {
+  assert.match(rendererSource, /const \[loaded, setLoaded\] = useState\(!compact\)/);
+  assert.match(rendererSource, /accessibilityLabel=\{`Load remote image/);
+  assert.match(rendererSource, /onPress=\{\(\) => setLoaded\(true\)\}/);
 });
 
 test("file preview panels render detected images instead of the binary fallback", () => {
@@ -236,7 +256,6 @@ test("download actions are hidden outside the web platform", () => {
 });
 
 test("wide-frame mutation handling narrows text nodes to their parent element", () => {
-  const wideFrameSource = String(readFileSync(path.resolve("client/wide-frame.ts")));
-  assert.match(wideFrameSource, /node\.style && node\.dataset \? \(node as WNode\) : node\.parentElement/);
-  assert.ok(!wideFrameSource.includes("schedule(n)"));
+  assert.match(wideFrameMutationSource, /node\.style && node\.dataset \? node : node\.parentElement/);
+  assert.ok(!wideFrameMutationSource.includes("schedule(n)"));
 });
