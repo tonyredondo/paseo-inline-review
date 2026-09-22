@@ -127,7 +127,12 @@ export const platformImageProcessor: ImageProcessor = async (path, input) => {
         { timeout: 30_000, maxBuffer: 1024 * 1024 },
       );
       output = await readFile(outputPath);
-      outputInfo = await readSipsInfo(outputPath);
+      const scale = Math.min(1, edge / Math.max(original.width, original.height));
+      outputInfo = {
+        width: Math.max(1, Math.round(original.width * scale)),
+        height: Math.max(1, Math.round(original.height * scale)),
+        hasAlpha: original.hasAlpha,
+      };
       if (output.byteLength <= input.maxBytes) break;
       if (format === "jpeg" && quality > 45) quality = Math.max(45, quality - 12);
       else edge = Math.max(64, Math.floor(edge * 0.72));
@@ -171,9 +176,10 @@ export function createImagePreviewService({
 
   function cacheResult(key: string, result: ImagePreviewResult): void {
     if (!result.ok || !result.thumbnailSize) return;
+    const retainedBytes = result.base64?.length ?? result.thumbnailSize;
     cache.set(key, result);
-    cacheSizes.set(key, result.thumbnailSize);
-    cachedBytes += result.thumbnailSize;
+    cacheSizes.set(key, retainedBytes);
+    cachedBytes += retainedBytes;
     while (cachedBytes > cacheBytes && cache.size > 0) {
       const oldest = cache.keys().next().value as string | undefined;
       if (!oldest) break;

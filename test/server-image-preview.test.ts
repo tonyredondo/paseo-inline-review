@@ -56,6 +56,7 @@ test("thumbnail requests are singleflight, cached, and bounded", async () => {
   assert.equal(calls, 1);
   assert.deepEqual(cached, one);
   assert.ok((cached.thumbnailSize ?? Infinity) <= IMAGE_THUMBNAIL_MAX_BYTES);
+  assert.ok(service.diagnostics().cachedBytes >= (cached.base64?.length ?? 0));
   service.dispose();
 });
 

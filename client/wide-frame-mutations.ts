@@ -2,6 +2,7 @@ type MutationNode = {
   parentElement: MutationNode | null;
   style?: Record<string, string>;
   dataset?: Record<string, string>;
+  matches?(selector: string): boolean;
   querySelectorAll?(selector: string): ArrayLike<MutationNode>;
 };
 
@@ -20,11 +21,9 @@ export type WideFrameMutation = {
 export function classifyWideFrameMutations<T extends MutationNode>({
   mutations,
   markerSelector,
-  getMaxWidth,
 }: {
   mutations: readonly WideFrameMutation[];
   markerSelector: string;
-  getMaxWidth(node: T): string;
 }): { repairWidenedStyles: boolean; scopes: T[] } {
   let repairWidenedStyles = false;
   const scopes = new Set<T>();
@@ -36,13 +35,27 @@ export function classifyWideFrameMutations<T extends MutationNode>({
     ) {
       repairWidenedStyles = true;
     }
+    if (mutation.attributeName === "style") {
+      let styled: MutationNode | null = mutation.target;
+      while (styled) {
+        if (
+          styled.dataset?.inlineReviewUser === "1" ||
+          styled.dataset?.inlineReviewTight === "1" ||
+          styled.matches?.(markerSelector)
+        ) {
+          if (styled.style && styled.dataset) scopes.add(styled as T);
+          break;
+        }
+        styled = styled.parentElement;
+      }
+    }
     for (const node of Array.from(mutation.addedNodes)) {
       const element = node.style && node.dataset ? node : node.parentElement;
       if (!element?.style || !element.dataset) continue;
       const typed = element as T;
       if (
         typed.dataset!.inlineReviewWide === "1" ||
-        getMaxWidth(typed) === "820px" ||
+        typed.matches?.(markerSelector) ||
         (typed.querySelectorAll?.(markerSelector).length ?? 0) > 0
       ) {
         scopes.add(typed);

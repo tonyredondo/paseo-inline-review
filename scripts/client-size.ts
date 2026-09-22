@@ -10,6 +10,7 @@ const files = [
   "client/file-download.ts",
   "client/image-preview-store.ts",
   "client/markdown-compile.ts",
+  "client/markdown-stream.ts",
   "client/markdown-span.tsx",
   "client/markdown.tsx",
   "client/panel.tsx",

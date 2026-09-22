@@ -23,6 +23,7 @@ type FakeElement = {
   setAttribute(name: string, value: string): void;
   insertBefore(node: FakeElement, before: FakeElement | null): void;
   remove(): void;
+  matches(selector: string): boolean;
   querySelectorAll(selector: string): FakeElement[];
 };
 
@@ -84,6 +85,9 @@ function fakeElement({
       if (index >= 0) parent.children.splice(index, 1);
       this.parentElement = null;
       relink(parent);
+    },
+    matches(selector) {
+      return selector.split(",").some((candidate) => matches(this, candidate.trim()));
     },
     querySelectorAll(selector) {
       const selectors = selector.split(",").map((value) => value.trim());
@@ -273,6 +277,9 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
 
   const resizeListeners = new Set<() => void>();
   const frames = new Map<number, () => void>();
+  let observerConstructions = 0;
+  let observerDisconnections = 0;
+  let observedRoot: FakeElement | null = null;
   let nextFrame = 1;
   const document = {
     body: pane,
@@ -295,6 +302,17 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
       return id;
     },
     cancelAnimationFrame(id: number) { frames.delete(id); },
+    MutationObserver: class {
+      constructor(_callback: (mutations: unknown) => void) {
+        observerConstructions += 1;
+      }
+      observe(root: FakeElement) {
+        observedRoot = root;
+      }
+      disconnect() {
+        observerDisconnections += 1;
+      }
+    },
     addEventListener(type: string, listener: () => void) {
       if (type === "resize") resizeListeners.add(listener);
     },
@@ -325,6 +343,8 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   );
 
   module.ensureWideFrame({ accent: "#58a6ff", raised: "#242636", border: "#30363d" });
+  assert.equal(observerConstructions, 1);
+  assert.equal(observedRoot, pane);
   assert.equal(capped.style.maxWidth, "1040px");
   assert.equal(message.style.maxWidth, "100%");
   assert.equal(message.style.paddingBottom, "8px");
@@ -348,6 +368,8 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   append(pane, reenteredCapped);
 
   module.ensureWideFrame();
+  assert.equal(observerConstructions, 1, "same-document refresh reuses the observer");
+  assert.equal(observerDisconnections, 0);
   assert.equal(reenteredCapped.style.maxWidth, "1040px");
   assert.equal(reenteredMessage.style.backgroundColor, "#242636");
   assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
@@ -355,6 +377,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
 
   const staleResize = [...resizeListeners][0];
   module.undoWideFrame();
+  assert.equal(observerDisconnections, 1);
   assert.equal(resizeListeners.size, 0);
   assert.equal(capped.style.maxWidth, "");
   assert.equal(capped.dataset.inlineReviewWide, "");

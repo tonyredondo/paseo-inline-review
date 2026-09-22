@@ -3,6 +3,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 
 import { createCommentSyncController } from "../client/comment-sync.ts";
 import { createImagePreviewStore } from "../client/image-preview-store.ts";
+import { createStableReferenceDefinitions } from "../client/markdown-stream.ts";
 import {
   clearMarkdownCache,
   compileMarkdown,
@@ -85,6 +86,30 @@ function measureMarkdown(size: number): Measurement {
   };
 }
 
+function measureStreamingReferences(lineCount: number): Measurement {
+  const definitions = createStableReferenceDefinitions();
+  let text = "";
+  let naiveInputCharacters = 0;
+  const started = performance.now();
+  for (let index = 0; index < lineCount; index += 1) {
+    text += index === lineCount - 1
+      ? `[guide]: https://example.com/${index}\n`
+      : `ordinary streamed line ${index}\n`;
+    naiveInputCharacters += text.length;
+    definitions.update(text);
+  }
+  const diagnostics = definitions.diagnostics();
+  return {
+    lineCount,
+    finalInputCharacters: text.length,
+    naiveFullScanCharacters: naiveInputCharacters,
+    incrementalInspectedCharacters: diagnostics.inspectedCharacters,
+    scanReduction: 1 - diagnostics.inspectedCharacters / naiveInputCharacters,
+    publications: diagnostics.publications,
+    elapsedMs: performance.now() - started,
+  };
+}
+
 function measureCode(lines: number, visibleLines: number): Measurement {
   const code = Array.from({ length: lines }, (_, index) => `const value${index} = ${index};`).join("\n");
   const visible = code.split("\n").slice(0, visibleLines).join("\n");
@@ -145,12 +170,39 @@ async function measureThumbnailStore(): Promise<Measurement> {
   releaseCached();
   const beforeCleanup = store.diagnostics();
   store.dispose();
+  let compactLoaderCalls = 0;
+  const compactStore = createImagePreviewStore({ mountDelayMs: 0 });
+  const releaseCompact = compactStore.retain(
+    "compact",
+    async () => {
+      compactLoaderCalls += 1;
+      return {
+        ok: true,
+        fileVersion: "compact-v1",
+        mimeType: "image/webp",
+        base64: "AAAA",
+        thumbnailSize: 3,
+      };
+    },
+    () => {},
+    { autoLoad: false, maxEdge: 320, quality: 65 },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const compactCallsBeforeInteraction = compactLoaderCalls;
+  compactStore.retry("compact", { maxEdge: 320, quality: 65 });
+  while (compactStore.diagnostics().active > 0 || compactStore.diagnostics().queued > 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  releaseCompact();
+  compactStore.dispose();
   return {
     loaderCalls,
     automaticFullImageRpcCount: 0,
     maximumConcurrentWork: maxActive,
     beforeCleanup,
     cleanupState: store.diagnostics(),
+    compactCallsBeforeInteraction,
+    compactCallsAfterInteraction: compactLoaderCalls,
     diskCacheDecision: "not-added: bounded in-memory reuse removes warm remount work; app-restart generation is one bounded platform process",
   };
 }
@@ -176,7 +228,7 @@ function measureCompressionExperiment(): Measurement {
 const commentSync = await Promise.all([1, 9, 100].map(measureCommentSync));
 const thumbnailStore = await measureThumbnailStore();
 const report = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   scenarios: {
     commentSync,
     turnHistory: {
@@ -186,7 +238,10 @@ const report = {
       maximumDemandDrivenHistoricalPages: 12,
       historicalPageEntries: 400,
     },
-    markdown: [10_000, 100_000, 500_000].map(measureMarkdown),
+    markdown: {
+      completed: [10_000, 100_000, 500_000].map(measureMarkdown),
+      streamingReferences: measureStreamingReferences(2_000),
+    },
     code: {
       collapsed: measureCode(500, 40),
       expanded: measureCode(500, 500),

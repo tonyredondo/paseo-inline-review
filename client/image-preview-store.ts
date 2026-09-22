@@ -21,7 +21,16 @@ type Loader = (input: {
   knownFileVersion?: string;
 }) => Promise<ThumbnailResult>;
 
+export type ThumbnailOptions = {
+  autoLoad?: boolean;
+  maxEdge?: number;
+  quality?: number;
+};
+
 type Entry = {
+  path: string;
+  maxEdge: number;
+  quality: number;
   state: ThumbnailState;
   ready: Extract<ThumbnailState, { status: "ready" }> | null;
   listeners: Set<(state: ThumbnailState) => void>;
@@ -62,18 +71,20 @@ export function createImagePreviewStore({
   let misses = 0;
   let maxActive = 0;
 
-  function bytesOf(state: ThumbnailState): number {
-    return state.status === "ready" ? state.bytes : 0;
+  function entryBytes(entry: Entry): number {
+    return entry.ready?.bytes ?? 0;
   }
 
   function publish(entry: Entry, state: ThumbnailState): void {
-    cachedBytes -= bytesOf(entry.state);
+    const previousBytes = entryBytes(entry);
     entry.state = state;
     if (state.status === "ready") {
       entry.ready = state;
       entry.loadedAt = now();
+    } else if (state.status === "error") {
+      entry.ready = null;
     }
-    cachedBytes += bytesOf(state);
+    cachedBytes += entryBytes(entry) - previousBytes;
     entry.touchedAt = now();
     if (entry.interests > 0) {
       for (const listener of entry.listeners) listener(state);
@@ -83,16 +94,20 @@ export function createImagePreviewStore({
 
   function evict(): void {
     if (entries.size <= maxEntries && cachedBytes <= maxBytes) return;
-    for (const [path, entry] of entries) {
+    for (const [key, entry] of entries) {
       if (entry.interests > 0 || entry.running || entry.queued) continue;
-      entries.delete(path);
-      cachedBytes -= bytesOf(entry.state);
+      entries.delete(key);
+      cachedBytes -= entryBytes(entry);
       if (entries.size <= maxEntries && cachedBytes <= maxBytes) break;
     }
   }
 
-  function enqueue(path: string, force = false): void {
-    const entry = entries.get(path);
+  function entryKey(path: string, maxEdge: number, quality: number): string {
+    return `${path}\u0000${maxEdge}\u0000${quality}`;
+  }
+
+  function enqueue(key: string, force = false): void {
+    const entry = entries.get(key);
     if (!entry || disposed || entry.running || entry.queued || entry.interests === 0) return;
     if (!force && entry.ready && now() - entry.loadedAt < cacheTtlMs) {
       hits += 1;
@@ -102,14 +117,14 @@ export function createImagePreviewStore({
     misses += 1;
     entry.queued = true;
     publish(entry, { status: "loading" });
-    queue.push(path);
+    queue.push(key);
     drain();
   }
 
   function drain(): void {
     while (!disposed && active < concurrency && queue.length > 0) {
-      const path = queue.shift()!;
-      const entry = entries.get(path);
+      const key = queue.shift()!;
+      const entry = entries.get(key);
       if (!entry) continue;
       entry.queued = false;
       if (entry.interests === 0) continue;
@@ -117,7 +132,12 @@ export function createImagePreviewStore({
       active += 1;
       maxActive = Math.max(maxActive, active);
       const knownFileVersion = entry.ready?.fileVersion;
-      void entry.loader({ path, maxEdge: 640, quality: 78, knownFileVersion })
+      void entry.loader({
+        path: entry.path,
+        maxEdge: entry.maxEdge,
+        quality: entry.quality,
+        knownFileVersion,
+      })
         .then((result) => {
           if (disposed) return;
           if (result.ok && result.unchanged && entry.ready) {
@@ -128,11 +148,14 @@ export function createImagePreviewStore({
             publish(entry, { status: "error", message: result.error ?? "Could not load the image" });
             return;
           }
+          const dataUri = `data:${result.mimeType};base64,${result.base64}`;
           publish(entry, {
             status: "ready",
-            dataUri: `data:${result.mimeType};base64,${result.base64}`,
+            dataUri,
             fileVersion: result.fileVersion,
-            bytes: result.thumbnailSize ?? Math.ceil(result.base64.length * 0.75),
+            // The client retains the encoded URI, not the compressed source
+            // buffer. Count what is actually held in the JS heap.
+            bytes: dataUri.length,
           });
         })
         .catch(() => {
@@ -150,29 +173,36 @@ export function createImagePreviewStore({
     path: string,
     loader: Loader,
     listener: (state: ThumbnailState) => void,
+    options: ThumbnailOptions = {},
   ): () => void {
     if (disposed) return () => {};
-    let entry = entries.get(path);
+    const maxEdge = options.maxEdge ?? 640;
+    const quality = options.quality ?? 78;
+    const key = entryKey(path, maxEdge, quality);
+    let entry = entries.get(key);
     if (!entry) {
       entry = {
+        path, maxEdge, quality,
         state: { status: "idle" }, ready: null, listeners: new Set(), interests: 0, loader,
         timer: null, queued: false, running: false, touchedAt: now(), loadedAt: 0,
       };
-      entries.set(path, entry);
+      entries.set(key, entry);
     } else {
-      entries.delete(path);
-      entries.set(path, entry);
+      entries.delete(key);
+      entries.set(key, entry);
       entry.loader = loader;
     }
     entry.interests += 1;
     entry.listeners.add(listener);
     entry.touchedAt = now();
     listener(entry.state);
-    if (entry.state.status === "idle" || entry.state.status === "error" || !entry.ready || now() - entry.loadedAt >= cacheTtlMs) {
+    if (options.autoLoad !== false && (
+      entry.state.status === "idle" || entry.state.status === "error" || !entry.ready || now() - entry.loadedAt >= cacheTtlMs
+    )) {
       if (!entry.timer) {
         entry.timer = schedule(() => {
           entry!.timer = null;
-          enqueue(path);
+          enqueue(key);
         }, mountDelayMs);
       }
     } else {
@@ -182,7 +212,7 @@ export function createImagePreviewStore({
     return () => {
       if (released) return;
       released = true;
-      const current = entries.get(path);
+      const current = entries.get(key);
       if (!current) return;
       current.listeners.delete(listener);
       current.interests = Math.max(0, current.interests - 1);
@@ -194,10 +224,11 @@ export function createImagePreviewStore({
     };
   }
 
-  function retry(path: string): void {
-    const entry = entries.get(path);
+  function retry(path: string, options: ThumbnailOptions = {}): void {
+    const key = entryKey(path, options.maxEdge ?? 640, options.quality ?? 78);
+    const entry = entries.get(key);
     if (!entry) return;
-    enqueue(path, true);
+    enqueue(key, true);
   }
 
   function dispose(): void {
@@ -227,12 +258,13 @@ export function retainImagePreview(
   path: string,
   loader: Loader,
   listener: (state: ThumbnailState) => void,
+  options: ThumbnailOptions = {},
 ): () => void {
-  return defaultStore.retain(path, loader, listener);
+  return defaultStore.retain(path, loader, listener, options);
 }
 
-export function retryImagePreview(path: string): void {
-  defaultStore.retry(path);
+export function retryImagePreview(path: string, options: ThumbnailOptions = {}): void {
+  defaultStore.retry(path, options);
 }
 
 export function disposeImagePreviews(): void {

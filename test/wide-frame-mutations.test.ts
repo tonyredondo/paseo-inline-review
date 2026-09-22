@@ -9,16 +9,20 @@ type FakeNode = {
   dataset?: Record<string, string>;
   maxWidth?: string;
   markers?: FakeNode[];
+  marker?: boolean;
+  matches?(selector: string): boolean;
   querySelectorAll?(selector: string): ArrayLike<FakeNode>;
 };
 
-function element(maxWidth = "none", markers: FakeNode[] = []): FakeNode {
+function element(maxWidth = "none", markers: FakeNode[] = [], marker = false): FakeNode {
   return {
     parentElement: null,
     style: {},
     dataset: {},
     maxWidth,
     markers,
+    marker,
+    matches: () => marker,
     querySelectorAll: () => markers,
   };
 }
@@ -28,7 +32,6 @@ const classify = (mutations: Parameters<typeof classifyWideFrameMutations<FakeNo
   classifyWideFrameMutations<FakeNode>({
     mutations,
     markerSelector,
-    getMaxWidth: (node) => node.maxWidth ?? "none",
   });
 
 test("unrelated additions schedule no timeline scan or style repair", () => {
@@ -46,8 +49,9 @@ test("a host rewrite repairs widened styles without rescanning the document", ()
   assert.deepEqual(result.scopes, []);
 });
 
-test("new capped or marker-bearing subtrees schedule only their exact scopes", () => {
+test("new known or marker-bearing subtrees schedule only their exact scopes", () => {
   const capped = element("820px");
+  capped.dataset!.inlineReviewWide = "1";
   const marker = element();
   const subtree = element("none", [marker]);
   const duplicate = classify([
@@ -58,4 +62,14 @@ test("new capped or marker-bearing subtrees schedule only their exact scopes", (
 
   const textNode: FakeNode = { parentElement: capped };
   assert.deepEqual(classify([{ target: capped, addedNodes: [textNode] }]).scopes, [capped]);
+});
+
+test("a style rewrite inside a message repairs only that message subtree", () => {
+  const message = element("none", [], true);
+  const child = element();
+  child.parentElement = message;
+
+  const result = classify([{ target: child, attributeName: "style", addedNodes: [] }]);
+  assert.equal(result.repairWidenedStyles, false);
+  assert.deepEqual(result.scopes, [message]);
 });

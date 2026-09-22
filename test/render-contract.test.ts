@@ -99,7 +99,7 @@ test("external links open on the client and nested styles retain file handlers",
   assert.match(rendererSource, /if \(await openExternalUrlOnWeb\(url\)\) return/);
   assert.match(webSource, /web\.paseoDesktop\?\.opener\?\.openUrl/);
   assert.match(webSource, /web\.open\?\.\(url, "_blank", "noopener,noreferrer"\)/);
-  assert.equal(rendererSource.match(/accessibilityRole="link"/g)?.length, 3);
+  assert.equal(rendererSource.match(/accessibilityRole="link"/g)?.length, 2);
   const boldCase = rendererSource.slice(rendererSource.indexOf('case "bold"'), rendererSource.indexOf('case "code"'));
   assert.equal(boldCase.match(/localFileResolver=\{localFileResolver\}/g)?.length, 3);
   assert.equal(boldCase.match(/onLocalFilePress=\{onLocalFilePress\}/g)?.length, 3);
@@ -232,6 +232,10 @@ test("local markdown images load bounded thumbnails and full images stay explici
   assert.match(rendererSource, /useRpc\(localImagePreviewRpc\)/);
   assert.doesNotMatch(rendererSource, /mode: "image"/);
   assert.match(rendererSource, /retainImagePreview\(target\.path/);
+  assert.match(rendererSource, /autoLoad: !compact/);
+  assert.match(rendererSource, /const maxEdge = compact \? 320 : 640/);
+  assert.match(rendererSource, /const quality = compact \? 65 : 78/);
+  assert.match(rendererSource, /accessibilityLabel=\{state\.status === "loading" \? `Loading local image/);
   assert.match(rendererSource, /source=\{\{ uri: dataUri \}\}/);
   assert.match(rendererSource, />Open full image<\/Text>/);
   assert.match(rendererSource, /localImageCard:[\s\S]{0,200}alignSelf: "flex-start"/);

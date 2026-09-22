@@ -5,9 +5,13 @@ import {
   getTurnFinalCardPosition,
   isTurnFinalMessage,
   isTurnFinalText,
+  mountTurnFinalFragment,
   retainTurnFinalFragment,
   retainTurnIndex,
+  subscribeTurnFinalFragments,
   subscribeTurnIndex,
+  turnFinalFragmentDiagnostics,
+  updateTurnAgentStatus,
 } from "../client/turn-final-store.ts";
 
 after(() => disposeTurnIndexes());
@@ -165,6 +169,55 @@ test("live fragments sharing the final id form one continuous card", async () =>
   releaseIndex();
 });
 
+test("streaming fragment text updates do not fan out to every sibling", async () => {
+  const agentId = `fragment-updates-${Date.now()}`;
+  let notifications = 0;
+  const unsubscribe = subscribeTurnFinalFragments(agentId, () => { notifications += 1; });
+  const mounted = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "stream",
+    messageId: "message",
+    text: "start",
+    timestamp: 1,
+  });
+  for (let index = 0; index < 100; index += 1) {
+    mounted.update({ messageId: "message", text: `stream ${index}`, timestamp: 1 });
+  }
+  assert.equal(notifications, 1);
+  mounted.release();
+  assert.equal(notifications, 2);
+  unsubscribe();
+});
+
+test("final card positions are built once per fragment and index version", async () => {
+  const agentId = `position-cache-${Date.now()}`;
+  const timeline = {
+    subscribe(): () => void { return () => {}; },
+    async refetch() {
+      return {
+        entries: [{
+          item: { type: "assistant_message", messageId: "shared", text: "first\n\nlast" },
+          turnId: "turn",
+          seqEnd: 3,
+        }],
+        agent: { status: "idle" },
+        hasOlder: false,
+      };
+    },
+  };
+  const releaseIndex = retainTurnIndex(agentId, timeline, 0);
+  const first = mountTurnFinalFragment({ agentId, sourceKey: "first", messageId: "shared", text: "first", timestamp: 1 });
+  const last = mountTurnFinalFragment({ agentId, sourceKey: "last", messageId: "shared", text: "last", timestamp: 2 });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(getTurnFinalCardPosition(agentId, "first"), "start");
+  assert.equal(getTurnFinalCardPosition(agentId, "last"), "end");
+  assert.equal(getTurnFinalCardPosition(agentId, "first"), "start");
+  assert.deepEqual(turnFinalFragmentDiagnostics(agentId), { positionBuilds: 1 });
+  last.release();
+  first.release();
+  releaseIndex();
+});
+
 test("a completed turn marks only the assistant message after its final tool call", async () => {
   const agentId = `turn-tool-tail-${Date.now()}`;
   let agentStatus = "running";
@@ -224,6 +277,114 @@ test("a completed turn marks only the assistant message after its final tool cal
   assert.equal(isTurnFinalMessage(agentId, "final"), true);
   assert.equal(isTurnFinalText(agentId, "Finished."), true);
   release();
+});
+
+test("a running completed-looking tail does not poll indefinitely without an event", async () => {
+  const agentId = `no-running-poll-${Date.now()}`;
+  let calls = 0;
+  const timeline = {
+    subscribe(): () => void { return () => {}; },
+    async refetch() {
+      calls += 1;
+      return {
+        entries: [{
+          item: { type: "assistant_message", messageId: "tail", text: "provisional" },
+          turnId: "turn-1",
+          seqEnd: 1,
+        }],
+        agent: { status: "running" },
+        hasOlder: false,
+      };
+    },
+  };
+
+  const release = retainTurnIndex(agentId, timeline, 0);
+  await new Promise<void>((resolve) => setTimeout(resolve, 950));
+  assert.equal(calls, 1);
+  release();
+});
+
+test("an agent status event finalizes the tail without another timeline request", async () => {
+  const agentId = `status-finality-${Date.now()}`;
+  let calls = 0;
+  const timeline = {
+    subscribe(): () => void { return () => {}; },
+    async refetch() {
+      calls += 1;
+      return {
+        entries: [{
+          item: { type: "assistant_message", messageId: "tail", text: "done" },
+          turnId: "turn-1",
+          seqEnd: 1,
+        }],
+        agent: { status: "running" },
+        hasOlder: false,
+      };
+    },
+  };
+
+  const release = retainTurnIndex(agentId, timeline, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(isTurnFinalMessage(agentId, "tail"), false);
+  updateTurnAgentStatus(agentId, "idle");
+  assert.equal(isTurnFinalMessage(agentId, "tail"), true);
+  assert.equal(calls, 1);
+  release();
+});
+
+test("a live idle snapshot wins over an older timeline response", async () => {
+  const agentId = `status-race-${Date.now()}`;
+  type StatusPage = {
+    entries: Array<{ item: { type: string; messageId: string; text: string }; turnId: string; seqEnd: number }>;
+    agent: { status: string };
+    hasOlder: boolean;
+  };
+  let resolveTimeline: ((page: StatusPage) => void) | null = null;
+  const timeline = {
+    subscribe(): () => void { return () => {}; },
+    refetch() {
+      return new Promise<StatusPage>((resolve) => { resolveTimeline = resolve; });
+    },
+  };
+
+  const release = retainTurnIndex(agentId, timeline, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  updateTurnAgentStatus(agentId, "idle");
+  (resolveTimeline as unknown as (page: StatusPage) => void)({
+    entries: [{
+      item: { type: "assistant_message", messageId: "tail", text: "done" },
+      turnId: "turn-1",
+      seqEnd: 1,
+    }],
+    agent: { status: "running" },
+    hasOlder: false,
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(isTurnFinalMessage(agentId, "tail"), true);
+  release();
+});
+
+test("a retained index performs no refetch after its last consumer releases", async () => {
+  const agentId = `inactive-index-${Date.now()}`;
+  let calls = 0;
+  let notify: (() => void) | null = null;
+  const timeline = {
+    subscribe(handler: (message: unknown) => void): () => void {
+      notify = () => handler(undefined);
+      return () => {};
+    },
+    async refetch() {
+      calls += 1;
+      return { entries: [], agent: { status: "idle" }, hasOlder: false };
+    },
+  };
+
+  const release = retainTurnIndex(agentId, timeline, 2_000);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  release();
+  (notify as unknown as () => void)();
+  await new Promise<void>((resolve) => setTimeout(resolve, 450));
+  assert.equal(calls, 1);
 });
 
 test("overlapping refresh requests are serialized and keep a trailing refresh", async () => {

@@ -35,6 +35,7 @@ type WNode = {
   setAttribute(name: string, value: string): void;
   insertBefore(node: WNode, before: WNode | null): void;
   remove(): void;
+  matches?(selector: string): boolean;
   querySelectorAll?(selector: string): ArrayLike<WNode>;
 };
 type WDoc = {
@@ -83,14 +84,21 @@ let userCardBorder = "#30363d";
  * user messages right-aligned. Image attachments remain owned by the host,
  * but sit in a rail above the card instead of inside its painted surface.
  */
-function styleUserMessages(doc: WDoc, win: WWin): void {
+function queryWithin(root: WDoc | WNode, selector: string): WNode[] {
+  const result = root.querySelectorAll ? Array.from(root.querySelectorAll(selector)) : [];
+  const node = root as WNode;
+  if (typeof node.matches === "function" && node.matches(selector)) result.unshift(node);
+  return result;
+}
+
+function styleUserMessages(root: WDoc | WNode, win: WWin, doc: WDoc): void {
   type UNode = WNode & {
     querySelectorAll(selector: string): ArrayLike<WNode>;
   };
   type UWin = {
     getComputedStyle(el: WNode): { maxWidth: string; backgroundColor: string };
   };
-  const nodes = doc.querySelectorAll('[data-testid="user-message"]');
+  const nodes = queryWithin(root, '[data-testid="user-message"]');
   const cs = win as unknown as UWin;
   for (const el of Array.from(nodes)) {
     el.style.borderRadius = "8px";
@@ -291,8 +299,8 @@ function styleUserMessages(doc: WDoc, win: WWin): void {
  * Tightens the gap under the collapsed tool-call row ("Ran N commands"):
  * the host wrapper carries a 16px bottom margin.
  */
-function tightenToolCallRows(doc: WDoc): void {
-  const badges = doc.querySelectorAll('[data-testid="tool-call-group"]');
+function tightenToolCallRows(root: WDoc | WNode): void {
+  const badges = queryWithin(root, '[data-testid="tool-call-group"]');
   for (const badge of Array.from(badges)) {
     const parent = badge.parentElement;
     if (parent) {
@@ -410,20 +418,29 @@ function unstyleUserMessages(doc: WDoc): void {
 }
 
 let undo: (() => void) | null = null;
+let installedDocument: WDoc | null = null;
+let refreshInstalled: ((colors?: WideFrameColors) => void) | null = null;
+
+function applyUserCardColors(colors?: WideFrameColors): void {
+  if (!colors) return;
+  if (colors.accent) userCardAccent = colors.accent;
+  if (colors.raised) userCardRaised = colors.raised;
+  if (colors.border) userCardBorder = colors.border;
+}
 
 /** Installs the web widening pass (idempotent). Colors refresh card styling. */
 export function ensureWideFrame(colors?: WideFrameColors): void {
-  if (undo) {
-    // A workspace/timeline re-entry can replace the observed DOM subtree while
-    // this host-wide installation remains alive. Reinstall synchronously so the
-    // current document is scanned and the observer follows its new root instead
-    // of waiting for the adaptive fallback sweep.
-    undoWideFrame();
-  }
   if (Platform.OS !== "web") return;
   const g = globalThis as unknown as WWin & { document?: WDoc };
   const doc = g.document;
   if (!doc || typeof g.getComputedStyle !== "function") return;
+  if (undo && installedDocument === doc && refreshInstalled) {
+    refreshInstalled(colors);
+    return;
+  }
+  if (undo) undoWideFrame();
+  installedDocument = doc;
+  applyUserCardColors(colors);
 
   const widened = new Set<WNode>();
   let paneWidthCache = 0;
@@ -447,6 +464,7 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   let fullSweep = false;
   let stylePassPending = false;
   let disposed = false;
+  const markerSelector = '[data-testid="inline-review-root"], [data-testid="user-message"], [data-testid="tool-call-group"]';
   const requestRun = (): void => {
     if (raf) return;
     raf = g.requestAnimationFrame(() => {
@@ -478,19 +496,19 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   };
 
   const scanCandidates = (root: WNode | WDoc | null): WNode[] => {
-    type SNode = WNode & {
-      querySelectorAll(selector: string): ArrayLike<WNode>;
-    };
-    const target = (root ?? doc) as unknown as SNode;
-    if (!target.querySelectorAll) return root ? [target as unknown as WNode] : [];
-    // Candidates: EVERY element (max-width 820px can sit on any wrapper),
-    // but scoped to the changed subtree instead of the whole document.
-    if (root === null || (root as unknown as SNode) === (doc as unknown as SNode)) {
-      return Array.from(target.querySelectorAll("*"));
+    const scope = root ?? doc;
+    const candidates = new Set<WNode>();
+    if (root && root !== (doc as unknown as WNode)) candidates.add(root as WNode);
+    for (const marker of queryWithin(scope, markerSelector)) {
+      for (let current: WNode | null = marker; current; current = current.parentElement) {
+        candidates.add(current);
+        // A marker may be inserted after its capped wrapper. Climb to the
+        // stable body boundary so that wrapper is discovered without reading
+        // layout for every unrelated mutation observed elsewhere in the app.
+        if (current === doc.body) break;
+      }
     }
-    const found = Array.from(target.querySelectorAll("*"));
-    found.unshift(target as unknown as WNode);
-    return found;
+    return [...candidates];
   };
 
   /** Cheap re-apply of already-computed widening (host re-renders wipe it). */
@@ -501,8 +519,6 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
       for (const el of widened) {
         if (el.style.maxWidth !== target) el.style.maxWidth = target;
       }
-      styleUserMessages(doc, g);
-      tightenToolCallRows(doc);
     }
   };
 
@@ -536,15 +552,15 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
       if (el.style.maxWidth !== target) el.style.maxWidth = target;
     }
     // User messages: review-card look (re-applied; host re-renders wipe it).
-    styleUserMessages(doc, g);
-    tightenToolCallRows(doc);
+    const styleRoot = scope ?? doc;
+    styleUserMessages(styleRoot, g, doc);
+    tightenToolCallRows(styleRoot);
   };
 
-  if (colors) {
-    if (colors.accent) userCardAccent = colors.accent;
-    if (colors.raised) userCardRaised = colors.raised;
-    if (colors.border) userCardBorder = colors.border;
-  }
+  refreshInstalled = (nextColors?: WideFrameColors): void => {
+    applyUserCardColors(nextColors);
+    apply();
+  };
   const observerCbs: Array<() => void> = [];
   apply();
   // Zoom hook: browser/app zoom changes devicePixelRatio (the layout width
@@ -578,18 +594,25 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   // "old width" flash while items mount.
   const Observer = g.MutationObserver;
   if (Observer && doc.body) {
-    const markerSelector = '[data-testid="inline-review-root"], [data-testid="user-message"], [data-testid="tool-call-group"]';
-    const markerNodes = Array.from(doc.querySelectorAll(markerSelector));
-    const ancestry = (node: WNode): WNode[] => {
-      const result: WNode[] = [];
-      for (let current: WNode | null = node; current; current = current.parentElement) result.push(current);
-      return result;
-    };
-    const firstAncestors = markerNodes[0] ? ancestry(markerNodes[0]) : [];
-    const observerRoot = firstAncestors.find((candidate) =>
-      markerNodes.every((node) => ancestry(node).includes(candidate)),
-    ) ?? doc.body;
-    const adaptiveSweep = createAdaptiveSweep({ run: () => schedule() });
+    const observerRoot = doc.body;
+    const adaptiveSweep = createAdaptiveSweep({
+      run: () => {
+        const paneWidth = paneWidthCache;
+        const target = paneWidth >= 900 ? `${paneWidth - BREATHING}px` : "";
+        if (target && [...widened].some((element) => element.style.maxWidth !== target)) {
+          scheduleStyleOnly();
+        }
+        for (const marker of Array.from(doc.querySelectorAll(markerSelector))) {
+          if (
+            marker.dataset.inlineReviewUser !== "1" &&
+            marker.dataset.inlineReviewTight !== "1" &&
+            marker.parentElement?.dataset.inlineReviewTight !== "1"
+          ) {
+            schedule(marker);
+          }
+        }
+      },
+    });
     adaptiveSweep.start();
     observerCbs.push(() => adaptiveSweep.stop());
     const observer = new Observer((raw: unknown) => {
@@ -601,7 +624,6 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
       const work = classifyWideFrameMutations<WNode>({
         mutations,
         markerSelector,
-        getMaxWidth: (element) => g.getComputedStyle(element).maxWidth,
       });
       if (work.repairWidenedStyles) scheduleStyleOnly();
       for (const scope of work.scopes) schedule(scope);
@@ -633,10 +655,16 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     unstyleUserMessages(doc);
     loosenToolCallRows(doc);
     for (const cb of observerCbs) cb();
+    if (installedDocument === doc) {
+      installedDocument = null;
+      refreshInstalled = null;
+    }
   };
 }
 
 export function undoWideFrame(): void {
   undo?.();
   undo = null;
+  installedDocument = null;
+  refreshInstalled = null;
 }

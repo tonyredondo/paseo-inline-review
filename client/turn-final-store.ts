@@ -36,11 +36,6 @@ type Entry = {
   text: string | null;
 };
 
-type FinalSelection = {
-  entries: Entry[];
-  awaitingTurnEnd: boolean;
-};
-
 function sameSet(current: Set<string>, next: Set<string>): boolean {
   if (current.size !== next.size) return false;
   for (const item of next) if (!current.has(item)) return false;
@@ -68,7 +63,10 @@ async function refetchWithTimeout(
 interface AgentTurnIndex {
   readonly version: number;
   start(): void;
+  pause(): void;
+  resume(): void;
   stop(): void;
+  setAgentStatus(status: string | undefined): void;
   subscribe(cb: () => void): () => void;
   isFinal(messageId: string | null): boolean;
   isFinalText(text: string | null): boolean;
@@ -78,12 +76,16 @@ interface AgentTurnIndex {
 function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   let finalIds = new Set<string>();
   let finalTexts = new Set<string>();
-  let olderEntries: Entry[] = [];
-  let tailEntries: Entry[] = [];
+  const olderEntries = new Map<number, Entry>();
+  const tailEntries = new Map<number, Entry>();
+  let orderedEntries: Entry[] | null = null;
+  let knownAssistantIds = new Set<string>();
+  let knownAssistantTexts = new Set<string>();
   let olderComplete = false;
   let olderCursor: TimelineCursor | null = null;
   let timelineEpoch: string | null = null;
-  let latestAgentStatus: string | undefined;
+  let timelineAgentStatus: string | undefined;
+  let snapshotAgentStatus: string | undefined;
   let backfillInFlight: Promise<void> | null = null;
   const requestedMessages = new Map<string, { id: string | null; text: string | null }>();
   let version = 0;
@@ -93,6 +95,8 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   let refreshInFlight: Promise<void> | null = null;
   let refreshQueued = false;
   let started = false;
+  let active = false;
+  let refreshWhilePaused = false;
   let stopped = false;
   const listeners = new Set<() => void>();
 
@@ -117,7 +121,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     return entries;
   }
 
-  function selectFinalEntries(entries: Entry[], agentStatus: string | undefined): FinalSelection {
+  function selectFinalEntries(entries: Entry[], agentStatus: string | undefined): Entry[] {
     const selected: Entry[] = [];
     const turns = new Map<string, {
       firstSeq: number;
@@ -140,7 +144,6 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     const orderedTurns = [...turns.values()].sort((a, b) => a.firstSeq - b.firstSeq);
     const active = agentStatus === "running" || agentStatus === "initializing";
     const latestTurnClosed = agentStatus !== undefined && !active;
-    let awaitingTurnEnd = false;
     for (let index = 0; index < orderedTurns.length; index += 1) {
       const turn = orderedTurns[index];
       const assistantEndsTurn = turn.lastAssistant !== null && turn.lastAssistant.seq > turn.lastToolSeq;
@@ -148,10 +151,6 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       const isLatestTurn = index === orderedTurns.length - 1;
       if (!isLatestTurn || latestTurnClosed) {
         selected.push(turn.lastAssistant!);
-      } else {
-        // The final text often arrives just before the agent snapshot becomes
-        // idle, with no later timeline event. Poll only during this short gap.
-        awaitingTurnEnd = true;
       }
     }
 
@@ -175,21 +174,40 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     }
     if (anonymousAssistant && anonymousAssistant.seq > anonymousToolSeq) {
       if (latestTurnClosed) selected.push(anonymousAssistant);
-      else awaitingTurnEnd = true;
     }
-    return { entries: selected, awaitingTurnEnd };
+    return selected;
+  }
+
+  function invalidateEntries(): void {
+    orderedEntries = null;
+    knownAssistantIds = new Set();
+    knownAssistantTexts = new Set();
+    const indexAssistant = (entry: Entry): void => {
+      if (entry.kind !== "assistant") return;
+      if (entry.id !== null) knownAssistantIds.add(entry.id);
+      if (entry.text !== null) knownAssistantTexts.add(entry.text);
+    };
+    for (const entry of olderEntries.values()) indexAssistant(entry);
+    for (const entry of tailEntries.values()) indexAssistant(entry);
   }
 
   function allEntries(): Entry[] {
-    const list = [...olderEntries, ...tailEntries].sort((a, b) => a.seq - b.seq);
-    return list.filter((entry, index) => index === 0 || entry.seq !== list[index - 1].seq);
+    if (orderedEntries) return orderedEntries;
+    const merged = new Map(olderEntries);
+    for (const [seq, entry] of tailEntries) merged.set(seq, entry);
+    orderedEntries = [...merged.values()].sort((a, b) => a.seq - b.seq);
+    return orderedEntries;
   }
 
   function isKnown(request: { id: string | null; text: string | null }): boolean {
-    return allEntries().some((entry) => entry.kind === "assistant" && (
-      (request.id !== null && entry.id === request.id) ||
-      (request.text !== null && entry.text === request.text)
-    ));
+    return (
+      (request.id !== null && knownAssistantIds.has(request.id)) ||
+      (request.text !== null && knownAssistantTexts.has(request.text))
+    );
+  }
+
+  function effectiveAgentStatus(): string | undefined {
+    return snapshotAgentStatus ?? timelineAgentStatus;
   }
 
   function publishFinals(): void {
@@ -203,12 +221,11 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
 
     const nextIds = new Set<string>();
     const nextTexts = new Set<string>();
-    const selection = selectFinalEntries(deduped, latestAgentStatus);
-    for (const entry of selection.entries) {
+    const selection = selectFinalEntries(deduped, effectiveAgentStatus());
+    for (const entry of selection) {
       if (entry.text) nextTexts.add(entry.text);
       if (entry.id && idCounts.get(entry.id) === 1) nextIds.add(entry.id);
     }
-    if (selection.awaitingTurnEnd) scheduleRefresh();
     if (sameSet(finalIds, nextIds) && sameSet(finalTexts, nextTexts)) return;
     finalIds = nextIds;
     finalTexts = nextTexts;
@@ -242,14 +259,17 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
           );
           if (!page || stopped) return;
           if (page.startCursor?.epoch && timelineEpoch && page.startCursor.epoch !== timelineEpoch) {
-            olderEntries = [];
+            olderEntries.clear();
+            invalidateEntries();
             olderComplete = false;
             olderCursor = null;
             scheduleRefresh(0);
             return;
           }
-          olderEntries.push(...parseEntries(page));
-          olderEntries = allEntries().filter((entry) => !tailEntries.some((tail) => tail.seq === entry.seq));
+          for (const entry of parseEntries(page)) {
+            if (!tailEntries.has(entry.seq)) olderEntries.set(entry.seq, entry);
+          }
+          invalidateEntries();
           olderCursor = page.startCursor ?? null;
           olderComplete = page.hasOlder === false || olderCursor === null;
           pages += 1;
@@ -269,7 +289,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   }
 
   function scheduleRefresh(delayMs = 400): void {
-    if (stopped || refreshTimer) return;
+    if (stopped || !active || refreshTimer) return;
     refreshTimer = setTimeout(() => {
       refreshTimer = null;
       void refresh();
@@ -277,7 +297,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   }
 
   async function refreshOnce(): Promise<void> {
-    if (stopped) return;
+    if (stopped || !active) return;
     try {
       let payload: TimelinePage | null = null;
       const attempts = [
@@ -293,16 +313,19 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
 
       const nextEpoch = payload.startCursor?.epoch ?? null;
       if (timelineEpoch && nextEpoch && nextEpoch !== timelineEpoch) {
-        olderEntries = [];
+        olderEntries.clear();
         finalIds = new Set();
         finalTexts = new Set();
       }
       if (nextEpoch) timelineEpoch = nextEpoch;
-      tailEntries = parseEntries(payload);
-      latestAgentStatus = payload.agent?.status;
+      tailEntries.clear();
+      for (const entry of parseEntries(payload)) tailEntries.set(entry.seq, entry);
+      invalidateEntries();
+      timelineAgentStatus = payload.agent?.status;
       olderCursor = payload.startCursor ?? null;
       if (payload.hasOlder === false || olderCursor === null) {
-        olderEntries = [];
+        olderEntries.clear();
+        invalidateEntries();
         olderComplete = true;
       } else {
         olderComplete = false;
@@ -338,9 +361,16 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   function start(): void {
     if (started) return;
     started = true;
+    active = true;
     stopped = false;
     try {
-      const cleanup = timeline.subscribe(() => scheduleRefresh());
+      const cleanup = timeline.subscribe(() => {
+        if (!active) {
+          refreshWhilePaused = true;
+          return;
+        }
+        scheduleRefresh();
+      });
       if (typeof cleanup === "function") timelineUnsubscribe = cleanup as () => void;
     } catch {
       pollTimer = setInterval(() => void refresh(), 5000);
@@ -348,9 +378,31 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     void refresh();
   }
 
+  function pause(): void {
+    if (stopped || !active) return;
+    active = false;
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = null;
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  function resume(): void {
+    if (stopped || active) return;
+    active = true;
+    if (!timelineUnsubscribe && !pollTimer) {
+      pollTimer = setInterval(() => void refresh(), 5000);
+    }
+    if (refreshWhilePaused) {
+      refreshWhilePaused = false;
+      scheduleRefresh(0);
+    }
+  }
+
   function stop(): void {
     if (stopped) return;
     stopped = true;
+    active = false;
     if (refreshTimer) clearTimeout(refreshTimer);
     if (pollTimer) clearInterval(pollTimer);
     refreshTimer = null;
@@ -365,7 +417,14 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       return version;
     },
     start,
+    pause,
+    resume,
     stop,
+    setAgentStatus(status: string | undefined): void {
+      if (snapshotAgentStatus === status) return;
+      snapshotAgentStatus = status;
+      publishFinals();
+    },
     subscribe(cb: () => void): () => void {
       listeners.add(cb);
       return () => listeners.delete(cb);
@@ -411,6 +470,12 @@ type TurnFinalFragment = {
 const finalFragments = new Map<string, Map<string, TurnFinalFragment>>();
 const finalFragmentListeners = new Map<string, Set<() => void>>();
 const finalFragmentVersions = new Map<string, number>();
+const finalFragmentPositionCache = new Map<string, {
+  fragmentVersion: number;
+  indexVersion: number;
+  positions: Map<string, TurnFinalCardPosition>;
+}>();
+const finalFragmentPositionBuilds = new Map<string, number>();
 let nextFinalFragmentOrder = 1;
 
 function hasRenderableText(text: string): boolean {
@@ -423,39 +488,72 @@ function hasRenderableText(text: string): boolean {
 
 function notifyFinalFragments(agentId: string): void {
   finalFragmentVersions.set(agentId, (finalFragmentVersions.get(agentId) ?? 0) + 1);
+  finalFragmentPositionCache.delete(agentId);
   for (const listener of finalFragmentListeners.get(agentId) ?? []) listener();
 }
 
-/** Tracks the still-separate live rows which Paseo later collapses in history. */
-export function retainTurnFinalFragment(input: {
+export type TurnFinalFragmentInput = {
   agentId: string;
   sourceKey: string;
   messageId: string | null;
   text: string;
   timestamp: number;
-}): () => void {
+};
+
+/**
+ * Tracks one mounted row and updates it in place. Ordinary streaming text does
+ * not change card topology, so it must not notify every sibling row.
+ */
+export function mountTurnFinalFragment(input: TurnFinalFragmentInput): {
+  update(next: Omit<TurnFinalFragmentInput, "agentId" | "sourceKey">): void;
+  release(): void;
+} {
   const fragments = finalFragments.get(input.agentId) ?? new Map<string, TurnFinalFragment>();
   const token = Symbol(input.sourceKey);
-  const existing = fragments.get(input.sourceKey);
-  fragments.set(input.sourceKey, {
-    sourceKey: input.sourceKey,
-    messageId: input.messageId,
-    text: input.text,
-    timestamp: input.timestamp,
-    order: existing?.order ?? nextFinalFragmentOrder++,
-    visible: hasRenderableText(input.text),
-    token,
-  });
   finalFragments.set(input.agentId, fragments);
-  stores.get(input.agentId)?.index.ensureKnown(input.messageId, input.text);
-  notifyFinalFragments(input.agentId);
-  return () => {
-    const current = finalFragments.get(input.agentId)?.get(input.sourceKey);
-    if (!current || current.token !== token) return;
-    fragments.delete(input.sourceKey);
-    if (fragments.size === 0) finalFragments.delete(input.agentId);
-    notifyFinalFragments(input.agentId);
+
+  function update(next: Omit<TurnFinalFragmentInput, "agentId" | "sourceKey">): void {
+    const existing = fragments.get(input.sourceKey);
+    if (existing && existing.token !== token) return;
+    const index = stores.get(input.agentId)?.index;
+    const visible = hasRenderableText(next.text);
+    const oldFinalText = existing ? (index?.isFinalText(existing.text) ?? false) : false;
+    const nextFinalText = index?.isFinalText(next.text) ?? false;
+    const topologyChanged = !existing ||
+      existing.messageId !== next.messageId ||
+      existing.timestamp !== next.timestamp ||
+      existing.visible !== visible ||
+      oldFinalText !== nextFinalText;
+    fragments.set(input.sourceKey, {
+      sourceKey: input.sourceKey,
+      messageId: next.messageId,
+      text: next.text,
+      timestamp: next.timestamp,
+      order: existing?.order ?? nextFinalFragmentOrder++,
+      visible,
+      token,
+    });
+    index?.ensureKnown(next.messageId, next.text);
+    if (topologyChanged) notifyFinalFragments(input.agentId);
+  }
+
+  update(input);
+  return {
+    update,
+    release(): void {
+      const current = finalFragments.get(input.agentId)?.get(input.sourceKey);
+      if (!current || current.token !== token) return;
+      fragments.delete(input.sourceKey);
+      if (fragments.size === 0) finalFragments.delete(input.agentId);
+      notifyFinalFragments(input.agentId);
+    },
   };
+}
+
+/** Compatibility helper for tests and one-shot consumers. */
+export function retainTurnFinalFragment(input: TurnFinalFragmentInput): () => void {
+  const mounted = mountTurnFinalFragment(input);
+  return () => mounted.release();
 }
 
 export function subscribeTurnFinalFragments(agentId: string, listener: () => void): () => void {
@@ -480,23 +578,50 @@ export function getTurnFinalCardPosition(
   agentId: string,
   sourceKey: string,
 ): TurnFinalCardPosition {
-  const fragment = finalFragments.get(agentId)?.get(sourceKey);
+  const fragments = finalFragments.get(agentId);
   const index = stores.get(agentId)?.index;
-  if (!fragment || !fragment.visible || !index) return "none";
-  if (index.isFinalText(fragment.text)) return "single";
-  if (!index.isFinal(fragment.messageId)) return "none";
+  if (!fragments || !index) return "none";
+  const fragmentVersion = finalFragmentVersions.get(agentId) ?? 0;
+  const cached = finalFragmentPositionCache.get(agentId);
+  if (cached && cached.fragmentVersion === fragmentVersion && cached.indexVersion === index.version) {
+    return cached.positions.get(sourceKey) ?? "none";
+  }
 
-  const siblings = [...(finalFragments.get(agentId)?.values() ?? [])]
-    .filter((candidate) => candidate.visible && candidate.messageId === fragment.messageId)
-    .sort((a, b) => a.timestamp - b.timestamp || a.order - b.order);
-  const consolidated = siblings.find((candidate) => index.isFinalText(candidate.text));
-  if (consolidated) return consolidated.sourceKey === sourceKey ? "single" : "none";
-  const position = siblings.findIndex((candidate) => candidate.sourceKey === sourceKey);
-  if (position < 0) return "none";
-  if (siblings.length === 1) return "single";
-  if (position === 0) return "start";
-  if (position === siblings.length - 1) return "end";
-  return "middle";
+  const positions = new Map<string, TurnFinalCardPosition>();
+  const groups = new Map<string, TurnFinalFragment[]>();
+  for (const fragment of fragments.values()) {
+    if (!fragment.visible) continue;
+    if (fragment.messageId !== null && index.isFinal(fragment.messageId)) {
+      const siblings = groups.get(fragment.messageId) ?? [];
+      siblings.push(fragment);
+      groups.set(fragment.messageId, siblings);
+    } else if (index.isFinalText(fragment.text)) {
+      positions.set(fragment.sourceKey, "single");
+    }
+  }
+  for (const siblings of groups.values()) {
+    const consolidated = siblings.find((candidate) => index.isFinalText(candidate.text));
+    if (consolidated) {
+      positions.set(consolidated.sourceKey, "single");
+      continue;
+    }
+    siblings.sort((a, b) => a.timestamp - b.timestamp || a.order - b.order);
+    siblings.forEach((fragment, position) => {
+      positions.set(
+        fragment.sourceKey,
+        siblings.length === 1
+          ? "single"
+          : position === 0
+            ? "start"
+            : position === siblings.length - 1
+              ? "end"
+              : "middle",
+      );
+    });
+  }
+  finalFragmentPositionBuilds.set(agentId, (finalFragmentPositionBuilds.get(agentId) ?? 0) + 1);
+  finalFragmentPositionCache.set(agentId, { fragmentVersion, indexVersion: index.version, positions });
+  return positions.get(sourceKey) ?? "none";
 }
 
 const TURN_INDEX_GRACE_MS = 120_000;
@@ -535,6 +660,7 @@ export function retainTurnIndex(
   }
   if (stored.disposalTimer) clearTimeout(stored.disposalTimer);
   stored.disposalTimer = null;
+  if (stored.references === 0) stored.index.resume();
   stored.references += 1;
   let released = false;
   return () => {
@@ -544,6 +670,7 @@ export function retainTurnIndex(
     if (!current) return;
     current.references -= 1;
     if (current.references > 0) return;
+    current.index.pause();
     if (graceMs <= 0) {
       disposeStoredIndex(agentId, current);
       return;
@@ -563,6 +690,8 @@ export function disposeTurnIndexes(): void {
   finalFragments.clear();
   finalFragmentListeners.clear();
   finalFragmentVersions.clear();
+  finalFragmentPositionCache.clear();
+  finalFragmentPositionBuilds.clear();
 }
 
 export function subscribeTurnIndex(agentId: string, cb: () => void): () => void {
@@ -585,4 +714,13 @@ export function isTurnFinalMessage(agentId: string, messageId: string | null): b
 
 export function isTurnFinalText(agentId: string, text: string | null): boolean {
   return stores.get(agentId)?.index.isFinalText(text) ?? false;
+}
+
+/** Applies the host agent snapshot without waiting for another timeline RPC. */
+export function updateTurnAgentStatus(agentId: string, status: string | undefined): void {
+  stores.get(agentId)?.index.setAgentStatus(status);
+}
+
+export function turnFinalFragmentDiagnostics(agentId: string): { positionBuilds: number } {
+  return { positionBuilds: finalFragmentPositionBuilds.get(agentId) ?? 0 };
 }

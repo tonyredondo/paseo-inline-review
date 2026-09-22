@@ -70,6 +70,33 @@ test("release before the mount delay performs no request or stale publication", 
   store.dispose();
 });
 
+test("a compact manual preview performs no request until explicitly requested", async () => {
+  let calls = 0;
+  let requestedEdge = 0;
+  let requestedQuality = 0;
+  const store = createImagePreviewStore({ mountDelayMs: 0 });
+  const release = store.retain(
+    "manual.png",
+    async (input) => {
+      calls += 1;
+      requestedEdge = input.maxEdge;
+      requestedQuality = input.quality;
+      return ready();
+    },
+    () => {},
+    { autoLoad: false, maxEdge: 320, quality: 65 },
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  assert.equal(calls, 0);
+  store.retry("manual.png", { maxEdge: 320, quality: 65 });
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  assert.equal(calls, 1);
+  assert.equal(requestedEdge, 320);
+  assert.equal(requestedQuality, 65);
+  release();
+  store.dispose();
+});
+
 test("cache is byte bounded and retry recovers a processor error", async () => {
   let calls = 0;
   const store = createImagePreviewStore({ mountDelayMs: 0, maxEntries: 2, maxBytes: 15 });
@@ -93,6 +120,42 @@ test("cache is byte bounded and retry recovers a processor error", async () => {
   }
   assert.ok(store.diagnostics().cachedBytes <= 15);
   assert.ok(store.diagnostics().entries <= 2);
+  store.dispose();
+});
+
+test("cache accounting includes the retained data URI instead of compressed source bytes", async () => {
+  const store = createImagePreviewStore({ mountDelayMs: 0 });
+  const release = store.retain("memory.png", async () => ready("v1", 1), () => {});
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  assert.ok(store.diagnostics().cachedBytes >= "data:image/webp;base64,AAAA".length);
+  release();
+  store.dispose();
+});
+
+test("revalidation keeps stale ready memory charged and clears it after an error", async () => {
+  let now = 0;
+  let calls = 0;
+  let resolveSecond: ((value: { ok: false; error: string }) => void) | null = null;
+  const store = createImagePreviewStore({ mountDelayMs: 0, cacheTtlMs: 10, now: () => now });
+  const loader = async () => {
+    calls += 1;
+    if (calls === 1) return ready("v1", 1);
+    return new Promise<{ ok: false; error: string }>((resolve) => { resolveSecond = resolve; });
+  };
+  const releaseFirst = store.retain("stale.png", loader, () => {});
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  releaseFirst();
+  const charged = store.diagnostics().cachedBytes;
+  assert.ok(charged > 1);
+
+  now = 20;
+  const releaseSecond = store.retain("stale.png", loader, () => {});
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  assert.equal(store.diagnostics().cachedBytes, charged);
+  (resolveSecond as unknown as (value: { ok: false; error: string }) => void)({ ok: false, error: "failed" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(store.diagnostics().cachedBytes, 0);
+  releaseSecond();
   store.dispose();
 });
 

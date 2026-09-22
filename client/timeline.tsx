@@ -12,12 +12,13 @@ import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-
 import { openFileTab } from "./preview-store";
 import {
   getTurnFinalCardPosition,
+  mountTurnFinalFragment,
   retainTurnIndex,
-  retainTurnFinalFragment,
   subscribeTurnIndex,
   subscribeTurnFinalFragments,
   turnFinalFragmentVersion,
   turnIndexVersion,
+  updateTurnAgentStatus,
 } from "./turn-final-store";
 import { z } from "zod";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
@@ -51,8 +52,8 @@ import {
   updateComment,
 } from "./review-store";
 import { FileCodeBlock, MarkdownText } from "./markdown";
-import { extractRefDefs } from "../shared/markdown-parse";
 import { downloadLocalFileProgressively, formatFileSize } from "./file-download";
+import { createStableReferenceDefinitions } from "./markdown-stream";
 import { createStreamingTextCoalescer } from "./stream-text";
 import { DownloadCancelledError } from "./web";
 import { WideFrameController, useWideFrameControllerOwner } from "./wide-frame-controller";
@@ -538,13 +539,6 @@ function ReviewAssistantMessage({
     () => turnFinalFragmentVersion(agentId),
   );
   const timestampValue = timestamp.getTime();
-  useEffect(() => retainTurnFinalFragment({
-    agentId,
-    sourceKey,
-    messageId: data.messageId,
-    text: data.text,
-    timestamp: timestampValue,
-  }), [agentId, sourceKey, data.messageId, data.text, timestampValue]);
   const finalCardPosition = useMemo(() => {
     // These versions are the external-store snapshots that invalidate the lookup.
     void turnVersion;
@@ -564,15 +558,47 @@ function ReviewAssistantMessage({
   const ownsWideFrameController = useWideFrameControllerOwner();
   // Host-maintained state updates when the agent snapshot arrives or its cwd changes.
   const agentSnapshot = useAgent(agentId, (agent) => agent
-    ? { workspaceId: agent.workspaceId, cwd: agent.cwd }
+    ? { workspaceId: agent.workspaceId, cwd: agent.cwd, status: agent.status }
     : null);
   const agentWorkspaceId = agentSnapshot?.workspaceId ?? null;
   // The workspace root lives on the daemon machine; relative file links
   // resolve against it.
   const workspaceRoot = agentSnapshot?.cwd ?? null;
-  const refs = useMemo(() => extractRefDefs(data.text), [data.text]);
+  useEffect(() => {
+    updateTurnAgentStatus(agentId, agentSnapshot?.status);
+  }, [agentId, agentSnapshot?.status]);
   const revealedRaw = useRevealedText(data.text, data.phase);
   const revealed = useCoalescedStreamingText(revealedRaw, data.phase);
+  const referenceDefinitions = useRef<ReturnType<typeof createStableReferenceDefinitions> | null>(null);
+  if (!referenceDefinitions.current) {
+    referenceDefinitions.current = createStableReferenceDefinitions();
+  }
+  const refs = useMemo(
+    () => referenceDefinitions.current!.update(revealed),
+    [revealed],
+  );
+  const finalFragmentHandle = useRef<ReturnType<typeof mountTurnFinalFragment> | null>(null);
+  useEffect(() => {
+    const handle = mountTurnFinalFragment({
+      agentId,
+      sourceKey,
+      messageId: data.messageId,
+      text: revealed,
+      timestamp: timestampValue,
+    });
+    finalFragmentHandle.current = handle;
+    return () => {
+      if (finalFragmentHandle.current === handle) finalFragmentHandle.current = null;
+      handle.release();
+    };
+  }, [agentId, sourceKey]);
+  useEffect(() => {
+    finalFragmentHandle.current?.update({
+      messageId: data.messageId,
+      text: revealed,
+      timestamp: timestampValue,
+    });
+  }, [data.messageId, revealed, timestampValue]);
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
   const comments = useMessageComments(agentId, data, sourceKey);
   const reanchoredVersions = useRef(new Map<string, string>());

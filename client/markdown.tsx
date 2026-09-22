@@ -924,6 +924,7 @@ function LocalMarkdownImage({
   target,
   alt,
   theme,
+  compact,
   style,
   cardStyle,
   onPress,
@@ -931,6 +932,7 @@ function LocalMarkdownImage({
   target: LocalFileTarget;
   alt: string;
   theme: PluginTheme;
+  compact: boolean;
   style: StyleProp<ImageStyle>;
   cardStyle: StyleProp<ViewStyle>;
   onPress?: (target: LocalFileTarget) => void;
@@ -938,10 +940,16 @@ function LocalMarkdownImage({
   const loadThumbnail = useRpc(localImagePreviewRpc);
   const [state, setState] = useState<ThumbnailState>({ status: "idle" });
   const label = alt.trim() || target.path.split(/[\\/]/).pop() || "Image";
+  const maxEdge = compact ? 320 : 640;
+  const quality = compact ? 65 : 78;
 
   useEffect(() => {
-    return retainImagePreview(target.path, loadThumbnail, setState);
-  }, [loadThumbnail, target.path]);
+    return retainImagePreview(target.path, loadThumbnail, setState, {
+      autoLoad: !compact,
+      maxEdge,
+      quality,
+    });
+  }, [compact, loadThumbnail, maxEdge, quality, target.path]);
 
   if (state.status === "ready") {
     const dataUri = state.dataUri;
@@ -962,7 +970,7 @@ function LocalMarkdownImage({
       <View style={cardStyle} accessibilityLabel={`Local image ${label} could not be loaded`}>
         <Text style={{ color: theme.colors.statusDanger }}>{`${label}: ${state.message}`}</Text>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 8 }}>
-          <Pressable accessibilityRole="button" onPress={() => retryImagePreview(target.path)}>
+          <Pressable accessibilityRole="button" onPress={() => retryImagePreview(target.path, { maxEdge, quality })}>
             <Text style={{ color: theme.colors.accent }}>Retry thumbnail</Text>
           </Pressable>
           <Pressable accessibilityRole="button" onPress={() => onPress?.(target)}>
@@ -975,11 +983,15 @@ function LocalMarkdownImage({
 
   return (
     <Pressable
-      accessibilityRole="link"
-      accessibilityLabel={`Loading local image ${label}`}
+      accessibilityRole="button"
+      accessibilityLabel={state.status === "loading" ? `Loading local image ${label}` : `Load local image ${label}`}
       style={cardStyle}
+      disabled={state.status === "loading"}
+      onPress={() => retryImagePreview(target.path, { maxEdge, quality })}
     >
-      <Text style={{ color: theme.colors.foregroundMuted }}>{`Loading ${label}…`}</Text>
+      <Text style={{ color: state.status === "loading" ? theme.colors.foregroundMuted : theme.colors.accent }}>
+        {state.status === "loading" ? `Loading ${label}…` : `Load ${label}`}
+      </Text>
     </Pressable>
   );
 }
@@ -1329,6 +1341,7 @@ export function MarkdownText({
                       target={localTarget}
                       alt={token.alt}
                       theme={theme}
+                      compact={compact}
                       style={styles.image}
                       cardStyle={[styles.localImageCard, blockSpacing ?? null]}
                       onPress={onLocalFilePress}

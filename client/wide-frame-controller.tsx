@@ -63,7 +63,14 @@ export function WideFrameController({ theme, layout }: Pick<PluginHostProps, "th
     } else {
       undoWideFrame();
     }
-  }, [enabled, layout.platform, theme]);
+  }, [
+    enabled,
+    layout.platform,
+    theme.colors.accent,
+    theme.colors.foreground,
+    theme.colors.surface2,
+    theme.colors.border,
+  ]);
 
   return null;
 }
