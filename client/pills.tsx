@@ -5,7 +5,8 @@ import {
   clearAgent,
   getComments,
   hydrateFromServer,
-  markAgentCommentsSent,
+  markCommentsSent,
+  persistAgentNow,
   registerPersist,
   subscribe,
 } from "./review-store";
@@ -18,13 +19,14 @@ type PillHandle = { remove(): void; update(patch: { label?: string; disabled?: b
  * - "Send Review (n)": fastpath that sends the pending comments directly.
  * Both labels track the pending count; the send pill disables itself at zero.
  */
-export function registerPills(client: PluginClientContext): () => void {
+export function registerPills(client: PluginClientContext): () => Promise<void> {
   const pills = new Map<string, PillHandle>();
   const sendPills = new Map<string, PillHandle>();
+  const sendingAgents = new Set<string>();
 
   // Store-owned persistence: every mutation saves through the client context,
   // so sent statuses reach the daemon even when the panel is not open.
-  registerPersist((input) => client.rpc(saveCommentsRpc, input));
+  const unregisterPersist = registerPersist((input) => client.rpc(saveCommentsRpc, input));
 
   // Plugin data has no push channel, so poll the daemon for comment changes
   // (new comments, status flips, deletions from other devices) while the app
@@ -62,6 +64,7 @@ export function registerPills(client: PluginClientContext): () => void {
 
   function registerFor(agentId: string, workspaceId: string): void {
     if (pills.has(agentId)) return;
+    hydrateFromServer(agentId, load);
     pills.set(
       agentId,
       client.addComposerPill({
@@ -77,7 +80,6 @@ export function registerPills(client: PluginClientContext): () => void {
           behavior: {
             kind: "action",
             onPress() {
-              // Opening the agent panel also reports it as the active agent.
               client.openPanel("review", { workspaceId, agentId });
             },
           },
@@ -97,25 +99,27 @@ export function registerPills(client: PluginClientContext): () => void {
           disabled: true,
           behavior: {
             kind: "action",
-            onPress() {
+            async onPress() {
+              if (sendingAgents.has(agentId)) return;
               const pending = getComments().filter(
                 (comment) => comment.agentId === agentId && comment.status === "pending",
               );
               if (pending.length === 0) return;
-              void client.paseo.agents.ref(agentId)
-                .send(formatReview(pending))
-                .then(() => {
-                  markAgentCommentsSent(agentId);
-                  // The store auto-saves on mutation; keep a direct save too so
-                  // the status lands on the daemon immediately after a send.
-                  void client
-                    .rpc(saveCommentsRpc, {
-                      agentId,
-                      comments: getComments().filter((comment) => comment.agentId === agentId),
-                    })
-                    .catch(() => {});
-                })
-                .catch(() => {});
+              sendingAgents.add(agentId);
+              let sent = false;
+              try {
+                await client.paseo.agents.ref(agentId).send(formatReview(pending));
+                sent = true;
+                markCommentsSent(pending);
+                await persistAgentNow(agentId);
+              } catch (error) {
+                if (sent) {
+                  throw new Error("Review was sent, but its status could not be saved", { cause: error });
+                }
+                throw error;
+              } finally {
+                sendingAgents.delete(agentId);
+              }
             },
           },
         },
@@ -154,7 +158,7 @@ export function registerPills(client: PluginClientContext): () => void {
     refreshLabels();
   });
 
-  return () => {
+  return async () => {
     clearInterval(poll);
     unsubscribeComments();
     unsubscribeAgents();
@@ -162,5 +166,6 @@ export function registerPills(client: PluginClientContext): () => void {
     for (const pill of sendPills.values()) pill.remove();
     pills.clear();
     sendPills.clear();
+    await unregisterPersist();
   };
 }

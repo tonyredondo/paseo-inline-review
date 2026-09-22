@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatReview, reviewCommentSchema, shortenQuote, splitParagraphs, type ReviewComment } from "../shared/review.ts";
+import {
+  FILE_TRANSFER_CHUNK_BYTES,
+  commentBelongsToReviewSource,
+  findReviewCommentParagraphIndex,
+  formatReview,
+  openLocalFileRpc,
+  parseReviewMessage,
+  reviewCommentSchema,
+  shortenQuote,
+  splitParagraphs,
+} from "../shared/review.ts";
 
 test("splitParagraphs splits on blank lines and trims empties", () => {
   assert.deepEqual(splitParagraphs("one\n\ntwo\n\n\n\nthree"), ["one", "two", "three"]);
@@ -42,11 +52,12 @@ test("formatReview emits numbered quotes and comments", () => {
       paragraphText: "The bug is here",
       text: "Fix the null check",
       createdAt: new Date().toISOString(),
+      revision: 1,
       status: "pending" as const,
     },
   ]);
   assert.match(out, /\[1\] On: "The bug is here"/);
-  assert.match(out, /Comment: Fix the null check/);
+  assert.match(out, /Comment: "Fix the null check"/);
   assert.equal(formatReview([]), "");
 });
 
@@ -75,4 +86,70 @@ test("review comment schema accepts per-item comments with itemIndex", () => {
     status: "sent",
   });
   assert.equal(legacy.itemIndex, undefined);
+  assert.equal(legacy.revision, 0);
+});
+
+test("file RPC carries source identity and caps each transfer at 5 MB", () => {
+  assert.throws(() => openLocalFileRpc.input.parse({
+    path: "/tmp/file",
+    mode: "download",
+    length: FILE_TRANSFER_CHUNK_BYTES + 1,
+  }));
+  const parsed = openLocalFileRpc.input.parse({
+    path: "/tmp/file",
+    mode: "download",
+    length: FILE_TRANSFER_CHUNK_BYTES,
+    fileVersion: "v1",
+  });
+  assert.equal(parsed.fileVersion, "v1");
+});
+
+test("formatted reviews round-trip quotes, backslashes and multiline comments", () => {
+  const text = formatReview([{
+    id: "complex",
+    agentId: "a",
+    messageId: "m",
+    paragraphIndex: 0,
+    paragraphText: 'A "quoted" C:\\path',
+    text: "first line\n\nsecond line",
+    createdAt: "2026-09-22T00:00:00.000Z",
+    revision: 1,
+    status: "pending",
+  }]);
+  assert.deepEqual(parseReviewMessage(`Preface\n\n${text}`), {
+    note: "Preface",
+    entries: [{ quote: 'A "quoted" C:\\path', comment: "first line\n\nsecond line" }],
+  });
+});
+
+test("streaming comments belong only to their mounted source", () => {
+  const comment = reviewCommentSchema.parse({
+    id: "streaming",
+    agentId: "a",
+    messageId: null,
+    sourceKey: "source-a",
+    paragraphIndex: 0,
+    paragraphText: "same paragraph",
+    text: "comment",
+    createdAt: "2026-09-22T00:00:00.000Z",
+    status: "pending",
+  });
+  assert.equal(commentBelongsToReviewSource(comment, null, "source-a"), true);
+  assert.equal(commentBelongsToReviewSource(comment, null, "source-b"), false);
+});
+
+test("completed messages re-anchor streaming list-item comments", () => {
+  const comment = reviewCommentSchema.parse({
+    id: "list-streaming",
+    agentId: "a",
+    messageId: null,
+    sourceKey: "source-a",
+    paragraphIndex: 0,
+    itemIndex: 1,
+    paragraphText: "second item",
+    text: "comment",
+    createdAt: "2026-09-22T00:00:00.000Z",
+    status: "pending",
+  });
+  assert.equal(findReviewCommentParagraphIndex(comment, ["intro", "- first item\n- second item"]), 1);
 });

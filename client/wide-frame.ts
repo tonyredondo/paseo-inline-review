@@ -16,7 +16,6 @@ export { wideFrameSettings };
 
 export interface WideFrameColors {
   accent?: string;
-  surface?: string;
   raised?: string;
   border?: string;
 }
@@ -41,7 +40,8 @@ type WWin = {
   getComputedStyle(el: WNode): { maxWidth: string };
   innerWidth?: number;
   requestAnimationFrame(cb: () => void): number;
-  MutationObserver?: new (cb: () => void) => {
+  cancelAnimationFrame?(id: number): void;
+  MutationObserver?: new (cb: (mutations: unknown) => void) => {
     observe(
       target: WNode,
       options: { childList: boolean; subtree: boolean; attributes?: boolean; attributeFilter?: string[] },
@@ -52,7 +52,6 @@ type WWin = {
   removeEventListener(type: string, listener: () => void): void;
 };
 
-const HIDE = 860;
 const BREATHING = 160; // 80px of air per side
 
 /** Converts #rrggbb to rgba() so fills can fade without losing hue. */
@@ -66,7 +65,6 @@ function withAlpha(hex: string, alpha: number): string {
 
 /** Colors for the user-message card pass (set at install time). */
 let userCardAccent = "#58a6ff";
-let userCardSurface = "#161b22";
 let userCardRaised = "#1c2128";
 let userCardBorder = "#30363d";
 
@@ -218,7 +216,6 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   if (undo) {
     if (colors) {
       if (colors.accent) userCardAccent = colors.accent;
-      if (colors.surface) userCardSurface = colors.surface;
       if (colors.raised) userCardRaised = colors.raised;
       if (colors.border) userCardBorder = colors.border;
     }
@@ -247,18 +244,73 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   };
 
   let raf = 0;
-  const schedule = (): void => {
+  let scanScope: WNode | WDoc | null = null;
+  let fullSweep = false;
+  let stylePassPending = false;
+  let disposed = false;
+  const requestRun = (): void => {
     if (raf) return;
     raf = g.requestAnimationFrame(() => {
       raf = 0;
-      apply();
+      if (disposed) return;
+      const shouldScan = fullSweep || scanScope !== null;
+      const scope = fullSweep ? null : scanScope;
+      const shouldStyle = stylePassPending;
+      scanScope = null;
+      fullSweep = false;
+      stylePassPending = false;
+      if (shouldScan) apply(scope);
+      else if (shouldStyle) applyStylesOnly();
     });
   };
+  const scheduleStyleOnly = (): void => {
+    stylePassPending = true;
+    requestRun();
+  };
+  const schedule = (scope?: WNode | WDoc): void => {
+    if (scope) {
+      // Merge scopes: a full sweep supersedes incremental ones.
+      if (scanScope === null) scanScope = scope;
+      else if (scope !== scanScope) fullSweep = true;
+    } else {
+      fullSweep = true;
+    }
+    requestRun();
+  };
 
-  const apply = (): void => {
+  const scanCandidates = (root: WNode | WDoc | null): WNode[] => {
+    type SNode = WNode & {
+      querySelectorAll(selector: string): ArrayLike<WNode>;
+    };
+    const target = (root ?? doc) as unknown as SNode;
+    if (!target.querySelectorAll) return root ? [target as unknown as WNode] : [];
+    // Candidates: EVERY element (max-width 820px can sit on any wrapper),
+    // but scoped to the changed subtree instead of the whole document.
+    if (root === null || (root as unknown as SNode) === (doc as unknown as SNode)) {
+      return Array.from(target.querySelectorAll("*"));
+    }
+    const found = Array.from(target.querySelectorAll("*"));
+    found.unshift(target as unknown as WNode);
+    return found;
+  };
+
+  /** Cheap re-apply of already-computed widening (host re-renders wipe it). */
+  const applyStylesOnly = (): void => {
+    const paneWidth = paneWidthCache;
+    if (paneWidth >= 900) {
+      const target = `${paneWidth - BREATHING}px`;
+      for (const el of widened) {
+        if (el.style.maxWidth !== target) el.style.maxWidth = target;
+      }
+      styleUserMessages(doc, g);
+      tightenToolCallRows(doc);
+    }
+  };
+
+  const apply = (scope: WNode | WDoc | null = null): void => {
     // Discover newly mounted 820-capped host elements (tool calls, user
     // messages, plugin items — everything shares the reading frame).
-    for (const el of Array.from(doc.querySelectorAll("*"))) {
+    for (const el of scanCandidates(scope)) {
       if (el.dataset.inlineReviewWide === "1") continue;
       if (g.getComputedStyle(el).maxWidth === "820px") {
         el.dataset.inlineReviewWide = "1";
@@ -291,7 +343,6 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
 
   if (colors) {
     if (colors.accent) userCardAccent = colors.accent;
-    if (colors.surface) userCardSurface = colors.surface;
     if (colors.raised) userCardRaised = colors.raised;
     if (colors.border) userCardBorder = colors.border;
   }
@@ -305,26 +356,61 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     matchMedia?: (query: string) => {
       matches: boolean;
       addEventListener?: (type: string, cb: () => void) => void;
+      removeEventListener?: (type: string, cb: () => void) => void;
     };
   };
+  let removeZoomHook = (): void => {};
   const installZoomHook = (): void => {
+    removeZoomHook();
+    removeZoomHook = () => {};
     const dpr = withZoom.devicePixelRatio;
     if (typeof dpr !== "number" || typeof withZoom.matchMedia !== "function") return;
     const mql = withZoom.matchMedia(`(resolution: ${dpr}dppx)`);
-    mql.addEventListener?.("change", () => {
+    const onChange = (): void => {
       schedule();
       installZoomHook(); // re-arm with the new ratio
-    });
+    };
+    mql.addEventListener?.("change", onChange);
+    removeZoomHook = () => mql.removeEventListener?.("change", onChange);
   };
   installZoomHook();
+  observerCbs.push(() => removeZoomHook());
   // Push widening in the same frame as host re-renders: no visible
   // "old width" flash while items mount.
   const Observer = g.MutationObserver;
   if (Observer && doc.body) {
-    const observer = new Observer(schedule);
-    // Watch style attributes too: React re-renders rewrite the host
-    // wrappers' style props and wipe our inline max-width, snapping items
-    // back to the 820px frame until they are re-widened.
+    const observer = new Observer((raw: unknown) => {
+      type MutationNode = {
+        parentElement: WNode | null;
+        style?: Record<string, string>;
+        dataset?: Record<string, string>;
+      };
+      const mutations = raw as Array<{
+        addedNodes: ArrayLike<MutationNode>;
+        target: WNode;
+        attributeName?: string;
+      }>;
+      // React re-renders rewrite the host wrappers' style props and wipe
+      // our inline max-width, snapping items back to the 820px frame until
+      // they are re-widened. Style flips on already-widened elements are
+      // fixed by a targeted sweep; new nodes get a scoped scan.
+      let sawStyleOnWidened = false;
+      for (const mutation of mutations) {
+        if (
+          mutation.attributeName === "style" &&
+          mutation.target.dataset.inlineReviewWide === "1"
+        ) {
+          sawStyleOnWidened = true;
+        }
+      }
+      if (sawStyleOnWidened) scheduleStyleOnly();
+      for (const mutation of mutations) {
+        for (const node of Array.from(mutation.addedNodes)) {
+          const element = node.style && node.dataset ? (node as WNode) : node.parentElement;
+          if (element) schedule(element);
+        }
+      }
+    });
     observer.observe(doc.body, {
       childList: true,
       subtree: true,
@@ -332,11 +418,18 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
       attributeFilter: ["style"],
     });
     observerCbs.push(() => observer.disconnect());
+    // Periodic full sweep: catches anything the scoped scans missed at a
+    // low cadence instead of per mutation batch.
+    const sweep = setInterval(() => schedule(), 2500);
+    observerCbs.push(() => clearInterval(sweep));
   }
   g.addEventListener("resize", schedule);
   observerCbs.push(() => g.removeEventListener("resize", schedule));
 
   undo = () => {
+    disposed = true;
+    if (raf) g.cancelAnimationFrame?.(raf);
+    raf = 0;
     for (const el of widened) {
       // Dropping the inline value restores the host class.
       el.style.maxWidth = "";

@@ -28,7 +28,7 @@ test("code blocks scroll horizontally and never wrap", () => {
 test("code blocks render on a solid black background with the custom palette", () => {
   assert.match(rendererSource, /backgroundColor: "#000000"/);
   assert.match(rendererSource, /const darkPalette = \{/);
-  for (const token of ["plain", "keyword", "string", "comment", "number", "function", "type", "added", "removed", "meta"]) {
+  for (const token of ["plain", "keyword", "string", "comment", "number", "function", "type", "added", "removed", "meta", "tag"]) {
     assert.match(rendererSource, new RegExp(token + ": \"#"));
   }
 });
@@ -59,3 +59,98 @@ test("native paragraphs are selectable and double-tap driven (no Pressable wrapp
   assert.ok(timelineSource.includes("handleChunkTap"));
 });
 
+test("downloads stream chunks instead of accumulating a data URI", () => {
+  const panelSource = String(readFileSync(path.resolve("client/panel.tsx")));
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  const downloadSource = String(readFileSync(path.resolve("client/file-download.ts")));
+  assert.ok(!panelSource.includes("parts.push"));
+  assert.ok(!timelineSource.includes("parts.push"));
+  assert.ok(!panelSource.includes("data:application/octet-stream"));
+  assert.ok(!timelineSource.includes("data:application/octet-stream"));
+  assert.match(downloadSource, /length: FILE_TRANSFER_CHUNK_BYTES/);
+  assert.match(downloadSource, /fileVersion/);
+  assert.match(downloadSource, /await destination\.writeBase64\(result\.base64\)/);
+});
+
+test("file previews virtualize lines and highlight only rendered rows", () => {
+  const panelSource = String(readFileSync(path.resolve("client/panel.tsx")));
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  assert.match(rendererSource, /<FlatList/);
+  assert.match(rendererSource, /initialNumToRender=\{40\}/);
+  assert.match(rendererSource, /MAX_HIGHLIGHTED_LINE_LENGTH/);
+  assert.ok(!panelSource.includes("forceShowAll"));
+  assert.ok(!timelineSource.includes("forceShowAll"));
+  assert.equal(panelSource.match(/virtualized/g)?.length, 1);
+  assert.equal(timelineSource.match(/virtualized/g)?.length, 2);
+});
+
+test("external links open on the client and nested styles retain file handlers", () => {
+  assert.ok(!rendererSource.includes("openInBrowserRpc"));
+  assert.match(rendererSource, /await Linking\.openURL\(url\)/);
+  const boldCase = rendererSource.slice(rendererSource.indexOf('case "bold"'), rendererSource.indexOf('case "code"'));
+  assert.equal(boldCase.match(/localFileResolver=\{localFileResolver\}/g)?.length, 3);
+  assert.equal(boldCase.match(/onLocalFilePress=\{onLocalFilePress\}/g)?.length, 3);
+});
+
+test("timeline rows use scoped agent state and one elected wide-frame controller", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  assert.ok(!timelineSource.includes("useSettings("));
+  assert.ok(!timelineSource.includes("(agent) => agent)"));
+  assert.match(timelineSource, /subscribeTurnIndex\(agentId, listener\)/);
+  assert.match(timelineSource, /useWideFrameControllerOwner\(\)/);
+});
+
+test("assistant renderers never suppress host timeline rows", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  // The host virtualizes source rows and keeps their measured height even when
+  // a plugin renderer returns null. Suppressing a streamed fragment therefore
+  // creates a large blank gap and strands adjacent tool-call rows.
+  assert.doesNotMatch(
+    timelineSource,
+    /presentation\.hidden[\s\S]{0,240}\?\s*null\s*:/,
+  );
+});
+
+test("local markdown images load through the daemon and remain visible", () => {
+  const branchStart = rendererSource.indexOf("const single = block.lines.length === 1");
+  const singleImageBranch = rendererSource.slice(branchStart, branchStart + 2_000);
+  assert.match(singleImageBranch, /localFileResolver\?\.\(token\.url\)/);
+  assert.match(singleImageBranch, /<LocalMarkdownImage/);
+  assert.match(rendererSource, /mode: "image"/);
+  assert.match(rendererSource, /source=\{\{ uri: dataUri \}\}/);
+});
+
+test("streamed final fragments render as slices of one card", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  assert.match(timelineSource, /getTurnFinalCardPosition/);
+  assert.match(timelineSource, /cardBridge/);
+  assert.match(timelineSource, /finalCardPosition === "start"/);
+  assert.match(timelineSource, /finalCardPosition === "end"/);
+});
+
+test("file tabs are owned by one context and use the host's real tab close control", () => {
+  const entrySource = String(readFileSync(path.resolve("index.client.tsx")));
+  const panelSource = String(readFileSync(path.resolve("client/panel.tsx")));
+  assert.match(entrySource, /target\.workspaceId === workspaceId && target\.agentId === agentId/);
+  assert.match(panelSource, /target\.agentId !== agentId \|\| target\.workspaceId !== workspaceId/);
+  assert.ok(!panelSource.includes("Close the file preview"));
+  assert.ok(!panelSource.includes("✕ Close"));
+});
+
+test("download actions are hidden outside the web platform", () => {
+  const panelSource = String(readFileSync(path.resolve("client/panel.tsx")));
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  const nativePreviewStart = timelineSource.indexOf('<Modal\n          title="File preview"');
+  const nativePreviewEnd = timelineSource.indexOf("</Modal>", nativePreviewStart);
+  const nativePreview = timelineSource.slice(nativePreviewStart, nativePreviewEnd);
+  assert.match(panelSource, /const canDownload = Platform\.OS === "web"/);
+  assert.equal(panelSource.match(/\{canDownload \? \(/g)?.length, 2);
+  assert.ok(nativePreviewStart >= 0 && nativePreviewEnd > nativePreviewStart);
+  assert.ok(!nativePreview.includes(">Download</Text>"));
+});
+
+test("wide-frame mutation handling narrows text nodes to their parent element", () => {
+  const wideFrameSource = String(readFileSync(path.resolve("client/wide-frame.ts")));
+  assert.match(wideFrameSource, /node\.style && node\.dataset \? \(node as WNode\) : node\.parentElement/);
+  assert.ok(!wideFrameSource.includes("schedule(n)"));
+});

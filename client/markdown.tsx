@@ -1,22 +1,18 @@
 import type { InlineToken } from "../shared/markdown-parse";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
-// Host-injected external opener (not declared in the 0.8.0 d.ts; the app
-// supplies the runtime module and may or may not provide it).
-declare const openExternalUrl: ((url: string) => Promise<void>) | undefined;
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View, type ImageStyle, type StyleProp } from "react-native";
 import { MarkdownSpan } from "./markdown-span";
-import { isValidHttpUrl, openInBrowserRpc } from "../shared/review";
-import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
+import { isValidHttpUrl, openLocalFileRpc } from "../shared/review";
+import type { LocalFileTarget } from "../shared/markdown-parse";
 import {
-  extractRefDefs,
   parseBlocks,
   parseInline,
   type Block,
 } from "../shared/markdown-parse";
-import { highlightCode, type CodeToken, type CodeTokenType } from "../shared/syntax";
-import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
+import { highlightCode, type CodeToken } from "../shared/syntax";
+import { copyText, FlatList, Icon } from "@getpaseo/plugin/client/react-native";
 
 /**
  * Renders parsed markdown blocks with React Native primitives. Paseo does not
@@ -60,32 +56,16 @@ function breakLongWords(text: string): string {
     .join("");
 }
 
-async function openLink(
-  url: string,
-  openUrlViaDaemon: ((input: { url: string }) => Promise<{ ok: boolean }>) | null,
-): Promise<void> {
+async function openLink(url: string): Promise<void> {
   // mailto: and other schemes skip the http check; the OS opener routes them.
   if (!url.startsWith("mailto:") && !isValidHttpUrl(url)) return;
-  // 1. Host-injected external opener (system browser) when the app provides it.
-  if (typeof openExternalUrl === "function") {
-    try {
-      await openExternalUrl(url);
-      return;
-    } catch {
-      // fall through
-    }
+  // Linking belongs to the client runtime, so remote agents still open links
+  // on the device the user tapped (desktop, iOS or Android).
+  try {
+    await Linking.openURL(url);
+  } catch (error) {
+    console.error("inline-review: could not open external link", error);
   }
-  // 2. Daemon-side OS opener: the default browser with full browser chrome.
-  if (openUrlViaDaemon) {
-    try {
-      const result = await openUrlViaDaemon({ url });
-      if (result.ok) return;
-    } catch {
-      // fall through
-    }
-  }
-  // 3. React Native opener as the last resort.
-  await Linking.openURL(url);
 }
 
 /**
@@ -101,52 +81,6 @@ function lighten(hex: string, factor: number): string {
     .map((channel) => Math.round(channel + (255 - channel) * factor))
     .map((channel) => channel.toString(16).padStart(2, "0"));
   return `#${lifted.join("")}`;
-}
-
-function hexToHsl(hex: string): { h: number; s: number; l: number } {
-  const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!match) return { h: 0, s: 0, l: 0.5 };
-  const value = parseInt(match[1], 16);
-  const r = ((value >> 16) & 0xff) / 255;
-  const g = ((value >> 8) & 0xff) / 255;
-  const b = (value & 0xff) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  if (max === min) return { h: 0, s: 0, l };
-  const d = max - min;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  let h: number;
-  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-  else if (max === g) h = ((b - r) / d + 2) / 6;
-  else h = ((r - g) / d + 4) / 6;
-  return { h: h * 360, s, l };
-}
-
-function hslToHex(h: number, s: number, l: number): string {
-  const hue = ((h % 360) + 360) / 360;
-  const sat = Math.min(1, Math.max(0, s));
-  const lig = Math.min(1, Math.max(0, l));
-  if (sat === 0) {
-    const gray = Math.round(lig * 255)
-      .toString(16)
-      .padStart(2, "0");
-    return `#${gray}${gray}${gray}`;
-  }
-  const q = lig < 0.5 ? lig * (1 + sat) : lig + sat - lig * sat;
-  const p = 2 * lig - q;
-  function channel(t: number): number {
-    let value = t;
-    if (value < 0) value += 1;
-    if (value > 1) value -= 1;
-    if (value < 1 / 6) return p + (q - p) * 6 * value;
-    if (value < 1 / 2) return q;
-    if (value < 2 / 3) return p + (q - p) * (2 / 3 - value) * 6;
-    return p;
-  }
-  const rgb = [hue + 1 / 3, hue, hue - 1 / 3]
-    .map((t) => Math.round(Math.min(1, Math.max(0, channel(t))) * 255).toString(16).padStart(2, "0"));
-  return `#${rgb.join("")}`;
 }
 
 function monospaceFont(): { fontFamily?: string } {
@@ -176,7 +110,6 @@ function InlineRun({
   /** Pressed a local file link: (path, lineStart?, lineEnd?). */
   onLocalFilePress?: (target: LocalFileTarget) => void;
 }): ReactNode {
-  const openUrlViaDaemon = useRpc(openInBrowserRpc);
   return (
     <>
       {tokens.map((token, index) => {
@@ -184,13 +117,13 @@ function InlineRun({
           case "bold":
             return (
               <MarkdownSpan key={index} style={{ color: theme.colors.foreground, fontWeight: "700" }} selectable={selectable}>
-                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : breakLongWords(token.text)}
+                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} /> : breakLongWords(token.text)}
               </MarkdownSpan>
             );
           case "italic":
             return (
               <MarkdownSpan key={index} style={{ color: theme.colors.foreground, fontStyle: "italic" }} selectable={selectable}>
-                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : breakLongWords(token.text)}
+                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} /> : breakLongWords(token.text)}
               </MarkdownSpan>
             );
           case "strike":
@@ -200,7 +133,7 @@ function InlineRun({
                 style={{ color: theme.colors.foreground, textDecorationLine: "line-through" }}
                 selectable={selectable}
               >
-                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} /> : breakLongWords(token.text)}
+                {token.tokens ? <InlineRun tokens={token.tokens} theme={theme} styles={styles} refs={refs} selectable={selectable} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} /> : breakLongWords(token.text)}
               </MarkdownSpan>
             );
           case "code":
@@ -230,12 +163,14 @@ function InlineRun({
               </MarkdownSpan>
             );
             if (!token.linkUrl) return image;
+            const localTarget = localFileResolver?.(token.linkUrl) ?? null;
             return (
               <MarkdownSpan
                 key={index}
                 style={{ color: theme.colors.accent }}
                 onPress={() => {
-                  void openLink(token.linkUrl ?? "", openUrlViaDaemon);
+                  if (localTarget) onLocalFilePress?.(localTarget);
+                  else void openLink(token.linkUrl ?? "");
                 }}
               >
                 {image}
@@ -278,7 +213,7 @@ function InlineRun({
                     onLocalFilePress?.(localTarget);
                     return;
                   }
-                  void openLink(token.url, openUrlViaDaemon);
+                  void openLink(token.url);
                 }}
               >
                 {nested}
@@ -319,14 +254,16 @@ function DetailsView({
   compact,
   refs,
   selectable,
-  styles,
+  localFileResolver,
+  onLocalFilePress,
 }: {
   block: Extract<Block, { kind: "details" }>;
   theme: PluginTheme;
   compact: boolean;
   refs?: Map<string, string>;
   selectable?: boolean;
-  styles: ReturnType<typeof useStyles>;
+  localFileResolver?: (href: string) => LocalFileTarget | null;
+  onLocalFilePress?: (target: LocalFileTarget) => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -351,7 +288,15 @@ function DetailsView({
       </Pressable>
       {open ? (
         <View style={{ paddingHorizontal: 10, paddingBottom: 8 }}>
-          <MarkdownText text={block.lines.join("\n")} theme={theme} compact={compact} refs={refs} selectable={selectable} />
+          <MarkdownText
+            text={block.lines.join("\n")}
+            theme={theme}
+            compact={compact}
+            refs={refs}
+            selectable={selectable}
+            localFileResolver={localFileResolver}
+            onLocalFilePress={onLocalFilePress}
+          />
         </View>
       ) : null}
     </View>
@@ -364,7 +309,7 @@ export function FileCodeBlock({
   language,
   theme,
   compact,
-  forceShowAll,
+  virtualized,
   highlightStart,
   highlightEnd,
 }: {
@@ -372,23 +317,199 @@ export function FileCodeBlock({
   language: string;
   theme: PluginTheme;
   compact: boolean;
-  /** Never collapse: render the whole content (file preview). */
-  forceShowAll?: boolean;
+  /** File-preview mode: render only visible lines and highlight them lazily. */
+  virtualized?: boolean;
   /** 1-based line range to highlight (from the file link's line suffix). */
   highlightStart?: number;
   highlightEnd?: number;
 }): ReactNode {
   const styles = useStyles(theme, compact);
+  if (virtualized) {
+    return (
+      <VirtualizedFileCodeBlock
+        code={code}
+        language={language}
+        theme={theme}
+        styles={styles}
+        initialLine={highlightStart}
+        highlightStart={highlightStart}
+        highlightEnd={highlightEnd}
+      />
+    );
+  }
   return (
     <CodeBlockView
       code={code}
       language={language}
       theme={theme}
       styles={styles}
-      forceShowAll={forceShowAll}
       highlightStart={highlightStart}
       highlightEnd={highlightEnd}
     />
+  );
+}
+
+const VIRTUAL_LINE_HEIGHT = 18;
+const MAX_HIGHLIGHTED_LINE_LENGTH = 20_000;
+const VIRTUAL_CODE_PALETTE: Record<CodeToken["type"], string> = {
+  plain: "#d7dce3",
+  keyword: "#c678dd",
+  string: "#98c379",
+  comment: "#7f848e",
+  number: "#d19a66",
+  function: "#61afef",
+  type: "#e5c07b",
+  added: "#3fb950",
+  removed: "#f85149",
+  meta: "#c8b3ff",
+  tag: "#e06c75",
+};
+
+function VirtualizedCodeLine({
+  line,
+  lineIndex,
+  language,
+  theme,
+  styles,
+  highlighted,
+}: {
+  line: string;
+  lineIndex: number;
+  language: string;
+  theme: PluginTheme;
+  styles: ReturnType<typeof useStyles>;
+  highlighted: boolean;
+}) {
+  const tokens = useMemo<CodeToken[]>(() => {
+    if (line.length > MAX_HIGHLIGHTED_LINE_LENGTH) return [{ type: "plain", text: line }];
+    return highlightCode(line, language)[0] ?? [];
+  }, [line, language]);
+  const mono = monospaceFont();
+  return (
+    <View
+      style={{
+        height: VIRTUAL_LINE_HEIGHT,
+        flexDirection: "row",
+        backgroundColor: highlighted ? withAlpha(theme.colors.accent, HIGHLIGHT_ALPHA) : "transparent",
+      }}
+    >
+      <Text
+        style={[
+          mono,
+          {
+            width: 64,
+            paddingRight: 10,
+            color: "#565e69",
+            borderRightWidth: StyleSheet.hairlineWidth,
+            borderRightColor: "rgba(139,148,158,0.25)",
+            fontSize: styles.codeFontSize,
+            lineHeight: VIRTUAL_LINE_HEIGHT,
+            textAlign: "right",
+          },
+        ]}
+      >
+        {lineIndex + 1}
+      </Text>
+      <Text
+        numberOfLines={1}
+        style={[
+          mono,
+          {
+            color: VIRTUAL_CODE_PALETTE.plain,
+            fontSize: styles.codeFontSize,
+            lineHeight: VIRTUAL_LINE_HEIGHT,
+            paddingLeft: 10,
+          },
+          Platform.OS === "web" ? ({ whiteSpace: "pre" } as object) : null,
+        ]}
+      >
+        {tokens.length === 0
+          ? " "
+          : tokens.map((token, tokenIndex) => (
+              <Text
+                key={tokenIndex}
+                style={[mono, { color: VIRTUAL_CODE_PALETTE[token.type] }]}
+              >
+                {token.text}
+              </Text>
+            ))}
+      </Text>
+    </View>
+  );
+}
+
+function VirtualizedFileCodeBlock({
+  code,
+  language,
+  theme,
+  styles,
+  initialLine,
+  highlightStart,
+  highlightEnd,
+}: {
+  code: string;
+  language: string;
+  theme: PluginTheme;
+  styles: ReturnType<typeof useStyles>;
+  initialLine?: number;
+  highlightStart?: number;
+  highlightEnd?: number;
+}) {
+  const lines = useMemo(() => code.split("\n"), [code]);
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+  }, []);
+  const initialScrollIndex = Math.min(lines.length - 1, Math.max(0, (initialLine ?? 1) - 3));
+  const highlightTo = highlightEnd ?? highlightStart;
+
+  async function copy(): Promise<void> {
+    try {
+      await copyText(code);
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard unavailable.
+    }
+  }
+
+  return (
+    <View style={[styles.codeBlock, { flex: 1, padding: 0, overflow: "hidden" }]}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Copy code"
+        style={[styles.copyButton, { zIndex: 2, backgroundColor: "#000000" }]}
+        onPress={() => void copy()}
+      >
+        {copied ? <Text style={styles.copyText}>Copied</Text> : <Icon name="Copy" size={13} color="#8b949e" />}
+      </Pressable>
+      <ScrollView horizontal style={{ flex: 1 }} contentContainerStyle={{ minWidth: "100%" }}>
+        <FlatList
+          data={lines}
+          initialScrollIndex={initialScrollIndex}
+          getItemLayout={(_data, index) => ({ length: VIRTUAL_LINE_HEIGHT, offset: VIRTUAL_LINE_HEIGHT * index, index })}
+          initialNumToRender={40}
+          maxToRenderPerBatch={40}
+          windowSize={7}
+          keyExtractor={(_line, index) => String(index)}
+          renderItem={({ item, index }) => (
+            <VirtualizedCodeLine
+              line={item}
+              lineIndex={index}
+              language={language}
+              theme={theme}
+              styles={styles}
+              highlighted={highlightStart !== undefined && highlightTo !== undefined && index + 1 >= highlightStart && index + 1 <= highlightTo}
+            />
+          )}
+          style={{ flex: 1, minWidth: "100%" }}
+          contentContainerStyle={{ paddingVertical: 10, paddingRight: 36 }}
+          showsVerticalScrollIndicator
+        />
+      </ScrollView>
+    </View>
   );
 }
 
@@ -398,7 +519,6 @@ export function CodeBlockView({
   theme,
   styles,
   onComment,
-  forceShowAll,
   highlightStart,
   highlightEnd,
 }: {
@@ -408,8 +528,6 @@ export function CodeBlockView({
   styles: ReturnType<typeof useStyles>;
   /** Opens the inline review editor for the code block's paragraph. */
   onComment?: () => void;
-  /** Preview mode: never collapse, show the whole file. */
-  forceShowAll?: boolean;
   /** 1-based line range to highlight (from the file link's line suffix). */
   highlightStart?: number;
   highlightEnd?: number;
@@ -426,7 +544,7 @@ export function CodeBlockView({
   const [showAll, setShowAll] = useState(false);
   // Scroll mode is the default everywhere; wrap is the secondary option.
   const [wrapMode, setWrapMode] = useState(false);
-  const collapsed = allLines.length > CODE_COLLAPSE_LINES && !showAll && !forceShowAll;
+  const collapsed = allLines.length > CODE_COLLAPSE_LINES && !showAll;
   const lines = collapsed ? allLines.slice(0, CODE_COLLAPSE_LINES) : allLines;
   // Line highlight from the file link suffix (`span.go:467`, `#L12-L20`).
   const highlightFrom = highlightStart ?? null;
@@ -448,6 +566,7 @@ export function CodeBlockView({
     added: "#3fb950",
     removed: "#f85149",
     meta: "#c8b3ff",
+    tag: "#e06c75",
   };
   const mono = monospaceFont();
   // Web: code lines must not wrap; they scroll horizontally instead.
@@ -650,11 +769,25 @@ export function CodeBlockView({
   );
 }
 
-function Cell({ cell, theme, styles, flex }: { cell: { spans: InlineToken[]; align: string }; theme: PluginTheme; styles: ReturnType<typeof useStyles>; flex: number }) {
+function Cell({
+  cell,
+  theme,
+  styles,
+  flex,
+  localFileResolver,
+  onLocalFilePress,
+}: {
+  cell: { spans: InlineToken[]; align: string };
+  theme: PluginTheme;
+  styles: ReturnType<typeof useStyles>;
+  flex: number;
+  localFileResolver?: (href: string) => LocalFileTarget | null;
+  onLocalFilePress?: (target: LocalFileTarget) => void;
+}) {
   return (
     <View style={{ flex, padding: styles.cell.padding }}>
       <Text style={{ color: theme.colors.foreground, fontSize: styles.tableFontSize, textAlign: cell.align as "left" | "center" | "right" }}>
-        <InlineRun tokens={cell.spans} theme={theme} styles={styles} />
+        <InlineRun tokens={cell.spans} theme={theme} styles={styles} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
       </Text>
     </View>
   );
@@ -721,6 +854,74 @@ function useStyles(theme: PluginTheme, compact: boolean) {
   );
 }
 
+function LocalMarkdownImage({
+  target,
+  alt,
+  theme,
+  style,
+  onPress,
+}: {
+  target: LocalFileTarget;
+  alt: string;
+  theme: PluginTheme;
+  style: StyleProp<ImageStyle>;
+  onPress?: (target: LocalFileTarget) => void;
+}) {
+  const openLocalFile = useRpc(openLocalFileRpc);
+  const [state, setState] = useState<
+    { status: "loading" } |
+    { status: "ready"; dataUri: string } |
+    { status: "error"; message: string }
+  >({ status: "loading" });
+  const label = alt.trim() || target.path.split(/[\\/]/).pop() || "Image";
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: "loading" });
+    void openLocalFile({ path: target.path, mode: "image" }).then((result) => {
+      if (cancelled) return;
+      if (!result.ok || !result.base64 || !result.mimeType) {
+        setState({ status: "error", message: result.error ?? "Could not load the image" });
+        return;
+      }
+      setState({
+        status: "ready",
+        dataUri: `data:${result.mimeType};base64,${result.base64}`,
+      });
+    }).catch(() => {
+      if (!cancelled) setState({ status: "error", message: "Could not load the image" });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [openLocalFile, target.path]);
+
+  if (state.status === "ready") {
+    const dataUri = state.dataUri;
+    return (
+      <Pressable
+        accessibilityRole="imagebutton"
+        accessibilityLabel={`Open local image ${label}`}
+        onPress={() => onPress?.(target)}
+      >
+        <Image source={{ uri: dataUri }} style={style} resizeMode="contain" accessibilityLabel={alt || label} />
+      </Pressable>
+    );
+  }
+
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={`Open local image ${label}`}
+      onPress={() => onPress?.(target)}
+    >
+      <Text style={{ color: state.status === "error" ? theme.colors.statusDanger : theme.colors.foregroundMuted }}>
+        {state.status === "loading" ? `Loading ${label}…` : `${label}: ${state.message}`}
+      </Text>
+    </Pressable>
+  );
+}
+
 export function MarkdownText({
   text,
   theme,
@@ -756,11 +957,10 @@ export function MarkdownText({
 }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   const styles = useStyles(theme, compact);
-  const mono = monospaceFont();
 
   function renderTextLines(lines: string[], style: object): ReactNode {
     return lines.map((line, index) => (
-      <MarkdownSpan key={index} style={style} uiTextView selectable={selectable} onPress={onChunkPress}>
+      <MarkdownSpan key={index} style={style} selectable={selectable} onPress={onChunkPress}>
         <InlineRun
           tokens={parseInline(line, refs)}
           theme={theme}
@@ -808,7 +1008,6 @@ export function MarkdownText({
             return (
               <Fragment key={index}>
                 <MarkdownSpan
-                  uiTextView
                   style={{
                     color: theme.colors.foreground,
                     fontWeight: "700",
@@ -819,7 +1018,7 @@ export function MarkdownText({
                       : block.level === 1 ? 22 : block.level === 2 ? 19 : block.level === 3 ? 17 : 16,
                   }}
                 >
-                  <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} />
+                  <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
                 </MarkdownSpan>
                 {block.level <= 2 ? (
                   <View
@@ -847,7 +1046,6 @@ export function MarkdownText({
                     <View style={{ flex: 1, gap: 4 }}>
                       <MarkdownSpan
                         style={styles.paragraph}
-                        uiTextView
                         selectable={selectable}
                         onPress={onListItemPress ? (event) => onListItemPress(itemIndex, item.spans.map((token) => ("text" in token ? token.text : "")).join(""), event) : undefined}
                       >
@@ -875,7 +1073,6 @@ export function MarkdownText({
                     <View style={{ flex: 1, gap: 4 }}>
                       <MarkdownSpan
                         style={styles.paragraph}
-                        uiTextView
                         selectable={selectable}
                         onPress={onListItemPress ? (event) => onListItemPress(itemIndex, item.spans.map((token) => ("text" in token ? token.text : "")).join(""), event) : undefined}
                       >
@@ -903,7 +1100,8 @@ export function MarkdownText({
                 compact={compact}
                 refs={refs}
                 selectable={selectable}
-                styles={styles}
+                localFileResolver={localFileResolver}
+                onLocalFilePress={onLocalFilePress}
               />
             );
           }
@@ -913,7 +1111,7 @@ export function MarkdownText({
                 <MarkdownSpan style={{ color: theme.colors.foregroundMuted, fontSize: compact ? 12 : 13 }} selectable={selectable}>
                   <Text style={{ color: theme.colors.accent, fontWeight: "700" }}>{`[^${block.label}]`}</Text>
                   {" "}
-                  <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} selectable={selectable} />
+                  <InlineRun tokens={parseInline(block.text, refs)} theme={theme} styles={styles} refs={refs} selectable={selectable} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
                 </MarkdownSpan>
               </View>
             );
@@ -966,6 +1164,8 @@ export function MarkdownText({
                   compact={compact}
                   refs={refs}
                   selectable={selectable}
+                  localFileResolver={localFileResolver}
+                  onLocalFilePress={onLocalFilePress}
                 />
               </View>
             );
@@ -979,7 +1179,7 @@ export function MarkdownText({
                 key={index}
                 style={[styles.quote, { marginLeft: 10 * Math.max(0, block.depth - 1) }]}
               >
-                <MarkdownText text={block.text} theme={theme} compact={compact} refs={refs} selectable={selectable} />
+                <MarkdownText text={block.text} theme={theme} compact={compact} refs={refs} selectable={selectable} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
               </View>
             );
           case "table":
@@ -987,7 +1187,7 @@ export function MarkdownText({
               <View key={index} style={styles.table}>
                 <View style={[styles.tableRow, styles.headerRow, styles.cellBorder, { borderBottomWidth: 1 }]}>
                   {block.header.map((cell, cellIndex) => (
-                    <Cell key={cellIndex} cell={cell} theme={theme} styles={styles} flex={weights?.[cellIndex] ?? 1} />
+                    <Cell key={cellIndex} cell={cell} theme={theme} styles={styles} flex={weights?.[cellIndex] ?? 1} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
                   ))}
                 </View>
                 {block.rows.map((row, rowIndex) => (
@@ -997,7 +1197,7 @@ export function MarkdownText({
                   >
                     {row.map((cell, cellIndex) => (
                       <View key={cellIndex} style={[{ flex: weights?.[cellIndex] ?? 1 }, cellIndex < row.length - 1 ? { borderRightWidth: 1, borderColor: theme.colors.border } : null]}>
-                        <Cell cell={cell} theme={theme} styles={styles} flex={weights?.[cellIndex] ?? 1} />
+                        <Cell cell={cell} theme={theme} styles={styles} flex={weights?.[cellIndex] ?? 1} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
                       </View>
                     ))}
                   </View>
@@ -1014,6 +1214,19 @@ export function MarkdownText({
             if (single) {
               const token = parseInline(block.lines[0], refs)[0];
               if (token.type === "image") {
+                const localTarget = localFileResolver?.(token.url) ?? null;
+                if (localTarget) {
+                  return (
+                    <LocalMarkdownImage
+                      key={index}
+                      target={localTarget}
+                      alt={token.alt}
+                      theme={theme}
+                      style={[styles.image, blockSpacing ?? null]}
+                      onPress={onLocalFilePress}
+                    />
+                  );
+                }
                 return (
                   <Image
                     key={index}

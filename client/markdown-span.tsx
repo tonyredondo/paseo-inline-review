@@ -22,7 +22,6 @@ export function MarkdownSpan({
   children: React.ReactNode;
   onPress?: TextProps["onPress"];
   selectable?: boolean;
-  uiTextView?: boolean;
 }) {
   return (
     <Text selectable={selectable} style={style} onPress={onPress}>

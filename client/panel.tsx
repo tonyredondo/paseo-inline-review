@@ -4,26 +4,28 @@ import type { ReactNode } from "react";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
-import { loadCommentsRpc, openLocalFileRpc, previewLanguage, saveCommentsRpc, setActiveAgentRpc } from "../shared/review";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { openLocalFileRpc, previewLanguage } from "../shared/review";
 import { formatReview, type ReviewComment } from "../shared/review";
 import {
   clearAgent,
   getComments,
-  hydrateFromServer,
   markAgentCommentsSent,
-  registerPersist,
+  markCommentsSent,
+  persistAgentNow,
   removeComment,
-  scheduleSave,
+  setCommentStatus,
   subscribe,
   updateComment,
 } from "./review-store";
 import {
-  clearPreview,
   getPreviewTarget,
+  type PreviewTarget,
   subscribe as subscribePreview,
 } from "./preview-store";
 import { FileCodeBlock } from "./markdown";
+import { downloadLocalFileProgressively, formatFileSize } from "./file-download";
+import { DownloadCancelledError } from "./web";
 
 /** Converts #rrggbb to rgba() so borders can fade without losing hue. */
 function withAlpha(hex: string, alpha: number): string {
@@ -34,55 +36,40 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-/** Cross-device poll: re-hydrate plugin comments from the daemon this often. */
-const POLL_INTERVAL_MS = 5000;
-
-/** Mirrors the server's download cap (server/review.ts MAX_DOWNLOAD_BYTES). */
-const MAX_DOWNLOAD_TOTAL = 1024 * 1024 * 1024;
-
 /**
  * Full-height file preview shown inside a dedicated panel tab. Created per
  * file tab id so several files can be open at once; reads the target from
  * the preview store.
  */
-export function FilePreviewPanel({ panelId, workspaceId, theme, layout }: {
+export function FilePreviewPanel({ panelId, agentId, workspaceId, theme, layout }: PluginAgentPanelProps & {
   panelId: string;
-  workspaceId: string;
-  theme: PluginTheme;
-  layout: PluginAgentPanelProps["layout"];
 }): ReactNode {
   const target = useSyncExternalStore(subscribePreview, () => getPreviewTarget(panelId));
-  if (!target) {
+  if (!target || target.agentId !== agentId || target.workspaceId !== workspaceId) {
     return <View style={{ flex: 1 }} />;
   }
   return (
     <PanelFilePreview
-      workspaceId={workspaceId}
       target={target}
       theme={theme}
       layout={layout}
-      panelId={panelId}
     />
   );
 }
 
 /** Full-height file preview shown inside the panel tab (desktop). */
 function PanelFilePreview({
-  workspaceId,
   target,
   theme,
   layout,
-  panelId,
 }: {
-  workspaceId: string;
-  target: { path: string; lineStart?: number; lineEnd?: number; requestId: number };
+  target: PreviewTarget;
   theme: PluginTheme;
   layout: PluginAgentPanelProps["layout"];
-  panelId: string;
 }): ReactNode {
   const openFile = useRpc(openLocalFileRpc);
   const toast = useToast();
-  const scrollRef = useRef<ScrollView>(null);
+  const canDownload = Platform.OS === "web";
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [state, setState] = useState<{
     loading: boolean;
@@ -92,18 +79,6 @@ function PanelFilePreview({
     binary?: boolean;
     size?: number;
   }>({ loading: true });
-
-  // Auto-scroll to the linked line range once the file content is on screen.
-  // Scroll-mode rows are fixed-height (lineHeight 18), so the offset is exact
-  // enough; land a couple of lines above the target for context.
-  useEffect(() => {
-    if (state.loading || !state.content || !target.lineStart) return;
-    const y = Math.max(0, (target.lineStart - 3) * 18);
-    const timer = setTimeout(() => {
-      scrollRef.current?.scrollTo({ y, animated: false });
-    }, 80);
-    return () => clearTimeout(timer);
-  }, [state.loading, state.content, target.requestId, target.lineStart]);
 
   useEffect(() => {
     let cancelled = false;
@@ -153,71 +128,20 @@ function PanelFilePreview({
   );
 
   function formatSize(bytes?: number): string {
-    if (!bytes && bytes !== 0) return "";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return bytes === undefined ? "" : formatFileSize(bytes);
   }
 
-  /**
- * Saves the file via a data: URI anchor (desktop/web). The payload arrives
- * in base64 chunks the client requests one by one: no single RPC carries
- * the whole file, so large downloads stay reliable. Chunk sizes are
- * multiples of 3 bytes so independently encoded base64 chunks concatenate
- * into a valid stream.
- */
-const DOWNLOAD_CHUNK_BYTES = 786432; // 0.75 MB, divisible by 3
-
   function download(): void {
-    void (async () => {
-      const parts: string[] = [];
-      let offset = 0;
-      let size: number | undefined;
-      let last = false;
-      for (;;) {
-        const result = await openFile({
-          path: target.path,
-          mode: "download",
-          offset,
-          length: DOWNLOAD_CHUNK_BYTES,
-        });
-        if (!result.ok || !result.base64) {
-          toast.error(result.error ?? "Could not download the file.");
-          return;
-        }
-        parts.push(result.base64);
-        size = result.size ?? size;
-        last = result.done ?? true;
-        setDownloadProgress(size ? Math.min(1, parts.length * DOWNLOAD_CHUNK_BYTES / size) : null);
-        if (last) break;
-        offset += DOWNLOAD_CHUNK_BYTES;
-        if (offset > MAX_DOWNLOAD_TOTAL) {
-          toast.error("File exceeds the download cap.");
-          return;
-        }
+    void downloadLocalFileProgressively({
+      path: target.path,
+      openFile,
+      onProgress: setDownloadProgress,
+    }).then((size) => {
+      toast.show(`Downloaded ${formatFileSize(size)}.`);
+    }).catch((error) => {
+      if (!(error instanceof DownloadCancelledError)) {
+        toast.error(error instanceof Error ? error.message : "Could not download the file.");
       }
-      setDownloadProgress(null);
-      const g = globalThis as unknown as {
-        document?: {
-          createElement(tag: string): { href?: string; download?: string; click?(): void; remove?(): void };
-          body?: { appendChild(node: unknown): void; removeChild(node: unknown): void };
-        };
-      };
-      if (!g.document?.body) {
-        toast.error("Download is only available on desktop.");
-        return;
-      }
-      const name = target.path.split("/").pop() ?? "download";
-      const anchor = g.document.createElement("a");
-      anchor.href = `data:application/octet-stream;base64,${parts.join("")}`;
-      anchor.download = name;
-      g.document.body.appendChild(anchor);
-      anchor.click?.();
-      anchor.remove?.();
-      if (size) toast.show(`Downloaded ${formatSize(size)}.`);
-    })().catch(() => {
-      setDownloadProgress(null);
-      toast.error("Could not download the file.");
     });
   }
 
@@ -230,14 +154,6 @@ const DOWNLOAD_CHUNK_BYTES = 786432; // 0.75 MB, divisible by 3
   return (
     <View style={styles.root}>
       <View style={styles.header}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Close the file preview"
-          hitSlop={6}
-          onPress={() => clearPreview(panelId)}
-        >
-          <Text style={styles.link}>✕ Close</Text>
-        </Pressable>
         <Text style={styles.path} numberOfLines={2}>
           {`${target.path}${state.truncated ? " (truncated)" : ""}`}
         </Text>
@@ -249,19 +165,23 @@ const DOWNLOAD_CHUNK_BYTES = 786432; // 0.75 MB, divisible by 3
         >
           <Text style={styles.link}>Open locally</Text>
         </Pressable>
-        <Text style={styles.muted}>|</Text>
-        {downloadProgress === null ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Download the file"
-            hitSlop={6}
-            onPress={download}
-          >
-            <Text style={styles.link}>Download</Text>
-          </Pressable>
-        ) : (
-          <Text style={styles.muted}>{`${Math.round(downloadProgress * 100)}%`}</Text>
-        )}
+        {canDownload ? (
+          <>
+            <Text style={styles.muted}>|</Text>
+            {downloadProgress === null ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Download the file"
+                hitSlop={6}
+                onPress={download}
+              >
+                <Text style={styles.link}>Download</Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.muted}>{`${Math.round(downloadProgress * 100)}%`}</Text>
+            )}
+          </>
+        ) : null}
       </View>
       {state.loading ? (
         <Text style={styles.muted}>Loading…</Text>
@@ -272,82 +192,50 @@ const DOWNLOAD_CHUNK_BYTES = 786432; // 0.75 MB, divisible by 3
           <Text style={styles.muted}>
             {`Binary file${state.size ? ` · ${formatSize(state.size)}` : ""} — nothing to show as text.`}
           </Text>
-          {downloadProgress === null ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Download the file"
-              onPress={download}
-              style={styles.downloadButton}
-            >
-              <Text style={{ color: theme.colors.accentForeground, fontSize: 12 }}>Download</Text>
-            </Pressable>
-          ) : (
-            <Text style={styles.muted}>{`Downloading… ${Math.round(downloadProgress * 100)}%`}</Text>
-          )}
+          {canDownload ? (
+            downloadProgress === null ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Download the file"
+                onPress={download}
+                style={styles.downloadButton}
+              >
+                <Text style={{ color: theme.colors.accentForeground, fontSize: 12 }}>Download</Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.muted}>{`Downloading… ${Math.round(downloadProgress * 100)}%`}</Text>
+            )
+          ) : null}
         </View>
       ) : (
-        <ScrollView ref={scrollRef} style={styles.body} contentContainerStyle={{ padding: 4, gap: 4 }}>
+        <View key={target.requestId} style={[styles.body, { padding: 4 }]}>
           <FileCodeBlock
             code={state.content ?? ""}
             language={previewLanguage(target.path)}
             theme={theme}
             compact={layout.compact}
-            forceShowAll
+            virtualized
             highlightStart={target.lineStart}
             highlightEnd={target.lineEnd}
           />
-        </ScrollView>
+        </View>
       )}
     </View>
   );
 }
 
-export function ReviewPanel({ agentId, workspaceId, theme, layout }: PluginAgentPanelProps) {
+export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
   const paseo = usePaseo();
   const toast = useToast();
-  const load = useRpc(loadCommentsRpc);
-  const persistComments = useRpc(saveCommentsRpc);
-  useEffect(() => {
-    registerPersist(persistComments);
-  }, [persistComments]);
   const all = useSyncExternalStore(subscribe, getComments).filter(
     (comment) => comment.agentId === agentId,
   );
   const comments = all.filter((comment) => comment.status === "pending");
-  const sent = all.filter((comment) => comment.status === "sent");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const sendingRef = useRef(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
-
-  // Refresh from the daemon when it opens, and whenever a new user message
-  // arrives (the server marks attached drafts sent on the next user message).
-  const setActiveAgent = useRpc(setActiveAgentRpc);
-  useEffect(() => {
-    void setActiveAgent({ agentId }).catch(() => {});
-    hydrateFromServer(agentId, load);
-    let unsubscribe: (() => void) | null = null;
-    try {
-      unsubscribe = paseo.agents.ref(agentId).timeline.subscribe((event) => {
-        if (event.event.type !== "timeline") return;
-        if (event.event.item.type !== "user_message") return;
-        hydrateFromServer(agentId, load);
-      });
-    } catch {
-      // agent subscription unavailable; panel refresh happens on reopen
-    }
-    // Multi-device: plugin data has no push channel, so poll the daemon.
-    // hydrate() merges server statuses over local ones, so this is idempotent.
-    const poll = setInterval(() => {
-      hydrateFromServer(agentId, load);
-    }, POLL_INTERVAL_MS);
-    const removeSaveWatcher = subscribe(() => scheduleSave(agentId, persistComments));
-    return () => {
-      clearInterval(poll);
-      unsubscribe?.();
-      removeSaveWatcher();
-    };
-  }, [agentId, load, persistComments, paseo, setActiveAgent]);
 
   const styles = useMemo(
     () => ({
@@ -401,34 +289,38 @@ export function ReviewPanel({ agentId, workspaceId, theme, layout }: PluginAgent
   }
 
   function setStatus(comment: ReviewComment, status: "pending" | "sent"): void {
-    void persistComments({
-      agentId,
-      comments: all.map((existing) => (existing.id === comment.id ? { ...existing, status } : existing)),
+    setCommentStatus(comment.id, status);
+    void persistAgentNow(agentId).catch(() => {
+      toast.error("Could not save the comment status.");
     });
   }
 
   async function send() {
+    if (sendingRef.current) return;
     if (comments.length === 0 && draft.trim().length === 0) {
       toast.error("Nothing to send yet.");
       return;
     }
     const message = composeMessage();
+    sendingRef.current = true;
     setBusy(true);
     try {
       await paseo.agents.ref(agentId).send(message);
-      toast.show("Review sent to the agent.", { variant: "success" });
-      // Sent comments stay visible as muted context instead of disappearing.
-      const sentIds = new Set(comments.map((comment) => comment.id));
-      void persistComments({
-        agentId,
-        comments: all.map((existing) =>
-          sentIds.has(existing.id) ? { ...existing, status: "sent" as const } : existing,
-        ),
-      });
-      setDraft("");
     } catch {
       toast.error("Could not send the review.");
+      sendingRef.current = false;
+      setBusy(false);
+      return;
+    }
+    markCommentsSent(comments);
+    setDraft("");
+    try {
+      await persistAgentNow(agentId);
+      toast.show("Review sent to the agent.", { variant: "success" });
+    } catch {
+      toast.error("Review was sent, but its status could not be saved.");
     } finally {
+      sendingRef.current = false;
       setBusy(false);
     }
   }
@@ -443,7 +335,11 @@ export function ReviewPanel({ agentId, workspaceId, theme, layout }: PluginAgent
   function markAllSent(): void {
     markAgentCommentsSent(agentId);
     setEditingId(null);
-    toast.show("Marked as sent.", { variant: "success" });
+    void persistAgentNow(agentId).then(() => {
+      toast.show("Marked as sent.", { variant: "success" });
+    }).catch(() => {
+      toast.error("Could not save the comment status.");
+    });
   }
 
   return (
@@ -580,4 +476,3 @@ export function ReviewPanel({ agentId, workspaceId, theme, layout }: PluginAgent
     </View>
   );
 }
-

@@ -25,11 +25,65 @@ export const reviewCommentSchema = z.object({
   paragraphText: z.string(),
   text: z.string(),
   createdAt: z.string(),
+  /** Monotonic per-comment version used to reject stale device writes. */
+  revision: z.number().int().nonnegative().default(0),
+  /** Last local mutation time; breaks equal-revision conflicts deterministically. */
+  updatedAt: z.string().optional(),
+  /** Mounted renderer identity while a streaming message has no messageId yet. */
+  sourceKey: z.string().nullable().optional(),
   /** pending = will be attached to the next message; sent = already context. */
   status: z.enum(["pending", "sent"]),
 });
 
 export type ReviewComment = z.output<typeof reviewCommentSchema>;
+
+function commentVersionTime(comment: ReviewComment): string {
+  return comment.updatedAt ?? comment.createdAt;
+}
+
+/** Orders two copies so every client and the daemon resolve conflicts alike. */
+export function compareReviewCommentVersions(a: ReviewComment, b: ReviewComment): number {
+  const aRevision = a.revision ?? 0;
+  const bRevision = b.revision ?? 0;
+  if (aRevision !== bRevision) return aRevision - bRevision;
+  const time = commentVersionTime(a).localeCompare(commentVersionTime(b));
+  if (time !== 0) return time;
+  return JSON.stringify(a).localeCompare(JSON.stringify(b));
+}
+
+/** Prevents id-less streaming comments from leaking into sibling messages. */
+export function commentBelongsToReviewSource(
+  comment: ReviewComment,
+  messageId: string | null,
+  sourceKey: string,
+): boolean {
+  if (comment.messageId !== null) return comment.messageId === messageId;
+  return comment.sourceKey !== null && comment.sourceKey !== undefined && comment.sourceKey === sourceKey;
+}
+
+/** A streaming paragraph snapshot may be a prefix of the completed paragraph. */
+export function reviewCommentMatchesParagraph(
+  comment: Pick<ReviewComment, "itemIndex" | "paragraphText">,
+  paragraph: string | undefined,
+): boolean {
+  if (paragraph === undefined) return false;
+  if (comment.itemIndex !== null && comment.itemIndex !== undefined) {
+    return paragraph.includes(comment.paragraphText);
+  }
+  if (paragraph === comment.paragraphText) return true;
+  return comment.paragraphText.length >= 40 && paragraph.startsWith(comment.paragraphText);
+}
+
+/** Finds the completed paragraph for both block-level and list-item comments. */
+export function findReviewCommentParagraphIndex(
+  comment: Pick<ReviewComment, "itemIndex" | "paragraphIndex" | "paragraphText">,
+  paragraphs: readonly string[],
+): number {
+  if (reviewCommentMatchesParagraph(comment, paragraphs[comment.paragraphIndex])) {
+    return comment.paragraphIndex;
+  }
+  return paragraphs.findIndex((paragraph) => reviewCommentMatchesParagraph(comment, paragraph));
+}
 
 /** Pulls the persisted comments for one agent into the client store. */
 export const loadCommentsRpc = defineRpc({
@@ -53,23 +107,10 @@ export const saveCommentsRpc = defineRpc({
   }),
   output: z.object({ ok: z.boolean() }),
 });
-
-
-
-export const getTurnFinalRpc = defineRpc({
-  name: "review.get-turn-final",
-  input: z.object({ agentId: z.string() }),
-  output: z.object({
-    /** Turn-final assistant messageIds (last assistant message per turn). */
-    finalIds: z.array(z.string()),
-  }),
-});
-
-export const openInBrowserRpc = defineRpc({
-  name: "review.open-in-browser",
-  input: z.object({ url: z.string() }),
-  output: z.object({ ok: z.boolean() }),
-});
+/** Maximum bytes carried by one file-transfer RPC. */
+export const FILE_TRANSFER_CHUNK_BYTES = 5 * 1024 * 1024;
+/** Total-size safety rail for one download. */
+export const MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024;
 
 export const openLocalFileRpc = defineRpc({
   name: "review.open-local-file",
@@ -77,10 +118,12 @@ export const openLocalFileRpc = defineRpc({
     path: z.string(),
     lineStart: z.number().int().optional(),
     lineEnd: z.number().int().optional(),
-    mode: z.enum(["open", "read", "download"]).optional(),
+    mode: z.enum(["open", "read", "image", "download"]).optional(),
     /** Chunked download: byte offset and max chunk size (client-driven). */
     offset: z.number().int().min(0).optional(),
-    length: z.number().int().positive().optional(),
+    length: z.number().int().positive().max(FILE_TRANSFER_CHUNK_BYTES).optional(),
+    /** Identity returned by the first chunk; later chunks must match it. */
+    fileVersion: z.string().optional(),
   }),
   output: z.object({
     ok: z.boolean(),
@@ -92,8 +135,12 @@ export const openLocalFileRpc = defineRpc({
     binary: z.boolean().optional(),
     /** Base64 payload for mode "download". */
     base64: z.string().optional(),
+    /** Validated image media type for mode "image". */
+    mimeType: z.string().optional(),
     /** Chunked download: false while more chunks remain. */
     done: z.boolean().optional(),
+    /** Stable identity for every chunk in one download. */
+    fileVersion: z.string().optional(),
   }),
 });
 
@@ -115,16 +162,8 @@ export type UserMessageCardData = z.output<typeof userMessageCardSchema>;
 
 /** Matches the user messages produced by formatReview (optionally after a note). */
 export function looksLikeSentReview(text: string): boolean {
-  return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: "/.test(text);
+  return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: /.test(text);
 }
-
-/** Client tells the daemon which agent's workspace is currently visible, so
- * the attachment picker only offers that agent's draft. */
-export const setActiveAgentRpc = defineRpc({
-  name: "review.set-active-agent",
-  input: z.object({ agentId: z.string() }),
-  output: z.object({ ok: z.boolean() }),
-});
 
 /** Splits text into comment-anchorable chunks: blank-line separated blocks,
  * with fenced code blocks kept whole even when their content contains blank
@@ -176,14 +215,44 @@ export function formatReview(comments: readonly ReviewComment[]): string {
   if (pending.length === 0) return "";
   const lines: string[] = ["Review:", ""];
   pending.forEach((comment, index) => {
-    lines.push(`[${index + 1}] On: "${shortenQuote(comment.paragraphText)}"`);
-    lines.push(`Comment: ${comment.text.trim()}`);
+    // JSON strings preserve quotes, newlines and backslashes while keeping the
+    // review readable to both the agent and the sent-review card parser.
+    lines.push(`[${index + 1}] On: ${JSON.stringify(shortenQuote(comment.paragraphText))}`);
+    lines.push(`Comment: ${JSON.stringify(comment.text.trim())}`);
     lines.push("");
   });
   return lines.join("\n").trimEnd();
 }
 
-/** Opens an absolute HTTP(S) URL with the daemon host OS default browser. */
+export type ParsedReview = {
+  note: string;
+  entries: Array<{ quote: string; comment: string }>;
+};
+
+/** Parses current JSON-escaped reviews and preserves compatibility with history. */
+export function parseReviewMessage(text: string): ParsedReview {
+  const headerIndex = text.search(/(?:^|\n)Review:\s*\n/);
+  const note = headerIndex > 0 ? text.slice(0, headerIndex).trim() : "";
+  const body = headerIndex >= 0 ? text.slice(headerIndex).replace(/^(?:\n)?Review:\s*\n/, "") : text;
+  const entries: ParsedReview["entries"] = [];
+  const currentPattern = /^\[\d+\] On: ("(?:\\.|[^"\\])*")\nComment: ("(?:\\.|[^"\\])*")(?=\n\s*\n|\n\[\d+\] On: |$)/gm;
+  for (const match of body.matchAll(currentPattern)) {
+    try {
+      entries.push({ quote: JSON.parse(match[1]), comment: JSON.parse(match[2]) });
+    } catch {
+      // A malformed current entry may still be readable by the legacy parser.
+    }
+  }
+  if (entries.length > 0) return { note, entries };
+
+  const legacyPattern = /\[\d+\] On: "([^"]*)"[^\n]*\nComment: ((?:.|\n)*?)(?=\n\s*\n|\n\[\d+\] On: |$)/g;
+  for (const match of body.matchAll(legacyPattern)) {
+    entries.push({ quote: match[1], comment: match[2].trim() });
+  }
+  return { note, entries };
+}
+
+/** Accepts only external links the client may hand to its local OS opener. */
 export function isValidHttpUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -195,7 +264,7 @@ export function isValidHttpUrl(url: string): boolean {
 
 /** Best-effort syntax-highlight language for a file path (extension). */
 export function previewLanguage(path: string): string {
-  const base = path.split("/").pop() ?? "";
+  const base = path.replace(/\\/g, "/").split("/").pop() ?? "";
   const dot = base.lastIndexOf(".");
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : "txt";
 }

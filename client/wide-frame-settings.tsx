@@ -1,7 +1,7 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { useSettings } from "@getpaseo/plugin/client";
-import { Pressable, Switch, Text, View } from "react-native";
+import { Switch, Text, View } from "react-native";
 import { wideFrameSettings } from "./wide-frame";
 
 /** Settings screen: enables/disables the wide reading-frame experiment. */

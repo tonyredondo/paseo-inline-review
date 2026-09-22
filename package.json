@@ -2,9 +2,10 @@
   "name": "inline-review",
   "private": true,
   "version": "0.0.0",
+  "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types test/markdown.test.ts && node --experimental-strip-types test/review.test.ts && node --experimental-strip-types test/render-contract.test.ts"
+    "test": "node --experimental-strip-types test/markdown.test.ts && node --experimental-strip-types test/review.test.ts && node --experimental-strip-types test/review-store.test.ts && node --experimental-strip-types test/preview-store.test.ts && node --experimental-strip-types test/turn-final-store.test.ts && node --experimental-strip-types test/server-review.test.ts && node --experimental-strip-types test/render-contract.test.ts"
   },
   "devDependencies": {
     "@getpaseo/plugin": "^0.8.0",

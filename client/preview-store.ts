@@ -5,8 +5,10 @@
  * (The host AdaptiveModalSheet caps at 520px wide with no size escape
  * hatch, so plugin panels are the only large file surfaces.)
  */
-type PreviewTarget = {
+export type PreviewTarget = {
   path: string;
+  workspaceId: string;
+  agentId: string;
   lineStart?: number;
   lineEnd?: number;
   /** Monotonic id: re-tapping the same file still re-fetches. */
@@ -35,13 +37,22 @@ export function getPreviewTarget(panelId: string): PreviewTarget | null {
 /** Stores the target for a file tab and returns the target (with fresh requestId). */
 export function requestPreview(
   path: string,
+  workspaceId: string,
+  agentId: string,
   lineStart?: number,
   lineEnd?: number,
   panelId?: string,
 ): { panelId: string; target: PreviewTarget } {
   const id = panelId ?? `file-preview-${nextId}`;
   if (panelId === undefined) nextId += 1;
-  const target: PreviewTarget = { path, lineStart, lineEnd, requestId: nextId++ };
+  const target: PreviewTarget = {
+    path,
+    workspaceId,
+    agentId,
+    lineStart,
+    lineEnd,
+    requestId: nextId++,
+  };
   targets.set(id, target);
   emit();
   return { panelId: id, target };
@@ -69,8 +80,11 @@ type FileTabOpener = (
 
 let openFileTabRef: FileTabOpener | null = null;
 
-export function registerFileTabOpener(opener: FileTabOpener): void {
+export function registerFileTabOpener(opener: FileTabOpener): () => void {
   openFileTabRef = opener;
+  return () => {
+    if (openFileTabRef === opener) openFileTabRef = null;
+  };
 }
 
 export function openFileTab(

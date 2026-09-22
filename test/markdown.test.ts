@@ -315,6 +315,7 @@ test("normalizeLanguage maps aliases", () => {
   assert.equal(normalizeLanguage("c#"), "cs");
   assert.equal(normalizeLanguage("py"), "python");
   assert.equal(normalizeLanguage("golang"), "go");
+  assert.equal(normalizeLanguage("rs"), "rust");
 });
 
 // --- references, <br>, emoji --------------------------------------------------
@@ -798,6 +799,8 @@ test("local file classifier: file:// urls with and without line fragments", () =
   assert.ok(plain && plain.path === "/Users/tony/x/main.go");
   const ranged = classifyLocalFileLink("file:///tmp/dd/x.go#L12-L20");
   assert.ok(ranged && ranged.path === "/tmp/dd/x.go" && ranged.lineStart === 12 && ranged.lineEnd === 20);
+  const encoded = classifyLocalFileLink("file:///tmp/My%20Project/main.ts#L3");
+  assert.ok(encoded && encoded.path === "/tmp/My Project/main.ts" && encoded.lineStart === 3);
 });
 
 test("local file classifier: absolute paths with vscode suffixes", () => {
@@ -810,10 +813,16 @@ test("local file classifier: absolute paths with vscode suffixes", () => {
 test("local file classifier: home-relative and workspace-relative", () => {
   const home = classifyLocalFileLink("~/go/src/x/main.go");
   assert.ok(home && home.path === "~/go/src/x/main.go");
+  const windowsHome = classifyLocalFileLink("~\\src\\main.cs");
+  assert.ok(windowsHome && windowsHome.path === "~\\src\\main.cs");
   const relative = classifyLocalFileLink("ddtrace/tracer/span.go:23", {
     workspaceRoot: "/go/src/github.com/DataDog/dd-trace-go",
   });
   assert.ok(relative && relative.path === "/go/src/github.com/DataDog/dd-trace-go/ddtrace/tracer/span.go" && relative.lineStart === 23);
+  const windowsRelative = classifyLocalFileLink("src\\main.cs:19", {
+    workspaceRoot: "C:\\work\\project",
+  });
+  assert.ok(windowsRelative && windowsRelative.path === "C:/work/project/src/main.cs" && windowsRelative.lineStart === 19);
   // Non-source relative files do not resolve.
   assert.equal(classifyLocalFileLink("notes.txt.backup", { workspaceRoot: "/w" }), null);
   // Without a workspace root, relative paths stay unresolved.

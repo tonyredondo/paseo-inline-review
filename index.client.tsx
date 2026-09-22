@@ -2,10 +2,10 @@ import type { PluginCleanup } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { FilePreviewPanel, ReviewPanel } from "./client/panel";
 import {
+  clearPreview,
   getPreviewTarget,
   registerFileTabOpener,
   requestPreview,
-  subscribe as subscribePreview,
 } from "./client/preview-store";
 import { registerPills } from "./client/pills";
 import { registerTimeline } from "./client/timeline";
@@ -37,11 +37,12 @@ export default function contribute(client: PluginClientContext) {
   // --- File preview tabs -------------------------------------------------
   // Each opened file gets its own panel: a unique id with the file's name
   // as the tab title, so several files and the review summary can be open
-  // at once. Panel ids are recycled LRU-style when too many pile up — the
-  // tab then swaps its content in place.
+  // at once. The least-recently-used registration is removed when too many
+  // pile up; a new id prevents another agent's open tab changing in place.
   const previewPanels = new Map<string, PluginCleanup>();
   const previewOrder: string[] = [];
   const MAX_FILE_TABS = 6;
+  let nextPreviewId = 1;
 
   function registerPreviewPanel(id: string, title: string): void {
     previewPanels.get(id)?.();
@@ -59,45 +60,55 @@ export default function contribute(client: PluginClientContext) {
     );
   }
 
-  registerFileTabOpener((path, lineStart, lineEnd, workspaceId, agentId) => {
-    // Reuse a tab already showing this file; otherwise the least recently
-    // used id (its tab swaps content in place), else a fresh one.
+  function unregisterPreviewPanel(id: string): void {
+    previewPanels.get(id)?.();
+    previewPanels.delete(id);
+    const orderIndex = previewOrder.indexOf(id);
+    if (orderIndex >= 0) previewOrder.splice(orderIndex, 1);
+    clearPreview(id);
+  }
+
+  const unregisterFileTabOpener = registerFileTabOpener((path, lineStart, lineEnd, workspaceId, agentId) => {
+    // Reuse only a tab owned by the same agent/workspace. Moving it to the
+    // end makes the bounded list a real least-recently-used queue.
     const existing = [...previewPanels.keys()].find(
-      (id) => getPreviewTarget(id)?.path === path,
+      (id) => {
+        const target = getPreviewTarget(id);
+        return target?.path === path && target.workspaceId === workspaceId && target.agentId === agentId;
+      },
     );
-    let id = existing ?? null;
-    if (id === null) {
-      if (previewOrder.length >= MAX_FILE_TABS) {
-        id = previewOrder.shift() ?? null;
-      } else {
-        id = `file-preview-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
-      }
+    if (existing) {
+      const index = previewOrder.indexOf(existing);
+      if (index >= 0) previewOrder.splice(index, 1);
+      previewOrder.push(existing);
+      requestPreview(path, workspaceId, agentId, lineStart, lineEnd, existing);
+      client.openPanel(existing, { workspaceId, agentId });
+      return;
     }
-    if (id === null) return;
-    if (!previewOrder.includes(id)) previewOrder.push(id);
-    const { target } = requestPreview(path, lineStart, lineEnd, id);
+
+    if (previewOrder.length >= MAX_FILE_TABS) {
+      const evicted = previewOrder[0];
+      if (evicted) unregisterPreviewPanel(evicted);
+    }
+    const id = `file-preview-${nextPreviewId++}`;
+    previewOrder.push(id);
+    const { target } = requestPreview(path, workspaceId, agentId, lineStart, lineEnd, id);
     registerPreviewPanel(id, target.path.split("/").pop() ?? "File preview");
     client.openPanel(id, { workspaceId, agentId });
   });
 
-  const syncPreviewTitles = (): void => {
-    for (const id of previewPanels.keys()) {
-      const target = getPreviewTarget(id);
-      const title = target ? target.path.split("/").pop() ?? "File preview" : "File preview";
-      registerPreviewPanel(id, title);
-    }
-  };
-  const removePreviewTitleWatcher = subscribePreview(syncPreviewTitles);
-  void syncPreviewTitles;
-
   registerTimeline(client);
   const removePills = registerPills(client);
-  return () => {
-    removePreviewTitleWatcher();
+  return async () => {
+    unregisterFileTabOpener();
     panelRegistration?.();
     panelRegistration = null;
-    for (const remove of previewPanels.values()) remove();
+    for (const [id, remove] of previewPanels) {
+      remove();
+      clearPreview(id);
+    }
     previewPanels.clear();
-    removePills();
+    previewOrder.length = 0;
+    await removePills();
   };
 }

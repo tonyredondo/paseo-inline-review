@@ -7,31 +7,33 @@ import {
   useRevealedText,
   useToast,
 } from "@getpaseo/plugin/client/react-native";
-import { useAgent, usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
+import { useAgent, usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
-import { openFileTab, registerFileTabOpener } from "./preview-store";
-import { ensureWideFrame, undoWideFrame, wideFrameSettings } from "./wide-frame";
+import { openFileTab } from "./preview-store";
 import {
-  ensureTurnIndex,
-  isTurnFinalMessage,
-  isTurnFinalText,
-  noteDiag,
+  getTurnFinalCardPosition,
+  retainTurnIndex,
+  retainTurnFinalFragment,
   subscribeTurnIndex,
+  subscribeTurnFinalFragments,
+  turnFinalFragmentVersion,
   turnIndexVersion,
 } from "./turn-final-store";
 import { z } from "zod";
-import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
-  loadCommentsRpc,
   openLocalFileRpc,
   reviewItemSchema,
-  saveCommentsRpc,
   sentReviewSchema,
   userMessageCardSchema,
   type UserMessageCardData,
+  commentBelongsToReviewSource,
+  findReviewCommentParagraphIndex,
+  reviewCommentMatchesParagraph,
   splitParagraphs,
   looksLikeSentReview,
+  parseReviewMessage,
   type ReviewComment,
   previewLanguage,
   type ReviewItemData,
@@ -40,15 +42,16 @@ import {
 import {
   addComment,
   getComments,
-  hydrateFromServer,
   relocateComment,
   removeComment,
-  scheduleSave,
   subscribe,
   updateComment,
 } from "./review-store";
 import { FileCodeBlock, MarkdownText } from "./markdown";
 import { extractRefDefs } from "../shared/markdown-parse";
+import { downloadLocalFileProgressively, formatFileSize } from "./file-download";
+import { DownloadCancelledError } from "./web";
+import { WideFrameController, useWideFrameControllerOwner } from "./wide-frame-controller";
 
 /** Data for the dotted compaction divider replacing the host's hairline. */
 const compactionDividerSchema = z.object({
@@ -77,7 +80,6 @@ type EditingTarget = {
  * - Without one (id-less messages): the saved paragraph snapshot must equal
  *   the paragraph exactly, in a message that has no id either.
  */
-/** A captured streaming snapshot may be a prefix of the completed paragraph. */
 /** Converts #rrggbb to rgba() so borders can fade without losing hue. */
 function withAlpha(hex: string, alpha: number): string {
   const value = hex.replace("#", "");
@@ -85,17 +87,6 @@ function withAlpha(hex: string, alpha: number): string {
   const g = parseInt(value.slice(2, 4), 16);
   const b = parseInt(value.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-/**
- * A captured streaming snapshot may be a prefix of the completed paragraph.
- * Prefix matching requires a substantial capture so short quotes cannot steal
- * anchors across messages (exact matches are always accepted).
- */
-function matchesCapturedText(captured: string, paragraph: string | undefined): boolean {
-  if (paragraph === undefined) return false;
-  if (paragraph === captured) return true;
-  return captured.length >= 40 && paragraph.startsWith(captured);
 }
 
 function commentAnchorsHere(
@@ -108,7 +99,7 @@ function commentAnchorsHere(
   if (comment.itemIndex !== undefined && comment.itemIndex !== null) return false;
   if (comment.messageId !== null && comment.messageId !== data.messageId) return false;
   if (comment.paragraphIndex !== index) return false;
-  return matchesCapturedText(comment.paragraphText, paragraph);
+  return reviewCommentMatchesParagraph(comment, paragraph);
 }
 
 /** Comments anchored to one list item of the chunk at chunkIndex. */
@@ -124,20 +115,17 @@ function listItemComments(
   );
 }
 
-function commentBelongsToMessage(data: ReviewItemData, comment: ReviewComment): boolean {
-  if (comment.messageId !== null) return comment.messageId === data.messageId;
-  // Unknown message id (commented while streaming): any message may adopt it;
-  // paragraph-text anchoring decides where it actually lives.
-  return true;
-}
-
-function useMessageComments(agentId: string, data: ReviewItemData) {
+function useMessageComments(agentId: string, data: ReviewItemData, sourceKey: string) {
   const all = useSyncExternalStore(subscribe, getComments);
   return useMemo(
-    () => all.filter((comment) => comment.agentId === agentId && commentBelongsToMessage(data, comment)),
-    [all, agentId, data.text, data.messageId],
+    () => all.filter(
+      (comment) => comment.agentId === agentId && commentBelongsToReviewSource(comment, data.messageId, sourceKey),
+    ),
+    [all, agentId, data.messageId, sourceKey],
   );
 }
+
+let nextMessageSourceKey = 1;
 
 /**
  * Left-ellipsis for long paths: keep the tail (the file name and its
@@ -255,17 +243,17 @@ function WebFilePreviewOverlay({
             <Text style={{ color: theme.colors.foregroundMuted, fontSize: 14 }}>✕</Text>
           </Pressable>
         </View>
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 4, gap: 4 }}>
+        <View style={{ flex: 1, padding: 4 }}>
           <FileCodeBlock
             code={filePreview.content}
             language={previewLanguage(filePreview.path)}
             theme={theme}
             compact={compact}
-            forceShowAll
+            virtualized
             highlightStart={filePreview.lineStart}
             highlightEnd={filePreview.lineEnd}
           />
-        </ScrollView>
+        </View>
       </View>
     </View>
   );
@@ -327,19 +315,6 @@ function CommentCard({
       <Text style={styles.text}>{comment.text}</Text>
     </View>
   );
-}
-
-/** Parses a formatted review into its optional note and per-paragraph entries. */
-function parseSentReview(text: string): { note: string; entries: { quote: string; comment: string }[] } {
-  const headerIndex = text.search(/(?:^|\n)Review:\s*\n/);
-  const note = headerIndex > 0 ? text.slice(0, headerIndex).trim() : "";
-  const body = headerIndex >= 0 ? text.slice(headerIndex).replace(/^(?:\n)?Review:\s*\n/, "") : text;
-  const entries: { quote: string; comment: string }[] = [];
-  const entryPattern = /\[\d+\] On: "([^"]*)"[^\n]*\nComment: ((?:.|\n)*?)(?=\n\s*\n|\n\[\d+\] On: |$)/g;
-  for (const match of body.matchAll(entryPattern)) {
-    entries.push({ quote: match[1], comment: match[2].trim() });
-  }
-  return { note, entries };
 }
 
 /** Compact card replacing the raw review text in the timeline. */
@@ -436,9 +411,8 @@ function UserMessageCard({
 function SentReviewCard({
   item,
   theme,
-  layout,
 }: PluginTimelineItemProps<SentReviewData>) {
-  const parsed = useMemo(() => parseSentReview(item.data.text), [item.data.text]);
+  const parsed = useMemo(() => parseReviewMessage(item.data.text), [item.data.text]);
   const [open, setOpen] = useState(false);
   const styles = useMemo(
     () => ({
@@ -492,64 +466,62 @@ function SentReviewCard({
 function ReviewAssistantMessage({
   agentId,
   item,
+  timestamp,
   theme,
   layout,
 }: PluginTimelineItemProps<ReviewItemData>) {
   const data = item.data;
-  const refs = useMemo(() => extractRefDefs(data.text), [data.text]);
-  const load = useRpc(loadCommentsRpc);
-  const persistComments = useRpc(saveCommentsRpc);
+  const sourceKeyRef = useRef<string | null>(null);
+  if (sourceKeyRef.current === null) sourceKeyRef.current = `stream-${nextMessageSourceKey++}`;
+  const sourceKey = sourceKeyRef.current;
   const openLocalFile = useRpc(openLocalFileRpc);
 
   const toast = useToast();
   const paseo = usePaseo();
-  // Turn-final card: the timeline API gives every entry its turnId, so the
-  // last assistant message of each turn is known on ALL platforms (native
-  // included) — no DOM probing needed.
+  const subscribeToTurnIndex = useCallback(
+    (listener: () => void) => subscribeTurnIndex(agentId, listener),
+    [agentId],
+  );
+  // Turn-final card: derive finality from ordered timeline data on every
+  // platform. Merged history rows intentionally cannot identify their still-
+  // separate live fragments by messageId; those fragments remain plain until
+  // Paseo supplies the consolidated final text.
   const turnVersion = useSyncExternalStore(
-    subscribeTurnIndex,
+    subscribeToTurnIndex,
     () => turnIndexVersion(agentId),
     () => turnIndexVersion(agentId),
   );
-  const isTurnFinal = useMemo(
-    () =>
-      turnVersion >= 0 &&
-      data.text.trim().length > 0 &&
-      // MessageIds repeat across streamed segments (codex re-uses one id for
-      // the whole turn), so the TEXT of the final segment is the reliable key.
-      (isTurnFinalText(agentId, data.text) || isTurnFinalMessage(agentId, data.messageId)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [turnVersion, agentId, data.messageId, data.text],
+  const subscribeToFinalFragments = useCallback(
+    (listener: () => void) => subscribeTurnFinalFragments(agentId, listener),
+    [agentId],
   );
+  const fragmentVersion = useSyncExternalStore(
+    subscribeToFinalFragments,
+    () => turnFinalFragmentVersion(agentId),
+    () => turnFinalFragmentVersion(agentId),
+  );
+  const timestampValue = timestamp.getTime();
+  useEffect(() => retainTurnFinalFragment({
+    agentId,
+    sourceKey,
+    messageId: data.messageId,
+    text: data.text,
+    timestamp: timestampValue,
+  }), [agentId, sourceKey, data.messageId, data.text, timestampValue]);
+  const finalCardPosition = useMemo(() => {
+    // These versions are the external-store snapshots that invalidate the lookup.
+    void turnVersion;
+    void fragmentVersion;
+    return getTurnFinalCardPosition(agentId, sourceKey);
+  }, [turnVersion, fragmentVersion, agentId, sourceKey]);
   useEffect(() => {
-    let cancelled = false;
-    // Turn-finality via the timeline API directly. NOTE: do NOT await
-    // handle.refresh() here — the 0.8.0 iPad host leaves that promise
-    // pending forever (the timeline.refetch() itself works fine).
-    void (async () => {
-      try {
-        const agents = paseo?.agents;
-        if (!agents || typeof agents.ref !== "function") {
-          noteDiag(agentId, "NOAPI");
-          return;
-        }
-        const handle = agents.ref(agentId);
-        if (!handle) {
-          noteDiag(agentId, "NOHANDLE");
-          return;
-        }
-        if (!handle.timeline) {
-          noteDiag(agentId, "NOTL");
-          return;
-        }
-        ensureTurnIndex(agentId, handle.timeline);
-      } catch (error) {
-        noteDiag(agentId, `TH:${String(error).slice(0, 40)}`);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    try {
+      const handle = paseo?.agents?.ref(agentId);
+      if (!handle?.timeline) return;
+      return retainTurnIndex(agentId, handle.timeline);
+    } catch {
+      return;
+    }
   }, [paseo, agentId]);
   const [filePreview, setFilePreview] = useState<{
     path: string;
@@ -559,76 +531,45 @@ function ReviewAssistantMessage({
     lineStart?: number;
     lineEnd?: number;
   } | null>(null);
-  // Wide reading frame (user flag): web only — the DOM pass widens the whole
-  // host frame; native platforms (iPad) keep the host's 820px column.
-  const wideFrameState = useSettings(wideFrameSettings);
-  const wideFrameReady = wideFrameState.status === "ready";
-  const wideFrame = wideFrameReady ? wideFrameState.values.wideFrame : false;
-  // A read that raced a plugin reload leaves an error state; retry once.
-  const wideFrameRetried = useRef(false);
-  useEffect(() => {
-    if (!wideFrameReady && !wideFrameRetried.current && wideFrameState.status !== "loading") {
-      wideFrameRetried.current = true;
-      void wideFrameState.reload();
-    }
-  }, [wideFrameReady, wideFrameState]);
-  useEffect(() => {
-    if (layout.platform === "web" && wideFrame) {
-      ensureWideFrame({
-        accent: theme.colors.accent ?? "#58a6ff",
-        surface: theme.colors.surface1,
-        raised: theme.colors.surface2,
-        border: theme.colors.border,
-      });
-    } else {
-      undoWideFrame();
-    }
-  }, [layout.platform, wideFrame, theme]);
-  // Host-maintained agent snapshot: agents.ref() reads null until a snapshot
-  // Host-maintained agent snapshot: agents.ref() reads null until a snapshot
-  // arrives, but the host state is always populated.
-  const agentWorkspaceId = useAgent(agentId, (agent) => (agent ? agent.workspaceId : null));
+  const ownsWideFrameController = useWideFrameControllerOwner();
+  // Host-maintained state updates when the agent snapshot arrives or its cwd changes.
+  const agentSnapshot = useAgent(agentId, (agent) => agent
+    ? { workspaceId: agent.workspaceId, cwd: agent.cwd }
+    : null);
+  const agentWorkspaceId = agentSnapshot?.workspaceId ?? null;
   // The workspace root lives on the daemon machine; relative file links
   // resolve against it.
-  const workspaceRoot = useMemo(
-    () => paseo?.agents?.ref(agentId)?.cwd ?? null,
-    [paseo, agentId],
-  );
-  // Hydrate persisted comments once per mount, and keep the daemon store in
-  // sync (debounced) whenever this agent's comments change.
-  useEffect(() => {
-    hydrateFromServer(agentId, load);
-    const handle = paseo?.agents?.ref(agentId);
-    if (handle?.cwd === null) void handle.refresh().catch(() => {});
-    return subscribe(() => {
-      void scheduleSave(agentId, persistComments);
-    });
-  }, [agentId, load, persistComments, paseo]);
+  const workspaceRoot = agentSnapshot?.cwd ?? null;
+  const refs = useMemo(() => extractRefDefs(data.text), [data.text]);
   const revealed = useRevealedText(data.text, data.phase);
   const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
-  const paragraphTexts = paragraphs;
-  const comments = useMessageComments(agentId, data);
+  const comments = useMessageComments(agentId, data, sourceKey);
   // Re-anchor streaming-time comments once the complete message exists: bind
   // id-less comments to this message and heal paragraph-index drift caused by
   // re-chunking between the streaming and complete snapshots.
   useEffect(() => {
     if (data.messageId === null) return;
-    for (const comment of comments) {
-      // Per-item comments anchor by (paragraphIndex, itemIndex): no healing.
-      if (comment.itemIndex !== undefined && comment.itemIndex !== null) continue;
-      const storedParagraph = paragraphs[comment.paragraphIndex];
-      const storedMatches = matchesCapturedText(comment.paragraphText, storedParagraph);
-      if (comment.messageId === null || !storedMatches) {
-        let index = paragraphs.indexOf(comment.paragraphText);
-        if (index === -1) {
-          index = paragraphs.findIndex((paragraph) => matchesCapturedText(comment.paragraphText, paragraph));
-        }
-        if (index !== -1) {
-          relocateComment(comment.id, data.messageId, index);
-        }
+    const candidates = getComments().filter((comment) =>
+      comment.agentId === agentId &&
+      (
+        comment.messageId === data.messageId ||
+        (
+          comment.messageId === null &&
+          (comment.sourceKey === sourceKey || comment.sourceKey === null || comment.sourceKey === undefined)
+        )
+      ),
+    );
+    for (const comment of candidates) {
+      const index = findReviewCommentParagraphIndex(comment, paragraphs);
+      if (index !== -1 && (
+        comment.messageId !== data.messageId ||
+        comment.paragraphIndex !== index ||
+        comment.sourceKey !== null
+      )) {
+        relocateComment(comment.id, data.messageId, index);
       }
     }
-  }, [comments, paragraphs, data.messageId]);
+  }, [agentId, paragraphs, data.messageId, sourceKey]);
   const [editing, setEditing] = useState<EditingTarget | null>(null);
   // Web: scroll the open editor into the viewport (DOM scrollIntoView). On
   // native the timeline ScrollView is host-owned and the SDK exposes no scroll
@@ -647,41 +588,63 @@ function ReviewAssistantMessage({
   const lastTapRef = useRef<{ index: number; itemIndex: number; at: number } | null>(null);
 
   const styles = useMemo(
-    () => ({
-      root: {
+    () => {
+      const inFinalCard = finalCardPosition !== "none";
+      const startsFinalCard = finalCardPosition === "single" || finalCardPosition === "start";
+      const endsFinalCard = finalCardPosition === "single" || finalCardPosition === "end";
+      const bridgeHeight = layout.compact ? 16 : 22;
+      return {
+        root: {
         gap: layout.compact ? 6 : 8,
-        paddingBottom: 10,
-        // Turn-final card (all platforms): mirror of the user card — raised
-        // sent-review surface, hairline border, accent on both edges.
-        ...(isTurnFinal
+        paddingBottom: inFinalCard ? (endsFinalCard ? 20 : 4) : 10,
+        // Live merged fragments become adjacent slices of one final card.
+        // Every source row keeps its own content and measured height.
+        ...(inFinalCard
           ? {
               backgroundColor: theme.colors.surface1,
-              borderRadius: 8,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
               borderRightWidth: 5,
               borderRightColor: withAlpha(theme.colors.accent, 0.35),
               borderLeftWidth: 5,
               borderLeftColor: withAlpha(theme.colors.accent, 0.35),
+              borderTopWidth: startsFinalCard ? 1 : 0,
+              borderTopColor: theme.colors.border,
+              borderBottomWidth: endsFinalCard ? 1 : 0,
+              borderBottomColor: theme.colors.border,
+              borderTopLeftRadius: startsFinalCard ? 8 : 0,
+              borderTopRightRadius: startsFinalCard ? 8 : 0,
+              borderBottomLeftRadius: endsFinalCard ? 8 : 0,
+              borderBottomRightRadius: endsFinalCard ? 8 : 0,
               paddingLeft: 16,
               paddingRight: 16,
-              paddingTop: 14,
-              paddingBottom: 20,
-              marginTop: 4,
+              paddingTop: startsFinalCard ? 14 : 4,
+              marginTop: startsFinalCard ? 4 : 0,
+              position: "relative" as const,
             }
           : {}),
-      } as const,
-      comments: { gap: 4, marginTop: 2 } as const,
-      editor: {
+        } as const,
+        cardBridge: {
+          position: "absolute" as const,
+          left: -5,
+          right: -5,
+          bottom: -bridgeHeight,
+          height: bridgeHeight,
+          backgroundColor: theme.colors.surface1,
+          borderLeftWidth: 5,
+          borderLeftColor: withAlpha(theme.colors.accent, 0.35),
+          borderRightWidth: 5,
+          borderRightColor: withAlpha(theme.colors.accent, 0.35),
+        } as const,
+        comments: { gap: 4, marginTop: 2 } as const,
+        editor: {
         backgroundColor: theme.colors.surface1,
         borderColor: theme.colors.border,
         borderWidth: 1,
         borderRadius: 8,
         padding: 10,
         gap: 8,
-      } as const,
-      actions: { flexDirection: "row", gap: 8 } as const,
-      input: {
+        } as const,
+        actions: { flexDirection: "row", gap: 8 } as const,
+        input: {
         color: theme.colors.foreground,
         backgroundColor: theme.colors.surface2,
         borderColor: theme.colors.border,
@@ -690,18 +653,19 @@ function ReviewAssistantMessage({
         padding: 10,
         minHeight: 64,
         textAlignVertical: "top",
-      } as const,
-      save: {
+        } as const,
+        save: {
         backgroundColor: theme.colors.accent,
         borderRadius: 8,
         padding: 10,
         alignItems: "center" as const,
-      } as const,
-      saveText: { color: theme.colors.accentForeground, fontSize: 14 } as const,
-      cancel: { padding: 10, alignItems: "center" as const } as const,
-      cancelText: { color: theme.colors.foregroundMuted, fontSize: 14 } as const,
-    }),
-    [theme, layout.compact, isTurnFinal],
+        } as const,
+        saveText: { color: theme.colors.accentForeground, fontSize: 14 } as const,
+        cancel: { padding: 10, alignItems: "center" as const } as const,
+        cancelText: { color: theme.colors.foregroundMuted, fontSize: 14 } as const,
+      };
+    },
+    [theme, layout.compact, finalCardPosition],
   );
 
   function handleChunkTap(chunkIndex: number, itemIndex: number = -1, itemText: string = ""): void {
@@ -804,51 +768,19 @@ function ReviewAssistantMessage({
     });
   }
 
-  /** Saves the previewed file via chunked base64 + a data: URI anchor (web). */
+  /** Streams the previewed file to a user-selected destination, 5 MB at a time. */
   function downloadPreviewedFile(): void {
     if (!filePreview) return;
-    void (async () => {
-      const CHUNK = 786432; // 0.75 MB, divisible by 3 so chunk base64s concatenate
-      const parts: string[] = [];
-      let offset = 0;
-      let last = false;
-      let size: number | undefined;
-      for (;;) {
-        const result = await openLocalFile({
-          path: filePreview.path,
-          mode: "download",
-          offset,
-          length: CHUNK,
-        });
-        if (!result.ok || !result.base64) {
-          toast.error(result.error ?? "Could not download the file.");
-          return;
-        }
-        parts.push(result.base64);
-        size = result.size ?? size;
-        last = result.done ?? true;
-        if (last) break;
-        offset += CHUNK;
+    void downloadLocalFileProgressively({
+      path: filePreview.path,
+      openFile: openLocalFile,
+    }).then((size) => {
+      toast.show(`Downloaded ${formatFileSize(size)}.`);
+    }).catch((error) => {
+      if (!(error instanceof DownloadCancelledError)) {
+        toast.error(error instanceof Error ? error.message : "Could not download the file.");
       }
-      const g = globalThis as unknown as {
-        document?: {
-          createElement(tag: string): { href?: string; download?: string; click?(): void; remove?(): void };
-          body?: { appendChild(node: unknown): void; removeChild(node: unknown): void };
-        };
-      };
-      if (!g.document?.body) {
-        toast.error("Download is only available on desktop.");
-        return;
-      }
-      const name = filePreview.path.split("/").pop() ?? "download";
-      const anchor = g.document.createElement("a");
-      anchor.href = `data:application/octet-stream;base64,${parts.join("")}`;
-      anchor.download = name;
-      g.document.body.appendChild(anchor);
-      anchor.click?.();
-      anchor.remove?.();
-      if (size) toast.show(`Downloaded ${size < 1024 * 1024 ? `${(size / 1024).toFixed(1)} KB` : `${(size / (1024 * 1024)).toFixed(1)} MB`}.`);
-    })().catch(() => toast.error("Could not download the file."));
+    });
   }
 
   /** Moves the sheet preview into its own file tab (leaves it open). */
@@ -878,6 +810,7 @@ function ReviewAssistantMessage({
         itemIndex: editing.itemIndex ?? null,
         paragraphText: editing.paragraphText,
         text: editing.draft.trim(),
+        sourceKey: data.messageId === null ? sourceKey : null,
       });
     }
     setEditing(null);
@@ -924,6 +857,7 @@ function ReviewAssistantMessage({
 
   return (
     <>
+      {ownsWideFrameController ? <WideFrameController theme={theme} layout={layout} /> : null}
       <View testID="inline-review-root" style={styles.root}>
       {paragraphs.map((paragraph, index) => {
         const anchored = comments.filter((comment) =>
@@ -966,7 +900,7 @@ function ReviewAssistantMessage({
                           key={comment.id}
                           comment={comment}
                           theme={theme}
-                          onEdit={(target) =>
+                          onEdit={() =>
                             setEditing({
                               paragraphIndex: index,
                               itemIndex,
@@ -1007,7 +941,7 @@ function ReviewAssistantMessage({
                           key={comment.id}
                           comment={comment}
                           theme={theme}
-                          onEdit={(target) =>
+                          onEdit={() =>
                             setEditing({
                               paragraphIndex: index,
                               itemIndex,
@@ -1030,7 +964,7 @@ function ReviewAssistantMessage({
                 key={comment.id}
                 comment={comment}
                 theme={theme}
-                onEdit={(target) =>
+                onEdit={() =>
                   setEditing({
                     paragraphIndex: index,
                     paragraphText: comment.paragraphText,
@@ -1044,6 +978,9 @@ function ReviewAssistantMessage({
           </View>
         );
       })}
+      {finalCardPosition === "start" || finalCardPosition === "middle" ? (
+        <View pointerEvents="none" style={styles.cardBridge} />
+      ) : null}
       {layout.platform === "web" ? (
         filePreview ? (
           <WebFilePreviewOverlay
@@ -1064,9 +1001,13 @@ function ReviewAssistantMessage({
             if (!open) setFilePreview(null);
           }}
         >
-          <Modal.Content style={{ padding: 4, gap: 4 }} contentContainerStyle={{ padding: 4, gap: 4 }}>
+          <Modal.Content
+            scrollable={false}
+            style={{ flex: 1, padding: 4, gap: 4 }}
+            contentContainerStyle={{ flex: 1, padding: 4, gap: 4 }}
+          >
             {filePreview ? (
-              <View style={{ gap: 8 }}>
+              <View style={{ flex: 1, gap: 8 }}>
                 <View style={{ gap: 6 }}>
                   {/* Mobile: the full path gets its own line, ellipsized at
                       the start (the tail matters); links sit on their own
@@ -1076,16 +1017,7 @@ function ReviewAssistantMessage({
                   </Text>
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
                   {/* Mobile: the file lives on the agent machine, so no
-                      "open locally" here — download or move to the tab. */}
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Download the file"
-                    hitSlop={6}
-                    onPress={downloadPreviewedFile}
-                  >
-                    <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Download</Text>
-                  </Pressable>
-                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>|</Text>
+                      "open locally" or download here — move to the tab. */}
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel="Open the file in the review panel"
@@ -1101,7 +1033,7 @@ function ReviewAssistantMessage({
                   language={previewLanguage(filePreview.path)}
                   theme={theme}
                   compact={layout.compact}
-                  forceShowAll
+                  virtualized
                   highlightStart={filePreview.lineStart}
                   highlightEnd={filePreview.lineEnd}
                 />
@@ -1116,7 +1048,7 @@ function ReviewAssistantMessage({
 }
 
 /**
- * EXPERIMENT (web only, NOT for commit): widen the host's reading frame.
+ * Registers the optional web-only wide reading frame.
  * Every host element capped at MAX_CONTENT_WIDTH (820px) — stream items,
  * tool calls, user messages, the composer — is re-capped inline to the
  * timeline pane width minus breathing room, so the conversation uses the
@@ -1128,6 +1060,12 @@ export function registerTimeline(client: PluginClientContext): void {
     id: "inline-review",
     query: { itemType: "assistant_message" },
     transform({ item, phase }) {
+      // Streaming can emit the host's visual separator as its own source row.
+      // Removing that formatting-only row at the transformer avoids an empty
+      // measured item without discarding any assistant content.
+      if (/^(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/.test(item.text.trim())) {
+        return { items: [] };
+      }
       return {
         items: [
           {

@@ -399,8 +399,6 @@ export function extractRefDefs(text: string): Map<string, string> {
   return refs;
 }
 
-const escapeSequence = /\\([\\`*_{}\[\]()#+.!>~|-])/g;
-
 /** Replaces backslash escapes with sentinels so they never match a pattern. */
 function maskEscapes(text: string): { masked: string; restore: (value: string) => string } {
   const escaped: string[] = [];
@@ -654,7 +652,7 @@ function isHomeRelative(value: string): boolean {
 }
 
 function hasKnownSourceExtension(path: string): boolean {
-  const base = path.split("/").pop() ?? "";
+  const base = path.replace(/\\/g, "/").split("/").pop() ?? "";
   const lower = base.toLowerCase();
   if (lower === "dockerfile" || lower === "makefile") return true;
   const dot = base.lastIndexOf(".");
@@ -680,16 +678,31 @@ export function classifyLocalFileLink(
   let lineStart: number | undefined;
   let lineEnd: number | undefined;
   if (/^file:\/\//i.test(raw)) {
-    const withoutPrefix = raw.replace(/^file:\/\//i, "");
-    const suffix = parseInlineLineSuffix(withoutPrefix);
+    let fileUrl: URL;
+    try {
+      fileUrl = new URL(raw);
+    } catch {
+      return null;
+    }
+    let decodedPath: string;
+    try {
+      decodedPath = decodeURIComponent(fileUrl.pathname);
+    } catch {
+      return null;
+    }
+    if (fileUrl.hostname && fileUrl.hostname !== "localhost") {
+      decodedPath = `//${fileUrl.hostname}${decodedPath}`;
+    } else if (/^\/[A-Za-z]:\//.test(decodedPath)) {
+      decodedPath = decodedPath.slice(1);
+    }
+    const suffix = parseInlineLineSuffix(decodedPath);
     if (suffix) {
       path = suffix.path;
       lineStart = suffix.lineStart;
       lineEnd = suffix.lineEnd;
     } else {
-      const { path: hashless, fragment } = splitHash(withoutPrefix);
-      path = hashless;
-      const fragmentLines = parseFragmentLines(fragment);
+      path = decodedPath;
+      const fragmentLines = parseFragmentLines(fileUrl.hash.replace(/^#/, ""));
       lineStart = fragmentLines?.lineStart;
       lineEnd = fragmentLines?.lineEnd;
     }
@@ -719,7 +732,10 @@ export function classifyLocalFileLink(
 
   // Workspace-relative source files resolve against the workspace root.
   const root = options.workspaceRoot?.trim();
-  if (!root || !root.startsWith("/")) return null;
+  if (!root) return null;
+  const normalizedRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalizedRoot.startsWith("/") && !/^[A-Za-z]:\//.test(normalizedRoot)) return null;
   if (!hasKnownSourceExtension(path)) return null;
-  return { path: `${root.replace(/\/+$/, "")}/${path.replace(/^\.\//, "")}`, lineStart, lineEnd };
+  const normalizedPath = path.replace(/\\/g, "/").replace(/^\.\//, "");
+  return { path: `${normalizedRoot}/${normalizedPath}`, lineStart, lineEnd };
 }
