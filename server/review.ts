@@ -274,6 +274,8 @@ function readLocalFile(absolutePath: string): {
   truncated?: boolean;
   size?: number;
   binary?: boolean;
+  base64?: string;
+  mimeType?: string;
 } {
   try {
     const stats = statSync(absolutePath);
@@ -292,6 +294,21 @@ function readLocalFile(absolutePath: string): {
       closeSync(fd);
     }
     const content = buffer.subarray(0, bytesRead);
+    const mimeType = imageMimeType(content);
+    if (mimeType) {
+      // An image must be complete before React Native can decode it. Preserve
+      // its type when it exceeds the preview cap so clients can explain the
+      // limit without misclassifying it as an arbitrary binary download.
+      if (size > MAX_READ_BYTES) {
+        return { ok: true, mimeType, truncated: true, size };
+      }
+      return {
+        ok: true,
+        base64: content.toString("base64"),
+        mimeType,
+        size,
+      };
+    }
     if (isProbablyBinary(content.subarray(0, Math.min(1024, content.length)))) {
       // Binary: no text content. The caller offers a download instead.
       return { ok: true, binary: true, size };

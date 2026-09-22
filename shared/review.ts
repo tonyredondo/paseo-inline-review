@@ -133,7 +133,7 @@ export const openLocalFileRpc = defineRpc({
     size: z.number().optional(),
     /** True when the file looks binary: no text content is served. */
     binary: z.boolean().optional(),
-    /** Base64 payload for mode "download". */
+    /** Base64 payload for a download chunk or a complete image preview. */
     base64: z.string().optional(),
     /** Validated image media type for mode "image". */
     mimeType: z.string().optional(),
@@ -151,14 +151,6 @@ export const sentReviewSchema = z.object({
 });
 
 export type SentReviewData = z.output<typeof sentReviewSchema>;
-
-/** Data for the plugin-owned card replacing a plain user message (user flag). */
-export const userMessageCardSchema = z.object({
-  messageId: z.string().nullable(),
-  text: z.string(),
-});
-
-export type UserMessageCardData = z.output<typeof userMessageCardSchema>;
 
 /** Matches the user messages produced by formatReview (optionally after a note). */
 export function looksLikeSentReview(text: string): boolean {

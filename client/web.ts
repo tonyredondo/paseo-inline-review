@@ -10,9 +10,18 @@ interface SaveFileHandle {
   createWritable(): Promise<WritableFile>;
 }
 
+interface DesktopHost {
+  opener?: {
+    openUrl?(url: string): Promise<void> | void;
+  };
+}
+
 type WebGlobals = typeof globalThis & {
   atob?(value: string): string;
   showSaveFilePicker?(options: { suggestedName: string }): Promise<SaveFileHandle>;
+  /** Electron preload bridge exposed by Paseo Desktop. */
+  paseoDesktop?: DesktopHost;
+  open?(url: string, target?: string, features?: string): unknown;
 };
 
 export class DownloadCancelledError extends Error {
@@ -26,6 +35,26 @@ export interface ProgressiveDownload {
   writeBase64(value: string): Promise<number>;
   close(): Promise<void>;
   abort(): Promise<void>;
+}
+
+/**
+ * Opens an external URL on web clients. Paseo Desktop's preload bridge sends
+ * it to the system browser; ordinary browser clients open a new tab. Native
+ * callers return false so React Native Linking can handle the URL instead.
+ */
+export async function openExternalUrlOnWeb(url: string): Promise<boolean> {
+  if (Platform.OS !== "web") return false;
+  const web = globalThis as WebGlobals;
+  const desktopOpenUrl = web.paseoDesktop?.opener?.openUrl;
+  if (typeof desktopOpenUrl === "function") {
+    await desktopOpenUrl(url);
+    return true;
+  }
+  if (typeof web.open === "function") {
+    web.open?.(url, "_blank", "noopener,noreferrer");
+    return true;
+  }
+  return false;
 }
 
 /** Opens the destination before any file data crosses the RPC boundary. */

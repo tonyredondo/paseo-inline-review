@@ -118,6 +118,35 @@ test("local image previews return a complete typed data payload", async () => {
   assert.deepEqual(Buffer.from(result.base64 ?? "", "base64"), png);
 });
 
+test("the normal file preview recognizes images instead of reporting binary", async () => {
+  const root = tempRoot();
+  process.env.PASEO_HOME = root;
+  const server = await importServer("file-preview-image");
+  const filePath = join(root, "pixel.png");
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  writeFileSync(filePath, png);
+
+  const result = await server.openLocalFile({ path: filePath, mode: "read" });
+  assert.equal(result.ok, true);
+  assert.equal(result.binary, undefined);
+  assert.equal(result.mimeType, "image/png");
+  assert.deepEqual(Buffer.from(result.base64 ?? "", "base64"), png);
+
+  const largePath = join(root, "large.png");
+  const largePng = Buffer.alloc(FILE_TRANSFER_CHUNK_BYTES + 1);
+  png.subarray(0, 8).copy(largePng);
+  writeFileSync(largePath, largePng);
+  const largeResult = await server.openLocalFile({ path: largePath, mode: "read" });
+  assert.equal(largeResult.ok, true);
+  assert.equal(largeResult.binary, undefined);
+  assert.equal(largeResult.mimeType, "image/png");
+  assert.equal(largeResult.truncated, true);
+  assert.equal(largeResult.base64, undefined);
+});
+
 test("download rejects a same-size file replacement between chunks", async () => {
   const root = tempRoot();
   process.env.PASEO_HOME = root;

@@ -2,7 +2,7 @@ import type { InlineToken } from "../shared/markdown-parse";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View, type ImageStyle, type StyleProp } from "react-native";
+import { Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View, type ImageStyle, type StyleProp, type ViewStyle } from "react-native";
 import { MarkdownSpan } from "./markdown-span";
 import { isValidHttpUrl, openLocalFileRpc } from "../shared/review";
 import type { LocalFileTarget } from "../shared/markdown-parse";
@@ -13,6 +13,7 @@ import {
 } from "../shared/markdown-parse";
 import { highlightCode, type CodeToken } from "../shared/syntax";
 import { copyText, FlatList, Icon } from "@getpaseo/plugin/client/react-native";
+import { openExternalUrlOnWeb } from "./web";
 
 /**
  * Renders parsed markdown blocks with React Native primitives. Paseo does not
@@ -59,9 +60,11 @@ function breakLongWords(text: string): string {
 async function openLink(url: string): Promise<void> {
   // mailto: and other schemes skip the http check; the OS opener routes them.
   if (!url.startsWith("mailto:") && !isValidHttpUrl(url)) return;
-  // Linking belongs to the client runtime, so remote agents still open links
-  // on the device the user tapped (desktop, iOS or Android).
   try {
+    // Desktop must use Paseo's Electron bridge so the operating system opens
+    // the default browser. Browser builds use a new tab through the same helper.
+    if (await openExternalUrlOnWeb(url)) return;
+    // Native clients keep opening the URL on the device the user tapped.
     await Linking.openURL(url);
   } catch (error) {
     console.error("inline-review: could not open external link", error);
@@ -168,6 +171,7 @@ function InlineRun({
               <MarkdownSpan
                 key={index}
                 style={{ color: theme.colors.accent }}
+                accessibilityRole="link"
                 onPress={() => {
                   if (localTarget) onLocalFilePress?.(localTarget);
                   else void openLink(token.linkUrl ?? "");
@@ -208,6 +212,7 @@ function InlineRun({
               <MarkdownSpan
                 key={index}
                 style={{ color: theme.colors.accent }}
+                accessibilityRole="link"
                 onPress={() => {
                   if (localTarget) {
                     onLocalFilePress?.(localTarget);
@@ -847,7 +852,18 @@ function useStyles(theme: PluginTheme, compact: boolean) {
       tableRow: { flexDirection: "row" } as const,
       headerRow: { backgroundColor: theme.colors.surface2 } as const,
       cellBorder: { borderColor: theme.colors.border } as const,
-      image: { width: "100%" as const, height: 180, borderRadius: 8, marginVertical: 2 } as const,
+      image: { width: "100%" as const, height: compact ? 160 : 220, borderRadius: 6 } as const,
+      localImageCard: {
+        alignSelf: "flex-start" as const,
+        width: "100%" as const,
+        maxWidth: compact ? 320 : 420,
+        padding: 6,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 10,
+        backgroundColor: theme.colors.surface1,
+        overflow: "hidden" as const,
+      } as const,
       paragraphGap: { gap: 0 } as const,
     }),
     [theme, compact],
@@ -859,12 +875,14 @@ function LocalMarkdownImage({
   alt,
   theme,
   style,
+  cardStyle,
   onPress,
 }: {
   target: LocalFileTarget;
   alt: string;
   theme: PluginTheme;
   style: StyleProp<ImageStyle>;
+  cardStyle: StyleProp<ViewStyle>;
   onPress?: (target: LocalFileTarget) => void;
 }) {
   const openLocalFile = useRpc(openLocalFileRpc);
@@ -902,6 +920,7 @@ function LocalMarkdownImage({
       <Pressable
         accessibilityRole="imagebutton"
         accessibilityLabel={`Open local image ${label}`}
+        style={cardStyle}
         onPress={() => onPress?.(target)}
       >
         <Image source={{ uri: dataUri }} style={style} resizeMode="contain" accessibilityLabel={alt || label} />
@@ -913,6 +932,7 @@ function LocalMarkdownImage({
     <Pressable
       accessibilityRole="link"
       accessibilityLabel={`Open local image ${label}`}
+      style={cardStyle}
       onPress={() => onPress?.(target)}
     >
       <Text style={{ color: state.status === "error" ? theme.colors.statusDanger : theme.colors.foregroundMuted }}>
@@ -1222,7 +1242,8 @@ export function MarkdownText({
                       target={localTarget}
                       alt={token.alt}
                       theme={theme}
-                      style={[styles.image, blockSpacing ?? null]}
+                      style={styles.image}
+                      cardStyle={[styles.localImageCard, blockSpacing ?? null]}
                       onPress={onLocalFilePress}
                     />
                   );

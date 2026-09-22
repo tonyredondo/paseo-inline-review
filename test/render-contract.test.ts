@@ -11,6 +11,7 @@ import { test } from "node:test";
 
 import * as path from "node:path";
 const rendererSource = String(readFileSync(path.resolve("client/markdown.tsx"), "utf8"));
+const webSource = String(readFileSync(path.resolve("client/web.ts"), "utf8"));
 
 test("every code token Text carries the monospace family explicitly", () => {
   // react-native-web nested Texts do NOT inherit fontFamily: each token must
@@ -86,10 +87,28 @@ test("file previews virtualize lines and highlight only rendered rows", () => {
 
 test("external links open on the client and nested styles retain file handlers", () => {
   assert.ok(!rendererSource.includes("openInBrowserRpc"));
-  assert.match(rendererSource, /await Linking\.openURL\(url\)/);
+  assert.match(rendererSource, /if \(await openExternalUrlOnWeb\(url\)\) return/);
+  assert.match(webSource, /web\.paseoDesktop\?\.opener\?\.openUrl/);
+  assert.match(webSource, /web\.open\?\.\(url, "_blank", "noopener,noreferrer"\)/);
+  assert.equal(rendererSource.match(/accessibilityRole="link"/g)?.length, 3);
   const boldCase = rendererSource.slice(rendererSource.indexOf('case "bold"'), rendererSource.indexOf('case "code"'));
   assert.equal(boldCase.match(/localFileResolver=\{localFileResolver\}/g)?.length, 3);
   assert.equal(boldCase.match(/onLocalFilePress=\{onLocalFilePress\}/g)?.length, 3);
+});
+
+test("plain user messages remain host-rendered so Paseo preserves attachments", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx"), "utf8"));
+  const sharedSource = String(readFileSync(path.resolve("shared/review.ts"), "utf8"));
+  const transformerStart = timelineSource.indexOf('id: "inline-review-sent"');
+  const transformerEnd = timelineSource.indexOf(
+    'client.addTimelineRenderer({\n    kind: "inline-review-sent"',
+    transformerStart,
+  );
+  const transformer = timelineSource.slice(transformerStart, transformerEnd);
+  assert.match(transformer, /if \(looksLikeSentReview\(item\.text\)\)/);
+  assert.match(transformer, /return undefined/);
+  assert.ok(!timelineSource.includes('kind: "user-message-card"'));
+  assert.ok(!sharedSource.includes("userMessageCardSchema"));
 });
 
 test("timeline rows use scoped agent state and one elected wide-frame controller", () => {
@@ -116,8 +135,20 @@ test("local markdown images load through the daemon and remain visible", () => {
   const singleImageBranch = rendererSource.slice(branchStart, branchStart + 2_000);
   assert.match(singleImageBranch, /localFileResolver\?\.\(token\.url\)/);
   assert.match(singleImageBranch, /<LocalMarkdownImage/);
+  assert.match(singleImageBranch, /cardStyle=\{\[styles\.localImageCard, blockSpacing \?\? null\]\}/);
   assert.match(rendererSource, /mode: "image"/);
   assert.match(rendererSource, /source=\{\{ uri: dataUri \}\}/);
+  assert.match(rendererSource, /localImageCard:[\s\S]{0,200}alignSelf: "flex-start"/);
+  assert.match(rendererSource, /localImageCard:[\s\S]{0,400}backgroundColor: theme\.colors\.surface1/);
+});
+
+test("file preview panels render detected images instead of the binary fallback", () => {
+  const panelSource = String(readFileSync(path.resolve("client/panel.tsx")));
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  assert.match(panelSource, /state\.kind === "image"/);
+  assert.match(panelSource, /<Image[\s\S]{0,200}source=\{\{ uri: state\.dataUri \}\}/);
+  assert.match(timelineSource, /filePreview\.kind === "image"/);
+  assert.match(timelineSource, /<Image[\s\S]{0,200}source=\{\{ uri: filePreview\.dataUri \}\}/);
 });
 
 test("streamed final fragments render as slices of one card", () => {

@@ -17,14 +17,21 @@ export function MarkdownSpan({
   children,
   onPress,
   selectable,
+  accessibilityRole,
 }: {
   style?: StyleProp<TextStyle>;
   children: React.ReactNode;
   onPress?: TextProps["onPress"];
   selectable?: boolean;
+  accessibilityRole?: TextProps["accessibilityRole"];
 }) {
   return (
-    <Text selectable={selectable} style={style} onPress={onPress}>
+    <Text
+      selectable={selectable}
+      style={style}
+      onPress={onPress}
+      accessibilityRole={accessibilityRole}
+    >
       {children}
     </Text>
   );

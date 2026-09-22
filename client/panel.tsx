@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Image, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { openLocalFileRpc, previewLanguage } from "../shared/review";
 import { formatReview, type ReviewComment } from "../shared/review";
 import {
@@ -71,18 +71,17 @@ function PanelFilePreview({
   const toast = useToast();
   const canDownload = Platform.OS === "web";
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
-  const [state, setState] = useState<{
-    loading: boolean;
-    content?: string;
-    truncated?: boolean;
-    error?: string;
-    binary?: boolean;
-    size?: number;
-  }>({ loading: true });
+  const [state, setState] = useState<
+    | { kind: "loading" }
+    | { kind: "error"; message: string }
+    | { kind: "binary"; size?: number }
+    | { kind: "text"; content: string; truncated: boolean }
+    | { kind: "image"; dataUri?: string; mimeType: string; size?: number }
+  >({ kind: "loading" });
 
   useEffect(() => {
     let cancelled = false;
-    setState({ loading: true });
+    setState({ kind: "loading" });
     void openFile({
       path: target.path,
       lineStart: target.lineStart,
@@ -91,16 +90,23 @@ function PanelFilePreview({
     })
       .then((result) => {
         if (cancelled) return;
-        if (result.ok && result.binary) {
-          setState({ loading: false, binary: true, truncated: result.truncated ?? false, size: result.size });
+        if (result.ok && result.mimeType) {
+          setState({
+            kind: "image",
+            dataUri: result.base64 ? `data:${result.mimeType};base64,${result.base64}` : undefined,
+            mimeType: result.mimeType,
+            size: result.size,
+          });
+        } else if (result.ok && result.binary) {
+          setState({ kind: "binary", size: result.size });
         } else if (result.ok) {
-          setState({ loading: false, content: result.content ?? "", truncated: result.truncated ?? false });
+          setState({ kind: "text", content: result.content ?? "", truncated: result.truncated ?? false });
         } else {
-          setState({ loading: false, error: result.error ?? "Could not read the file." });
+          setState({ kind: "error", message: result.error ?? "Could not read the file." });
         }
       })
       .catch(() => {
-        if (!cancelled) setState({ loading: false, error: "Could not read the file." });
+        if (!cancelled) setState({ kind: "error", message: "Could not read the file." });
       });
     return () => {
       cancelled = true;
@@ -116,6 +122,7 @@ function PanelFilePreview({
       muted: { color: theme.colors.foregroundMuted, fontSize: 12 } as const,
       error: { color: theme.colors.statusDanger, fontSize: 12 } as const,
       body: { flex: 1 } as const,
+      image: { width: "100%" as const, height: "100%" as const } as const,
       binaryBox: { gap: 8, paddingVertical: 24, alignItems: "center" } as const,
       downloadButton: {
         backgroundColor: theme.colors.accent,
@@ -155,7 +162,7 @@ function PanelFilePreview({
     <View style={styles.root}>
       <View style={styles.header}>
         <Text style={styles.path} numberOfLines={2}>
-          {`${target.path}${state.truncated ? " (truncated)" : ""}`}
+          {`${target.path}${state.kind === "text" && state.truncated ? " (truncated)" : ""}`}
         </Text>
         <Pressable
           accessibilityRole="button"
@@ -183,11 +190,28 @@ function PanelFilePreview({
           </>
         ) : null}
       </View>
-      {state.loading ? (
+      {state.kind === "loading" ? (
         <Text style={styles.muted}>Loading…</Text>
-      ) : state.error ? (
-        <Text style={styles.error}>{state.error}</Text>
-      ) : state.binary ? (
+      ) : state.kind === "error" ? (
+        <Text style={styles.error}>{state.message}</Text>
+      ) : state.kind === "image" ? (
+        <View key={target.requestId} style={[styles.body, { padding: 4 }]}>
+          {state.dataUri ? (
+            <Image
+              source={{ uri: state.dataUri }}
+              style={styles.image}
+              resizeMode="contain"
+              accessibilityLabel={`Preview of ${target.path}`}
+            />
+          ) : (
+            <View style={styles.binaryBox}>
+              <Text style={styles.muted}>
+                {`Image${state.size ? ` · ${formatSize(state.size)}` : ""} exceeds the 5 MB preview limit.`}
+              </Text>
+            </View>
+          )}
+        </View>
+      ) : state.kind === "binary" ? (
         <View style={styles.binaryBox}>
           <Text style={styles.muted}>
             {`Binary file${state.size ? ` · ${formatSize(state.size)}` : ""} — nothing to show as text.`}
@@ -210,7 +234,7 @@ function PanelFilePreview({
       ) : (
         <View key={target.requestId} style={[styles.body, { padding: 4 }]}>
           <FileCodeBlock
-            code={state.content ?? ""}
+            code={state.content}
             language={previewLanguage(target.path)}
             theme={theme}
             compact={layout.compact}

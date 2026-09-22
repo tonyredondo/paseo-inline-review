@@ -21,13 +21,11 @@ import {
 } from "./turn-final-store";
 import { z } from "zod";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   openLocalFileRpc,
   reviewItemSchema,
   sentReviewSchema,
-  userMessageCardSchema,
-  type UserMessageCardData,
   commentBelongsToReviewSource,
   findReviewCommentParagraphIndex,
   reviewCommentMatchesParagraph,
@@ -141,14 +139,17 @@ function startEllipsis(path: string, maxChars: number): string {
 }
 
 /** Preview state for a tapped local-file link. */
-type FilePreviewState = {
+type FilePreviewBase = {
   path: string;
-  content: string;
-  truncated: boolean;
   size: number;
   lineStart?: number;
   lineEnd?: number;
 };
+
+type FilePreviewState = FilePreviewBase & (
+  | { kind: "text"; content: string; truncated: boolean }
+  | { kind: "image"; dataUri?: string; mimeType: string }
+);
 
 /**
  * Desktop (web) file preview. The host AdaptiveModalSheet caps its card at
@@ -215,7 +216,7 @@ function WebFilePreviewOverlay({
       >
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, flex: 1 }} numberOfLines={2}>
-            {`${filePreview.path}${filePreview.truncated ? " (truncated)" : ""}`}
+            {`${filePreview.path}${filePreview.kind === "text" && filePreview.truncated ? " (truncated)" : ""}`}
           </Text>
           <Pressable
             accessibilityRole="button"
@@ -244,15 +245,32 @@ function WebFilePreviewOverlay({
           </Pressable>
         </View>
         <View style={{ flex: 1, padding: 4 }}>
-          <FileCodeBlock
-            code={filePreview.content}
-            language={previewLanguage(filePreview.path)}
-            theme={theme}
-            compact={compact}
-            virtualized
-            highlightStart={filePreview.lineStart}
-            highlightEnd={filePreview.lineEnd}
-          />
+          {filePreview.kind === "image" ? (
+            filePreview.dataUri ? (
+              <Image
+                source={{ uri: filePreview.dataUri }}
+                style={{ width: "100%", height: "100%" }}
+                resizeMode="contain"
+                accessibilityLabel={`Preview of ${filePreview.path}`}
+              />
+            ) : (
+              <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+                  {`Image · ${formatFileSize(filePreview.size)} exceeds the 5 MB preview limit.`}
+                </Text>
+              </View>
+            )
+          ) : (
+            <FileCodeBlock
+              code={filePreview.content}
+              language={previewLanguage(filePreview.path)}
+              theme={theme}
+              compact={compact}
+              virtualized
+              highlightStart={filePreview.lineStart}
+              highlightEnd={filePreview.lineEnd}
+            />
+          )}
         </View>
       </View>
     </View>
@@ -349,61 +367,6 @@ function CompactionDivider({
       <Icon name="Link" size={12} color={theme.colors.foregroundMuted} />
       <Text style={styles.label}>{label}</Text>
       <View style={styles.line} />
-    </View>
-  );
-}
-
-/** Short wall-clock label ("13:38") for the card's trailing row. */
-function timestampLabel(timestamp: Date): string {
-  return timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-/**
- * Review-style card for plain user messages (user flag, ALL platforms):
- * right-aligned fit-content card, raised surface, hairline border on the
- * other sides and a 5px accent border on the left — the desktop DOM look,
- * now rendered natively.
- */
-function UserMessageCard({
-  item,
-  timestamp,
-  theme,
-}: PluginTimelineItemProps<UserMessageCardData>) {
-  const styles = useMemo(
-    () => ({
-      root: {
-        alignSelf: "flex-end",
-        maxWidth: "100%",
-        backgroundColor: theme.colors.surface2,
-        borderRadius: 8,
-        borderTopWidth: 1,
-        borderRightWidth: 1,
-        borderBottomWidth: 1,
-        borderTopColor: theme.colors.border,
-        borderRightColor: theme.colors.border,
-        borderBottomColor: theme.colors.border,
-        borderLeftWidth: 5,
-        borderLeftColor: withAlpha(theme.colors.accent, 0.35),
-        paddingLeft: 10,
-        paddingRight: 10,
-        paddingTop: 12,
-        paddingBottom: 2,
-        marginVertical: 2,
-      } as const,
-      time: {
-        color: theme.colors.foregroundMuted,
-        fontSize: 11,
-        textAlign: "right",
-        paddingTop: 2,
-        paddingBottom: 6,
-      } as const,
-    }),
-    [theme],
-  );
-  return (
-    <View testID="inline-review-sent" style={styles.root}>
-      <MarkdownText text={item.data.text} theme={theme} compact={false} />
-      <Text style={styles.time}>{timestampLabel(timestamp)}</Text>
     </View>
   );
 }
@@ -523,14 +486,7 @@ function ReviewAssistantMessage({
       return;
     }
   }, [paseo, agentId]);
-  const [filePreview, setFilePreview] = useState<{
-    path: string;
-    content: string;
-    truncated: boolean;
-    size: number;
-    lineStart?: number;
-    lineEnd?: number;
-  } | null>(null);
+  const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
   const ownsWideFrameController = useWideFrameControllerOwner();
   // Host-maintained state updates when the agent snapshot arrives or its cwd changes.
   const agentSnapshot = useAgent(agentId, (agent) => agent
@@ -738,11 +694,24 @@ function ReviewAssistantMessage({
         toast.error(result.error ?? "Could not open the file.");
         return;
       }
+      if (result.mimeType) {
+        setFilePreview({
+          kind: "image",
+          path: target.path,
+          dataUri: result.base64 ? `data:${result.mimeType};base64,${result.base64}` : undefined,
+          mimeType: result.mimeType,
+          size: result.size ?? 0,
+          lineStart: target.lineStart,
+          lineEnd: target.lineEnd,
+        });
+        return;
+      }
       if (result.binary) {
         toast.show(`Binary file${result.size ? ` (${result.size} bytes)` : ""} — nothing to preview. Use "Open locally" instead.`);
         return;
       }
       setFilePreview({
+        kind: "text",
         path: target.path,
         content: result.content ?? "",
         truncated: result.truncated ?? false,
@@ -1013,7 +982,7 @@ function ReviewAssistantMessage({
                       the start (the tail matters); links sit on their own
                       right-aligned row below. */}
                   <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }} numberOfLines={1}>
-                    {`${startEllipsis(filePreview.path, 78)}${filePreview.truncated ? " (truncated)" : ""}`}
+                    {`${startEllipsis(filePreview.path, 78)}${filePreview.kind === "text" && filePreview.truncated ? " (truncated)" : ""}`}
                   </Text>
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
                   {/* Mobile: the file lives on the agent machine, so no
@@ -1028,15 +997,32 @@ function ReviewAssistantMessage({
                   </Pressable>
                   </View>
                 </View>
-                <FileCodeBlock
-                  code={filePreview.content}
-                  language={previewLanguage(filePreview.path)}
-                  theme={theme}
-                  compact={layout.compact}
-                  virtualized
-                  highlightStart={filePreview.lineStart}
-                  highlightEnd={filePreview.lineEnd}
-                />
+                {filePreview.kind === "image" ? (
+                  filePreview.dataUri ? (
+                    <Image
+                      source={{ uri: filePreview.dataUri }}
+                      style={{ width: "100%", flex: 1 }}
+                      resizeMode="contain"
+                      accessibilityLabel={`Preview of ${filePreview.path}`}
+                    />
+                  ) : (
+                    <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+                      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+                        {`Image · ${formatFileSize(filePreview.size)} exceeds the 5 MB preview limit.`}
+                      </Text>
+                    </View>
+                  )
+                ) : (
+                  <FileCodeBlock
+                    code={filePreview.content}
+                    language={previewLanguage(filePreview.path)}
+                    theme={theme}
+                    compact={layout.compact}
+                    virtualized
+                    highlightStart={filePreview.lineStart}
+                    highlightEnd={filePreview.lineEnd}
+                  />
+                )}
               </View>
             ) : null}
           </Modal.Content>
@@ -1106,18 +1092,10 @@ export function registerTimeline(client: PluginClientContext): void {
           ],
         };
       }
-      // Render every user message as a review-style card on ALL platforms
-      // (desktop web, iPhone, iPad) — native included.
-      return {
-        items: [
-          {
-            type: "plugin",
-            kind: "user-message-card",
-            version: 1,
-            data: { messageId: item.messageId ?? null, text: item.text },
-          },
-        ],
-      };
+      // Plain message attachments are host-owned and are not exposed through
+      // the transformer contract. Preserve the native row so its text, images,
+      // timestamp and actions remain together.
+      return undefined;
     },
   });
   client.addTimelineRenderer({
@@ -1125,12 +1103,6 @@ export function registerTimeline(client: PluginClientContext): void {
     version: 1,
     schema: sentReviewSchema,
     Component: SentReviewCard,
-  });
-  client.addTimelineRenderer({
-    kind: "user-message-card",
-    version: 1,
-    schema: userMessageCardSchema,
-    Component: UserMessageCard,
   });
   // Compaction divider: same "Context compacted" marker but with dotted
   // side lines instead of the host's continuous hairline.
