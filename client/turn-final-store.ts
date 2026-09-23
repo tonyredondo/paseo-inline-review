@@ -427,6 +427,11 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     setAgentStatus(status: string | undefined): void {
       if (snapshotAgentStatus === status) return;
       snapshotAgentStatus = status;
+      // Paseo can publish `running` before the new user row reaches the
+      // timeline. Keep the last proven final classification until timeline
+      // data shows the new turn (or continued work in the same turn). Closed
+      // statuses may still finalize the current tail immediately.
+      if (status === "running" || status === "initializing") return;
       publishFinals();
     },
     subscribe(cb: () => void): () => void {

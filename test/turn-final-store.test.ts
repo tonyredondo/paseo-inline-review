@@ -403,6 +403,71 @@ test("an agent status event finalizes the tail without another timeline request"
   release();
 });
 
+test("starting a new user turn keeps the previous final card while history catches up", async () => {
+  const agentId = `new-turn-card-continuity-${Date.now()}`;
+  let notify: ((message: unknown) => void) | null = null;
+  let entries: Array<{
+    item: { type: string; messageId?: string; text?: string; status?: string };
+    turnId: string;
+    seqEnd: number;
+  }> = [{
+    item: { type: "assistant_message", messageId: "previous-final", text: "done" },
+    turnId: "turn-1",
+    seqEnd: 1,
+  }];
+  const timeline = {
+    subscribe(handler: (message: unknown) => void): () => void {
+      notify = handler;
+      return () => {};
+    },
+    async refetch() {
+      return {
+        entries,
+        agent: { status: "idle" },
+        hasOlder: false,
+      };
+    },
+  };
+
+  const release = retainTurnIndex(agentId, timeline, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(isTurnFinalMessage(agentId, "previous-final"), true);
+
+  // Paseo publishes the running agent snapshot before the new user row reaches
+  // the timeline. The previous completed card must remain visually stable in
+  // that interval instead of briefly reverting to a plain message.
+  updateTurnAgentStatus(agentId, "running");
+  assert.equal(isTurnFinalMessage(agentId, "previous-final"), true);
+
+  entries = [
+    entries[0],
+    {
+      item: { type: "user_message", messageId: "new-user", text: "follow up" },
+      turnId: "turn-2",
+      seqEnd: 2,
+    },
+  ];
+  (notify as unknown as (message: unknown) => void)(undefined);
+  await new Promise<void>((resolve) => setTimeout(resolve, 450));
+  assert.equal(isTurnFinalMessage(agentId, "previous-final"), true);
+
+  // A real continuation of the same turn still removes the stale final card
+  // once the timeline, rather than the earlier status snapshot, proves it.
+  entries = [
+    entries[0],
+    {
+      item: { type: "tool_call", status: "running" },
+      turnId: "turn-1",
+      seqEnd: 3,
+    },
+  ];
+  (notify as unknown as (message: unknown) => void)(undefined);
+  await new Promise<void>((resolve) => setTimeout(resolve, 450));
+  assert.equal(isTurnFinalMessage(agentId, "previous-final"), false);
+
+  release();
+});
+
 test("a live idle snapshot wins over an older timeline response", async () => {
   const agentId = `status-race-${Date.now()}`;
   type StatusPage = {
