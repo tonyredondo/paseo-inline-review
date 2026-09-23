@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   classifyWideFrameMutations,
   lowestCommonAncestor,
+  pruneDisconnectedNodes,
 } from "../client/wide-frame-mutations.ts";
 
 type FakeNode = {
@@ -69,12 +70,23 @@ test("new known or marker-bearing subtrees schedule only their exact scopes", ()
 
 test("a style rewrite inside a message repairs only that message subtree", () => {
   const message = element("none", [], true);
+  message.dataset!.inlineReviewUser = "1";
   const child = element();
   child.parentElement = message;
 
   const result = classify([{ target: child, attributeName: "style", addedNodes: [] }]);
   assert.equal(result.repairWidenedStyles, false);
   assert.deepEqual(result.scopes, [message]);
+});
+
+test("streaming styles inside plugin-rendered agent rows do not wake DOM card repair", () => {
+  const agentCard = element("none", [], true);
+  const child = element();
+  child.parentElement = agentCard;
+
+  const result = classify([{ target: child, attributeName: "style", addedNodes: [] }]);
+  assert.equal(result.repairWidenedStyles, false);
+  assert.deepEqual(result.scopes, []);
 });
 
 test("a marker added after insertion schedules its own card subtree", () => {
@@ -100,4 +112,18 @@ test("lowestCommonAncestor finds the narrow shared timeline root", () => {
   assert.equal(lowestCommonAncestor([first]), first);
   assert.equal(lowestCommonAncestor([]), null);
   assert.equal(lowestCommonAncestor([first, element()]), null);
+});
+
+test("disconnected widened nodes are released while live rows stay retained", () => {
+  const body = element();
+  const timeline = element();
+  const connected = element();
+  const detached = element();
+  timeline.parentElement = body;
+  connected.parentElement = timeline;
+  const widened = new Set([connected, detached]);
+
+  assert.equal(pruneDisconnectedNodes(widened, body), 1);
+  assert.deepEqual([...widened], [connected]);
+  assert.equal(pruneDisconnectedNodes(widened, body), 0, "a stable tree creates no churn");
 });

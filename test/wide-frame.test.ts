@@ -5,7 +5,10 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 
-import { classifyWideFrameMutations } from "../client/wide-frame-mutations.ts";
+import {
+  classifyWideFrameMutations,
+  pruneDisconnectedNodes,
+} from "../client/wide-frame-mutations.ts";
 import { parseInline } from "../shared/markdown-parse.ts";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
@@ -335,11 +338,14 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   globals.__wideFramePlatform = { OS: "web" };
   globals.__wideFrameDocument = document;
   globals.__wideFrameClassify = classifyWideFrameMutations;
+  globals.__wideFramePrune = pruneDisconnectedNodes;
+  globals.__wideFrameAdaptiveRun = null;
   let parseInlineCalls = 0;
   globals.__wideFrameParseInline = (text: string) => {
     parseInlineCalls += 1;
     return parseInline(text);
   };
+  globals.__wideFrameScheduledRestore = null;
   globals.__wideFrameWindow = {
     document,
     innerWidth: 1200,
@@ -385,13 +391,20 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
       const WIDE_FRAME_CLEANUP_GRACE_MS = 5000;
       const acquireWideFrameLease = () => Symbol("test-wide-frame-lease");
       const cancelPendingWideFrameCleanup = () => {};
-      const releaseWideFrameCleanupLease = () => true;
+      const releaseWideFrameCleanupLease = (_lease, cleanup) => {
+        globalThis.__wideFrameScheduledRestore = cleanup;
+        return true;
+      };
     `)
     .replace(/import \{ createAdaptiveSweep \}[^;]+;/, `
-      const createAdaptiveSweep = () => ({ start() {}, stop() {}, wake() {} });
+      const createAdaptiveSweep = ({ run }) => {
+        globalThis.__wideFrameAdaptiveRun = run;
+        return { start() {}, stop() {}, wake() {} };
+      };
     `)
     .replace(/import \{[\s\S]*?classifyWideFrameMutations[\s\S]*?\} from "\.\/wide-frame-mutations";/, `
       const classifyWideFrameMutations = globalThis.__wideFrameClassify;
+      const pruneDisconnectedNodes = globalThis.__wideFramePrune;
       const lowestCommonAncestor = (nodes) => {
         if (nodes.length === 0) return null;
         for (let candidate = nodes[0]; candidate; candidate = candidate.parentElement) {
@@ -474,6 +487,11 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(strong[0].style.fontWeight, "700");
   assert.equal(parseInlineCalls, 1);
 
+  const adaptiveRun = globals.__wideFrameAdaptiveRun as (() => void) | null;
+  assert.equal(typeof adaptiveRun, "function");
+  adaptiveRun?.();
+  assert.equal(frames.size, 0, "a fully decorated timeline schedules no fallback work");
+
   // CSSOM writes made by the plugin are themselves observed. A synchronous
   // decoration pass must not clear and rebuild the image rail from inside the
   // observer callback: that creates another style mutation batch before the
@@ -526,11 +544,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     0,
     "an observed image style change cannot synchronously generate another image style batch",
   );
-  assert.equal(frames.size, 1, "card decoration is deferred out of the observer callback");
-  const imageDecorationFrame = [...frames.entries()][0];
-  assert.ok(imageDecorationFrame);
-  frames.delete(imageDecorationFrame[0]);
-  imageDecorationFrame[1]();
+  assert.equal(frames.size, 0, "card repair completes while the observer is paused");
   assert.equal(
     pluginStyleMutations.length,
     0,
@@ -553,7 +567,8 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     addedNodes: [liveCapped],
   }]);
   assert.equal(liveCapped.style.maxWidth, "1040px");
-  assert.equal(frames.size, 1, "new content is widened before its deferred decoration frame");
+  assert.equal(liveMessage.style.backgroundColor, "#242636");
+  assert.equal(frames.size, 0, "new content is fully decorated before the next paint");
 
   const liveReviewCapped = fakeElement({ width: 820, maxWidth: "820px" });
   const liveSentReview = fakeElement({ attributes: { "data-testid": "inline-review-sent" } });
@@ -581,9 +596,10 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   append(reenteredCapped, reenteredMessage);
   append(pane, reenteredCapped);
 
+  const disconnectionsBeforeRefresh = observerDisconnections;
   module.ensureWideFrame();
   assert.equal(observerConstructions, 1, "same-document refresh reuses the observer");
-  assert.equal(observerDisconnections, 0);
+  assert.equal(observerDisconnections, disconnectionsBeforeRefresh);
   assert.equal(reenteredCapped.style.maxWidth, "1040px");
   assert.equal(reenteredMessage.style.backgroundColor, "#242636");
   assert.equal(reenteredText.style.display, undefined, "plain or incomplete Markdown stays native");
@@ -618,11 +634,22 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     addedNodes: [replacementPane],
   }]);
   assert.equal(replacementCapped.style.maxWidth, "1040px");
-  assert.equal(observerDisconnections, 1, "root replacement rebinds the detailed observer once");
   assert.equal(observations.at(-2)?.root, replacementPane);
   assert.equal(observations.at(-2)?.options.subtree, true);
   assert.equal(observations.at(-1)?.root, body);
   assert.equal(observations.at(-1)?.options.subtree, false);
+
+  capped.style.maxWidth = "820px";
+  deliverMutations([{
+    target: replacementCapped,
+    attributeName: "style",
+    addedNodes: [],
+  }]);
+  assert.equal(
+    capped.style.maxWidth,
+    "820px",
+    "detached wrappers are pruned instead of retained and repaired forever",
+  );
 
   // React may append the row before assigning its test id. The attribute
   // transition itself must wake the card pass; otherwise the message keeps
@@ -646,21 +673,27 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     addedNodes: [],
   }]);
   assert.equal(lateCapped.style.maxWidth, "1040px");
-  assert.equal(frames.size, 1);
-  const lateCardFrame = [...frames.entries()][0];
-  assert.ok(lateCardFrame);
-  frames.delete(lateCardFrame[0]);
-  lateCardFrame[1]();
   assert.equal(lateMessage.style.backgroundColor, "#242636");
+  assert.equal(frames.size, 0, "a late marker cannot expose an unstyled card for one frame");
 
   // Reattach the detached fixture so cleanup can prove complete reversibility
   // for both the old and replacement subtrees.
   append(body, pane);
 
   const staleResize = [...resizeListeners][0];
-  module.undoWideFrame();
-  assert.equal(observerDisconnections, 2);
+  const lease = module.retainWideFrameLease();
+  const disconnectionsBeforeRelease = observerDisconnections;
+  module.releaseWideFrameLease(lease);
+  assert.equal(
+    observerDisconnections,
+    disconnectionsBeforeRelease + 1,
+    "plugin cleanup disconnects runtime work immediately",
+  );
   assert.equal(resizeListeners.size, 0);
+  assert.equal(capped.style.maxWidth, "820px", "visual rollback still waits for the grace period");
+  const scheduledRestore = globals.__wideFrameScheduledRestore as (() => void) | null;
+  assert.equal(typeof scheduledRestore, "function");
+  scheduledRestore?.();
   assert.equal(capped.style.maxWidth, "");
   assert.equal(capped.dataset.inlineReviewWide, "");
   assert.equal(reviewCapped.style.maxWidth, "");
@@ -682,6 +715,9 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   delete globals.__wideFramePlatform;
   delete globals.__wideFrameDocument;
   delete globals.__wideFrameClassify;
+  delete globals.__wideFramePrune;
+  delete globals.__wideFrameAdaptiveRun;
   delete globals.__wideFrameParseInline;
+  delete globals.__wideFrameScheduledRestore;
   delete globals.__wideFrameWindow;
 });

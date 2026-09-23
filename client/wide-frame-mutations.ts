@@ -14,6 +14,27 @@ export type WideFrameMutation = {
 
 type ParentLinked<T> = { parentElement: T | null };
 
+/** Drops nodes no longer owned by the current document subtree. */
+export function pruneDisconnectedNodes<T extends ParentLinked<T>>(
+  nodes: Set<T>,
+  root: T,
+): number {
+  let removed = 0;
+  for (const node of nodes) {
+    let connected = false;
+    for (let current: T | null = node; current; current = current.parentElement) {
+      if (current === root) {
+        connected = true;
+        break;
+      }
+    }
+    if (connected) continue;
+    nodes.delete(node);
+    removed += 1;
+  }
+  return removed;
+}
+
 /** Returns the lowest node that contains every parent-linked input node. */
 export function lowestCommonAncestor<T extends ParentLinked<T>>(nodes: readonly T[]): T | null {
   if (nodes.length === 0) return null;
@@ -63,8 +84,7 @@ export function classifyWideFrameMutations<T extends MutationNode>({
       while (styled) {
         if (
           styled.dataset?.inlineReviewUser === "1" ||
-          styled.dataset?.inlineReviewTight === "1" ||
-          styled.matches?.(markerSelector)
+          styled.dataset?.inlineReviewTight === "1"
         ) {
           if (styled.style && styled.dataset) scopes.add(styled as T);
           break;

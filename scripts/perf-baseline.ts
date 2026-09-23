@@ -22,7 +22,11 @@ import {
   subscribeTurnFinalFragments,
 } from "../client/turn-final-store.ts";
 import { addComment, subscribeCommentsForSource } from "../client/review-store.ts";
-import { lowestCommonAncestor } from "../client/wide-frame-mutations.ts";
+import {
+  classifyWideFrameMutations,
+  lowestCommonAncestor,
+  pruneDisconnectedNodes,
+} from "../client/wide-frame-mutations.ts";
 
 type Measurement = Record<string, unknown>;
 
@@ -395,10 +399,59 @@ function measureWideFrameObserverScope(): Measurement {
   };
 }
 
+function measureWideFrameRetention(staleRows: number, liveRows: number): Measurement {
+  const body = observerNode();
+  const staleTimeline = observerNode(body);
+  const stale = Array.from({ length: staleRows }, () => observerNode(staleTimeline));
+  const liveTimeline = observerNode(body);
+  const live = Array.from({ length: liveRows }, () => observerNode(liveTimeline));
+  const retained = new Set([...stale, ...live]);
+  body.children.splice(body.children.indexOf(staleTimeline), 1);
+  staleTimeline.parentElement = null;
+
+  const started = performance.now();
+  const prunedRows = pruneDisconnectedNodes(retained, body);
+  const elapsedMs = performance.now() - started;
+  return {
+    staleRows,
+    liveRows,
+    prunedRows,
+    retainedRows: retained.size,
+    retainedReductionVsUnpruned: 1 - retained.size / (staleRows + liveRows),
+    elapsedMs,
+  };
+}
+
+function measureWideFrameMutationRouting(updates: number): Measurement {
+  type Node = {
+    parentElement: Node | null;
+    style: Record<string, string>;
+    dataset: Record<string, string>;
+  };
+  const agentCard: Node = { parentElement: null, style: {}, dataset: {} };
+  const streamingChild: Node = { parentElement: agentCard, style: {}, dataset: {} };
+  let repairWakeups = 0;
+  const started = performance.now();
+  for (let index = 0; index < updates; index += 1) {
+    const work = classifyWideFrameMutations<Node>({
+      mutations: [{ target: streamingChild, attributeName: "style", addedNodes: [] }],
+      markerSelector: '[data-testid="inline-review-root"]',
+    });
+    if (work.repairWidenedStyles || work.scopes.length > 0) repairWakeups += 1;
+  }
+  return {
+    streamingStyleUpdates: updates,
+    legacyRepairWakeups: updates,
+    repairWakeups,
+    repairWakeupReduction: 1 - repairWakeups / updates,
+    elapsedMs: performance.now() - started,
+  };
+}
+
 const commentSync = await Promise.all([1, 9, 100].map(measureCommentSync));
 const thumbnailStore = await measureThumbnailStore();
 const report = {
-  schemaVersion: 7,
+  schemaVersion: 8,
   scenarios: {
     commentSync,
     commentNotifications: measureCommentNotificationFanout(300),
@@ -411,6 +464,8 @@ const report = {
     },
     turnFragments: measureTurnFragmentNotifications(300),
     wideFrameObserverScope: measureWideFrameObserverScope(),
+    wideFrameRetention: measureWideFrameRetention(10_000, 34),
+    wideFrameMutationRouting: measureWideFrameMutationRouting(10_000),
     markdown: {
       completed: [10_000, 100_000, 500_000].map(measureMarkdown),
       streamingReferences: measureStreamingReferences(2_000),
