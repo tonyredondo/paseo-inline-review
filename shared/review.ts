@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { parseBlocks } from "./markdown-parse.ts";
 
 /** Data carried by the plugin-owned replacement of an assistant message. */
 export const reviewItemSchema = z.object({
@@ -9,6 +10,19 @@ export const reviewItemSchema = z.object({
 });
 
 export type ReviewItemData = z.output<typeof reviewItemSchema>;
+
+export const codeLineAnchorSchema = z.object({
+  /** Code-block index inside the stable paragraph snapshot. */
+  blockIndex: z.number().int().nonnegative(),
+  /** Zero-based source line inside the fenced/indented code block. */
+  lineIndex: z.number().int().nonnegative(),
+  lineText: z.string(),
+  /** Nearest source lines, stored in document order to disambiguate duplicates. */
+  contextBefore: z.array(z.string()).max(4),
+  contextAfter: z.array(z.string()).max(4),
+});
+
+export type CodeLineAnchor = z.output<typeof codeLineAnchorSchema>;
 
 export const reviewCommentSchema = z.object({
   id: z.string(),
@@ -21,6 +35,8 @@ export const reviewCommentSchema = z.object({
    * item inside its list block. Null/absent = the whole paragraph.
    */
   itemIndex: z.number().int().nullable().optional(),
+  /** A precise source-line target inside this paragraph's Markdown code block. */
+  codeAnchor: codeLineAnchorSchema.nullable().optional(),
   /** Snapshot of the commented paragraph, used for quoting and anchoring. */
   paragraphText: z.string(),
   text: z.string(),
@@ -36,6 +52,103 @@ export const reviewCommentSchema = z.object({
 });
 
 export type ReviewComment = z.output<typeof reviewCommentSchema>;
+
+const CODE_CONTEXT_RADIUS = 2;
+
+export function createCodeLineAnchor(
+  code: string,
+  blockIndex: number,
+  lineIndex: number,
+  contextRadius = CODE_CONTEXT_RADIUS,
+): CodeLineAnchor {
+  const lines = code.split("\n");
+  if (lineIndex < 0 || lineIndex >= lines.length) {
+    throw new RangeError(`Code line ${lineIndex} is outside the ${lines.length}-line block.`);
+  }
+  const radius = Math.max(0, Math.min(4, contextRadius));
+  return {
+    blockIndex,
+    lineIndex,
+    lineText: lines[lineIndex],
+    contextBefore: lines.slice(Math.max(0, lineIndex - radius), lineIndex),
+    contextAfter: lines.slice(lineIndex + 1, lineIndex + 1 + radius),
+  };
+}
+
+export function sameCodeLineAnchor(
+  a: CodeLineAnchor | null | undefined,
+  b: CodeLineAnchor | null | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    a.blockIndex === b.blockIndex &&
+    a.lineIndex === b.lineIndex &&
+    a.lineText === b.lineText &&
+    a.contextBefore.length === b.contextBefore.length &&
+    a.contextBefore.every((line, index) => line === b.contextBefore[index]) &&
+    a.contextAfter.length === b.contextAfter.length &&
+    a.contextAfter.every((line, index) => line === b.contextAfter[index])
+  );
+}
+
+function codeAnchorContextScore(lines: string[], lineIndex: number, anchor: CodeLineAnchor): number {
+  let score = 0;
+  for (let index = 0; index < anchor.contextBefore.length; index += 1) {
+    const offset = anchor.contextBefore.length - index;
+    if (lines[lineIndex - offset] === anchor.contextBefore[index]) score += 1;
+  }
+  for (let index = 0; index < anchor.contextAfter.length; index += 1) {
+    if (lines[lineIndex + index + 1] === anchor.contextAfter[index]) score += 1;
+  }
+  return score;
+}
+
+/** Re-finds one selected source line after streaming inserts or re-chunks text. */
+export function locateCodeLineAnchor(paragraph: string, anchor: CodeLineAnchor): CodeLineAnchor | null {
+  const candidates: Array<{
+    code: string;
+    blockIndex: number;
+    lineIndex: number;
+    contextScore: number;
+    sameBlock: boolean;
+    distance: number;
+  }> = [];
+  let codeBlockIndex = 0;
+  for (const block of parseBlocks(paragraph)) {
+    if (block.kind !== "code") continue;
+    const lines = block.text.split("\n");
+    for (const [lineIndex, line] of lines.entries()) {
+      if (line !== anchor.lineText) continue;
+      candidates.push({
+        code: block.text,
+        blockIndex: codeBlockIndex,
+        lineIndex,
+        contextScore: codeAnchorContextScore(lines, lineIndex, anchor),
+        sameBlock: codeBlockIndex === anchor.blockIndex,
+        distance: Math.abs(codeBlockIndex - anchor.blockIndex) + Math.abs(lineIndex - anchor.lineIndex),
+      });
+    }
+    codeBlockIndex += 1;
+  }
+  candidates.sort((a, b) =>
+    b.contextScore - a.contextScore ||
+    Number(b.sameBlock) - Number(a.sameBlock) ||
+    a.distance - b.distance ||
+    a.blockIndex - b.blockIndex ||
+    a.lineIndex - b.lineIndex,
+  );
+  const winner = candidates[0];
+  if (!winner) return null;
+  const storedContextLines = anchor.contextBefore.length + anchor.contextAfter.length;
+  // A matching line with wholly different neighbours is more likely another
+  // occurrence than the original target. Leave the comment unattached rather
+  // than silently moving it to unrelated code.
+  if (storedContextLines > 0 && winner.contextScore === 0) return null;
+  const radius = Math.max(CODE_CONTEXT_RADIUS, anchor.contextBefore.length, anchor.contextAfter.length);
+  return createCodeLineAnchor(winner.code, winner.blockIndex, winner.lineIndex, radius);
+}
 
 function commentVersionTime(comment: ReviewComment): string {
   return comment.updatedAt ?? comment.createdAt;
@@ -63,10 +176,11 @@ export function commentBelongsToReviewSource(
 
 /** A streaming paragraph snapshot may be a prefix of the completed paragraph. */
 export function reviewCommentMatchesParagraph(
-  comment: Pick<ReviewComment, "itemIndex" | "paragraphText">,
+  comment: Pick<ReviewComment, "codeAnchor" | "itemIndex" | "paragraphText">,
   paragraph: string | undefined,
 ): boolean {
   if (paragraph === undefined) return false;
+  if (comment.codeAnchor) return locateCodeLineAnchor(paragraph, comment.codeAnchor) !== null;
   if (comment.itemIndex !== null && comment.itemIndex !== undefined) {
     return paragraph.includes(comment.paragraphText);
   }
@@ -76,7 +190,7 @@ export function reviewCommentMatchesParagraph(
 
 /** Finds the completed paragraph for both block-level and list-item comments. */
 export function findReviewCommentParagraphIndex(
-  comment: Pick<ReviewComment, "itemIndex" | "paragraphIndex" | "paragraphText">,
+  comment: Pick<ReviewComment, "codeAnchor" | "itemIndex" | "paragraphIndex" | "paragraphText">,
   paragraphs: readonly string[],
 ): number {
   if (reviewCommentMatchesParagraph(comment, paragraphs[comment.paragraphIndex])) {
@@ -283,6 +397,18 @@ export function shortenQuote(text: string): string {
   return flat.length > quoteLimit ? flat.slice(0, quoteLimit - 1) + "\u2026" : flat;
 }
 
+export function reviewCommentQuote(
+  comment: Pick<ReviewComment, "codeAnchor" | "paragraphText">,
+): string {
+  if (!comment.codeAnchor) return shortenQuote(comment.paragraphText);
+  return [
+    `Code block ${comment.codeAnchor.blockIndex + 1}, line ${comment.codeAnchor.lineIndex + 1}:`,
+    ...comment.codeAnchor.contextBefore,
+    `>>> ${comment.codeAnchor.lineText}`,
+    ...comment.codeAnchor.contextAfter,
+  ].join("\n");
+}
+
 /** Renders the PENDING comments as a review block the user can attach, paste or send. */
 export function formatReview(comments: readonly ReviewComment[]): string {
   const pending = comments.filter((comment) => comment.status === "pending");
@@ -291,7 +417,8 @@ export function formatReview(comments: readonly ReviewComment[]): string {
   pending.forEach((comment, index) => {
     // JSON strings preserve quotes, newlines and backslashes while keeping the
     // review readable to both the agent and the sent-review card parser.
-    lines.push(`[${index + 1}] On: ${JSON.stringify(shortenQuote(comment.paragraphText))}`);
+    const quote = reviewCommentQuote(comment);
+    lines.push(`[${index + 1}] On: ${JSON.stringify(quote)}`);
     lines.push(`Comment: ${JSON.stringify(comment.text.trim())}`);
     lines.push("");
   });
@@ -302,6 +429,35 @@ export type ParsedReview = {
   note: string;
   entries: Array<{ quote: string; comment: string }>;
 };
+
+export type ParsedCodeReviewQuote = {
+  blockNumber: number;
+  lineNumber: number;
+  lines: Array<{ lineNumber: number; text: string; selected: boolean }>;
+};
+
+/** Turns the stable code-line quote format into rows suitable for a compact preview. */
+export function parseCodeReviewQuote(quote: string): ParsedCodeReviewQuote | null {
+  const match = /^Code block (\d+), line (\d+):\n([\s\S]*)$/.exec(quote);
+  if (!match) return null;
+
+  const blockNumber = Number(match[1]);
+  const lineNumber = Number(match[2]);
+  if (!Number.isSafeInteger(blockNumber) || blockNumber < 1 ||
+      !Number.isSafeInteger(lineNumber) || lineNumber < 1) return null;
+
+  const rawLines = match[3].split("\n");
+  const selectedIndex = rawLines.findIndex((line) => line.startsWith(">>> "));
+  if (selectedIndex < 0) return null;
+
+  const lines = rawLines.map((line, index) => ({
+    lineNumber: lineNumber + index - selectedIndex,
+    text: index === selectedIndex ? line.slice(4) : line,
+    selected: index === selectedIndex,
+  }));
+  if (lines.some((line) => line.lineNumber < 1)) return null;
+  return { blockNumber, lineNumber, lines };
+}
 
 /** Parses current JSON-escaped reviews and preserves compatibility with history. */
 export function parseReviewMessage(text: string): ParsedReview {

@@ -5,8 +5,16 @@ import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Image, Platform, Pressable, ScrollView, Text, View } from "react-native";
-import { COMPACT_FILE_TRANSFER_CHUNK_BYTES, DESKTOP_FILE_TRANSFER_CHUNK_BYTES, isMarkdownPath, openLocalFileRpc, previewLanguage } from "../shared/review";
-import { formatReview, type ReviewComment } from "../shared/review";
+import {
+  COMPACT_FILE_TRANSFER_CHUNK_BYTES,
+  DESKTOP_FILE_TRANSFER_CHUNK_BYTES,
+  formatReview,
+  isMarkdownPath,
+  openLocalFileRpc,
+  previewLanguage,
+  reviewCommentQuote,
+  type ReviewComment,
+} from "../shared/review";
 import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
 import {
   clearAgent,
@@ -465,7 +473,7 @@ export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
                     ? "Pending \u00b7 will be attached to your next message"
                     : "Sent \u2713 \u00b7 already part of the conversation"}
                 </Text>
-                <Text style={styles.quote}>"{comment.paragraphText.slice(0, 160)}"</Text>
+                <Text style={styles.quote}>"{reviewCommentQuote(comment).slice(0, 240)}"</Text>
                 {editingId === comment.id ? (
                   <View style={{ gap: 6 }}>
                     <TextInput

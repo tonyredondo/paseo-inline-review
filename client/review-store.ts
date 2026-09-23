@@ -1,4 +1,9 @@
-import { compareReviewCommentVersions, type ReviewComment } from "../shared/review.ts";
+import {
+  compareReviewCommentVersions,
+  sameCodeLineAnchor,
+  type CodeLineAnchor,
+  type ReviewComment,
+} from "../shared/review.ts";
 
 type Listener = () => void;
 
@@ -136,6 +141,7 @@ export function addComment(input: {
   paragraphIndex: number;
   /** Zero-based list item index when the comment targets one list item. */
   itemIndex?: number | null;
+  codeAnchor?: CodeLineAnchor | null;
   paragraphText: string;
   text: string;
   sourceKey?: string | null;
@@ -147,6 +153,7 @@ export function addComment(input: {
     messageId: input.messageId,
     paragraphIndex: input.paragraphIndex,
     itemIndex: input.itemIndex ?? null,
+    codeAnchor: input.codeAnchor ?? null,
     paragraphText: input.paragraphText,
     text: input.text,
     createdAt: now,
@@ -163,6 +170,7 @@ export function addComment(input: {
       existing.sourceKey === comment.sourceKey &&
       existing.paragraphIndex === comment.paragraphIndex &&
       existing.itemIndex === comment.itemIndex &&
+      sameCodeLineAnchor(existing.codeAnchor, comment.codeAnchor) &&
       existing.paragraphText === comment.paragraphText &&
       existing.text === comment.text,
   );
@@ -198,12 +206,14 @@ export function relocateComment(
   id: string,
   messageId: string | null,
   paragraphIndex: number,
+  codeAnchor?: CodeLineAnchor | null,
 ): ReviewComment | null {
   const existing = comments.find((comment) => comment.id === id);
   if (!existing) return null;
   if (
     existing.messageId === messageId &&
     existing.paragraphIndex === paragraphIndex &&
+    (codeAnchor === undefined || sameCodeLineAnchor(existing.codeAnchor, codeAnchor)) &&
     (messageId === null || existing.sourceKey === null)
   ) {
     return existing;
@@ -211,6 +221,7 @@ export function relocateComment(
   const updated = touchComment(existing, {
     messageId,
     paragraphIndex,
+    ...(codeAnchor === undefined ? {} : { codeAnchor }),
     sourceKey: messageId === null ? existing.sourceKey : null,
   });
   comments = comments.map((comment) => (comment.id === id ? updated : comment));
@@ -506,6 +517,7 @@ function sameComment(a: ReviewComment, b: ReviewComment): boolean {
     a.text === b.text &&
     a.paragraphIndex === b.paragraphIndex &&
     a.itemIndex === b.itemIndex &&
+    sameCodeLineAnchor(a.codeAnchor, b.codeAnchor) &&
     a.messageId === b.messageId &&
     a.paragraphText === b.paragraphText &&
     a.sourceKey === b.sourceKey &&

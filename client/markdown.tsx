@@ -4,7 +4,12 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View, type ImageStyle, type StyleProp, type ViewStyle } from "react-native";
 import { MarkdownSpan } from "./markdown-span";
-import { isValidHttpUrl, localImagePreviewRpc } from "../shared/review";
+import {
+  createCodeLineAnchor,
+  isValidHttpUrl,
+  localImagePreviewRpc,
+  type CodeLineAnchor,
+} from "../shared/review";
 import type { LocalFileTarget } from "../shared/markdown-parse";
 import {
   type Block,
@@ -543,6 +548,8 @@ export function CodeBlockView({
   theme,
   styles,
   onComment,
+  onLineComment,
+  annotatedLines,
   highlightStart,
   highlightEnd,
 }: {
@@ -552,6 +559,10 @@ export function CodeBlockView({
   styles: ReturnType<typeof useStyles>;
   /** Opens the inline review editor for the code block's paragraph. */
   onComment?: () => void;
+  /** Desktop modifier-click target for one source line. */
+  onLineComment?: (lineIndex: number, event?: unknown) => void;
+  /** Source lines with an open editor or an existing comment. */
+  annotatedLines?: ReadonlySet<number>;
   /** 1-based line range to highlight (from the file link's line suffix). */
   highlightStart?: number;
   highlightEnd?: number;
@@ -584,6 +595,13 @@ export function CodeBlockView({
     const line = lineIndex + 1;
     return line >= highlightFrom && line <= highlightTo;
   };
+  const lineIsMarked = (lineIndex: number): boolean =>
+    lineIsHighlighted(lineIndex) || (annotatedLines?.has(lineIndex) ?? false);
+  const linePress = (lineIndex: number) =>
+    onLineComment ? (event: unknown) => onLineComment(lineIndex, event) : undefined;
+  const webLineText = Platform.OS === "web" && onLineComment
+    ? ({ cursor: "text", userSelect: "text" } as object)
+    : undefined;
   // Fixed custom palette (One Dark-inspired), vivid on the black background.
   const darkPalette = {
     plain: "#d7dce3",
@@ -653,7 +671,11 @@ export function CodeBlockView({
                 getItemLayout={(_data, index) => ({ length: VIRTUAL_LINE_HEIGHT, offset: VIRTUAL_LINE_HEIGHT * index, index })}
                 keyExtractor={(_line, index) => String(index)}
                 renderItem={({ item: line, index: lineIndex }) => (
-                  <View style={{ flexDirection: "row", height: VIRTUAL_LINE_HEIGHT }}>
+                  <View style={{
+                    flexDirection: "row",
+                    height: VIRTUAL_LINE_HEIGHT,
+                    backgroundColor: lineIsMarked(lineIndex) ? withAlpha(theme.colors.accent, HIGHLIGHT_ALPHA) : "transparent",
+                  }}>
                     <Text
                       selectable={false}
                       style={[
@@ -673,16 +695,20 @@ export function CodeBlockView({
                     >
                       {lineIndex + 1}
                     </Text>
-                    <Text numberOfLines={1} style={[mono, nowrap, {
-                      color: darkPalette.plain,
-                      fontSize: styles.codeFontSize,
-                      lineHeight: VIRTUAL_LINE_HEIGHT,
-                      paddingLeft: 10,
-                    }]}>
-                      {line.length === 0 ? " " : line.map((token, tokenIndex) => (
-                        <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type] }]}>{token.text}</Text>
-                      ))}
-                    </Text>
+                    <Pressable
+                      onPress={linePress(lineIndex)}
+                      style={[webLineText, { flexDirection: "row", flexShrink: 0, paddingLeft: 10 }]}
+                    >
+                      <Text numberOfLines={1} style={[mono, nowrap, {
+                        color: darkPalette.plain,
+                        fontSize: styles.codeFontSize,
+                        lineHeight: VIRTUAL_LINE_HEIGHT,
+                      }]}>
+                        {line.length === 0 ? " " : line.map((token, tokenIndex) => (
+                          <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type] }]}>{token.text}</Text>
+                        ))}
+                      </Text>
+                    </Pressable>
                   </View>
                 )}
                 style={{ minWidth: "100%", height: 720 }}
@@ -714,7 +740,7 @@ export function CodeBlockView({
                         lineHeight: 18,
                         textAlign: "right",
                         // Highlighted rows paint the gutter cell too.
-                        ...(lineIsHighlighted(lineIndex) ? { backgroundColor: withAlpha(theme.colors.accent, HIGHLIGHT_ALPHA) } : null),
+                        ...(lineIsMarked(lineIndex) ? { backgroundColor: withAlpha(theme.colors.accent, HIGHLIGHT_ALPHA) } : null),
                       },
                     ]}
                   >
@@ -728,32 +754,37 @@ export function CodeBlockView({
                     line stays on its own row, aligned with its number. */}
                 <View style={{ alignItems: "flex-start", paddingLeft: 10 }}>
                   {lines.map((line, lineIndex) => (
-                    <Text
+                    <Pressable
                       key={lineIndex}
+                      onPress={linePress(lineIndex)}
                       style={[
-                        mono,
-                        nowrap,
+                        webLineText,
                         {
-                          color: darkPalette.plain,
-                          fontSize: styles.codeFontSize,
-                          lineHeight: 18,
+                          flexDirection: "row",
+                          flexShrink: 0,
                           // Highlighted rows paint the trailing empty space
                           // too: stretch the row to the container width
                           // (the longest line) instead of hugging the text.
-                          ...(lineIsHighlighted(lineIndex)
+                          ...(lineIsMarked(lineIndex)
                             ? { backgroundColor: withAlpha(theme.colors.accent, HIGHLIGHT_ALPHA), alignSelf: "stretch" as const }
                             : null),
                         },
                       ]}
                     >
-                      {line.length === 0
-                        ? " "
-                        : line.map((token: CodeToken, tokenIndex: number) => (
-                            <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type as keyof typeof darkPalette] }]}>
-                              {token.text}
-                            </Text>
-                          ))}
-                    </Text>
+                      <Text style={[mono, nowrap, {
+                        color: darkPalette.plain,
+                        fontSize: styles.codeFontSize,
+                        lineHeight: 18,
+                      }]}>
+                        {line.length === 0
+                          ? " "
+                          : line.map((token: CodeToken, tokenIndex: number) => (
+                              <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type as keyof typeof darkPalette] }]}>
+                                {token.text}
+                              </Text>
+                            ))}
+                      </Text>
+                    </Pressable>
                   ))}
                 </View>
               </ScrollView>
@@ -768,7 +799,7 @@ export function CodeBlockView({
                 key={lineIndex}
                 style={{
                   flexDirection: "row",
-                  backgroundColor: lineIsHighlighted(lineIndex) ? withAlpha(theme.colors.accent, HIGHLIGHT_ALPHA) : "transparent",
+                  backgroundColor: lineIsMarked(lineIndex) ? withAlpha(theme.colors.accent, HIGHLIGHT_ALPHA) : "transparent",
                 }}
               >
                 <Text
@@ -790,27 +821,34 @@ export function CodeBlockView({
                 >
                   {lineIndex + 1}
                 </Text>
-                <Text
-                  style={[
-                    mono,
-                    {
-                      color: darkPalette.plain,
-                      fontSize: styles.codeFontSize,
-                      lineHeight: 18,
-                      flex: 1,
-                      borderLeftWidth: StyleSheet.hairlineWidth,
-                      borderLeftColor: gutterRule,
-                      paddingLeft: 10,
-                      ...(webWrap ? ({ whiteSpace: "pre-wrap" } as object) : null),
-                    },
-                  ]}
+                <Pressable
+                  onPress={linePress(lineIndex)}
+                  style={[webLineText, {
+                    flex: 1,
+                    borderLeftWidth: StyleSheet.hairlineWidth,
+                    borderLeftColor: gutterRule,
+                    paddingLeft: 10,
+                  }]}
                 >
-                  {line.map((token: CodeToken, tokenIndex: number) => (
-                    <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type as keyof typeof darkPalette] }]}>
-                      {token.text}
-                    </Text>
-                  ))}
-                </Text>
+                  <Text
+                    style={[
+                      mono,
+                      {
+                        color: darkPalette.plain,
+                        fontSize: styles.codeFontSize,
+                        lineHeight: 18,
+                        flex: 1,
+                        ...(webWrap ? ({ whiteSpace: "pre-wrap" } as object) : null),
+                      },
+                    ]}
+                  >
+                    {line.map((token: CodeToken, tokenIndex: number) => (
+                      <Text key={tokenIndex} style={[mono, { color: darkPalette[token.type as keyof typeof darkPalette] }]}>
+                        {token.text}
+                      </Text>
+                    ))}
+                  </Text>
+                </Pressable>
               </View>
             ))}
           </View>
@@ -1088,6 +1126,9 @@ export function MarkdownText({
   selectable,
   onChunkPress,
   onCommentRequest,
+  onCodeLinePress,
+  codeBlockExtras,
+  annotatedCodeLines,
   onListItemPress,
   listItemExtras,
   localFileResolver,
@@ -1105,6 +1146,12 @@ export function MarkdownText({
   onChunkPress?: () => void;
   /** Rendered as a Comment control on code blocks; opens the review editor. */
   onCommentRequest?: () => void;
+  /** Desktop modifier-click on one source line inside a code block. */
+  onCodeLinePress?: (anchor: CodeLineAnchor, event?: unknown) => void;
+  /** Inline review editor and cards rendered below one code block. */
+  codeBlockExtras?: (blockIndex: number) => ReactNode;
+  /** Lines with comments/editors, grouped by Markdown block index. */
+  annotatedCodeLines?: (blockIndex: number) => ReadonlySet<number>;
   /** Tapped one markdown list item: (itemIndex, itemText, event). */
   onListItemPress?: (itemIndex: number, itemText: string, event?: unknown) => void;
   /** Per-item extras (comment cards) rendered below each list item. */
@@ -1118,6 +1165,10 @@ export function MarkdownText({
 }) {
   const compiled = useMemo(() => compileMarkdown(text, refs, cacheKey), [text, refs, cacheKey]);
   const blocks = compiled.blocks;
+  const codeBlockIndexes = useMemo(() => {
+    let nextCodeBlock = 0;
+    return blocks.map((block) => block.kind === "code" ? nextCodeBlock++ : -1);
+  }, [blocks]);
   const styles = useStyles(theme, compact);
 
   function renderTextLines(lines: string[], style: object): ReactNode {
@@ -1155,17 +1206,25 @@ export function MarkdownText({
               })
             : null;
         switch (block.kind) {
-          case "code":
+          case "code": {
+            const codeBlockIndex = codeBlockIndexes[index];
             return (
-              <CodeBlockView
-                key={index}
-                code={block.text}
-                language={block.language ?? ""}
-                theme={theme}
-                styles={styles}
-                onComment={onCommentRequest}
-              />
+              <Fragment key={index}>
+                <CodeBlockView
+                  code={block.text}
+                  language={block.language ?? ""}
+                  theme={theme}
+                  styles={styles}
+                  onComment={onCommentRequest}
+                  onLineComment={onCodeLinePress
+                    ? (lineIndex, event) => onCodeLinePress(createCodeLineAnchor(block.text, codeBlockIndex, lineIndex), event)
+                    : undefined}
+                  annotatedLines={annotatedCodeLines?.(codeBlockIndex)}
+                />
+                {codeBlockExtras?.(codeBlockIndex)}
+              </Fragment>
             );
+          }
           case "heading":
             return (
               <Fragment key={index}>

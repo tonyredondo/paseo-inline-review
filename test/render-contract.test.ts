@@ -85,6 +85,12 @@ test("native paragraphs are selectable and double-tap driven (no Pressable wrapp
   assert.ok(timelineSource.includes("handleChunkTap"));
 });
 
+test("review affordance documents desktop code-line comments without promising them on touch", () => {
+  const pillsSource = String(readFileSync(path.resolve("client/pills.tsx")));
+  assert.match(pillsSource, /Cmd\+Click a paragraph or code line on desktop/);
+  assert.match(pillsSource, /double-tap a paragraph on mobile or tablet/);
+});
+
 test("downloads stream chunks instead of accumulating a data URI", () => {
   const panelSource = String(readFileSync(path.resolve("client/panel.tsx")));
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
@@ -329,6 +335,38 @@ test("Markdown file tabs switch between source and an on-demand rendered preview
   assert.match(panelSource, /cacheKey=\{target\.path\}/);
   assert.match(panelSource, /localFileResolver=\{resolveMarkdownLink\}/);
   assert.match(panelSource, /onLocalFilePress=\{openMarkdownLink\}/);
+});
+
+test("code-line review keeps a text cursor while sharing Pressable events with its paragraph", () => {
+  const markdownSource = String(readFileSync(path.resolve("client/markdown.tsx")));
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  assert.match(markdownSource, /onCodeLinePress\?: \(anchor: CodeLineAnchor, event\?: unknown\) => void/);
+  assert.match(markdownSource, /block\.kind === "code" \? nextCodeBlock\+\+ : -1/);
+  assert.match(markdownSource, /createCodeLineAnchor\(block\.text, codeBlockIndex, lineIndex\)/);
+  assert.equal(markdownSource.match(/onPress=\{linePress\(lineIndex/g)?.length, 3);
+  assert.doesNotMatch(markdownSource, /onPointerUp=\{linePress\(lineIndex/);
+  assert.equal(markdownSource.match(/<Pressable\s+[^>]*onPress=\{linePress\(lineIndex\)\}/gs)?.length, 3);
+  assert.match(markdownSource, /const webLineText[\s\S]{0,160}cursor: "text"[\s\S]{0,40}userSelect: "text"/);
+  const wrapSource = markdownSource.slice(
+    markdownSource.indexOf("const webWrap"),
+    markdownSource.indexOf("{collapsed ?"),
+  );
+  assert.ok(wrapSource.indexOf("onPress={linePress(lineIndex)}") > wrapSource.indexOf("{lineIndex + 1}"));
+  assert.match(markdownSource, /codeBlockExtras\?\.\(codeBlockIndex\)/);
+  assert.match(timelineSource, /native\?\.metaKey \|\| native\?\.ctrlKey/);
+  assert.match(timelineSource, /carrier\?\.stopPropagation\?\.\(\)/);
+  assert.match(timelineSource, /codeAnchor: anchor/);
+  assert.match(timelineSource, /commentsByCodeBlock\.get\(blockIndex\)/);
+  assert.match(timelineSource, /Line \$\{comment\.codeAnchor\.lineIndex \+ 1\}/);
+});
+
+test("sent reviews render code-line quotes as a labelled code context instead of an italic quote", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  assert.match(timelineSource, /const codeQuote = parseCodeReviewQuote\(entry\.quote\)/);
+  assert.match(timelineSource, /Code block \$\{codeQuote\.blockNumber\}.*Line \$\{codeQuote\.lineNumber\}/s);
+  assert.match(timelineSource, /codeLine\.selected \? styles\.codeSelectedRow/);
+  assert.match(timelineSource, /codeLine\.lineNumber/);
+  assert.match(timelineSource, /codeLine\.text\.length > 0 \? codeLine\.text : " "/);
 });
 
 test("streamed final fragments render as slices of one card", () => {

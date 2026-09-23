@@ -224,6 +224,43 @@ test("duplicate detection keeps identical comments on different list items", asy
   await unregister();
 });
 
+test("duplicate detection keeps identical comments on repeated code lines with different context", async () => {
+  const agentId = `code-duplicates-${Date.now()}`;
+  const unregister = registerPersist(async () => {});
+  const base = {
+    agentId,
+    messageId: "m1",
+    paragraphIndex: 0,
+    itemIndex: null,
+    paragraphText: "```ts\nrepeat()\n```",
+    text: "same comment",
+  };
+  const first = addComment({
+    ...base,
+    codeAnchor: {
+      blockIndex: 0,
+      lineIndex: 1,
+      lineText: "repeat()",
+      contextBefore: ["first()"],
+      contextAfter: ["afterFirst()"],
+    },
+  });
+  const second = addComment({
+    ...base,
+    codeAnchor: {
+      blockIndex: 0,
+      lineIndex: 4,
+      lineText: "repeat()",
+      contextBefore: ["second()"],
+      contextAfter: ["afterSecond()"],
+    },
+  });
+  assert.notEqual(first.id, second.id);
+  assert.equal(getComments().filter((comment) => comment.agentId === agentId).length, 2);
+  await persistAgentNow(agentId);
+  await unregister();
+});
+
 test("one comment mutation notifies only its mounted message source", () => {
   const agentId = `source-notifications-${Date.now()}`;
   const notifications = Array.from({ length: 300 }, () => 0);
@@ -276,4 +313,36 @@ test("relocating a streaming comment notifies its old and completed sources", ()
   assert.equal(getCommentsForSource(agentId, "message-final", "unused").length, 1);
   unsubscribeStreaming();
   unsubscribeCompleted();
+});
+
+test("relocating a streaming code comment persists its final line context", () => {
+  const agentId = `code-relocation-${Date.now()}`;
+  const originalAnchor = {
+    blockIndex: 0,
+    lineIndex: 1,
+    lineText: "repeat()",
+    contextBefore: ["before()"],
+    contextAfter: [] as string[],
+  };
+  const finalAnchor = {
+    blockIndex: 0,
+    lineIndex: 3,
+    lineText: "repeat()",
+    contextBefore: ["inserted()", "before()"],
+    contextAfter: ["after()"],
+  };
+  const comment = addComment({
+    agentId,
+    messageId: null,
+    sourceKey: "stream-code",
+    paragraphIndex: 0,
+    paragraphText: "```ts\nbefore()\nrepeat()",
+    codeAnchor: originalAnchor,
+    text: "comment",
+  });
+  relocateComment(comment.id, "message-final", 2, finalAnchor);
+  const relocated = getComments().find((candidate) => candidate.id === comment.id);
+  assert.equal(relocated?.paragraphIndex, 2);
+  assert.deepEqual(relocated?.codeAnchor, finalAnchor);
+  assert.equal(relocated?.sourceKey, null);
 });

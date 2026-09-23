@@ -90,7 +90,7 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
         button: {
           // No SDK tooltip field; the title doubles as the hover tooltip on
           // desktop and the accessibility label everywhere.
-          title: "Add a review: Cmd+Click a paragraph on desktop, double-tap it on mobile or tablet",
+          title: "Add a review: Cmd+Click a paragraph or code line on desktop; double-tap a paragraph on mobile or tablet",
           icon: "MessageSquareQuote",
           label: "Review",
           behavior: {

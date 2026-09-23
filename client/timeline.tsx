@@ -24,7 +24,7 @@ import {
 } from "./turn-final-store";
 import { z } from "zod";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Image, Platform, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   openLocalFileRpc,
   COMPACT_FILE_TRANSFER_CHUNK_BYTES,
@@ -34,10 +34,14 @@ import {
   userMessageCardSchema,
   userMessageHasHostAttachments,
   findReviewCommentParagraphIndex,
+  locateCodeLineAnchor,
   reviewCommentMatchesParagraph,
+  sameCodeLineAnchor,
   looksLikeSentReview,
+  parseCodeReviewQuote,
   parseReviewMessage,
   type ReviewComment,
+  type CodeLineAnchor,
   previewLanguage,
   type ReviewItemData,
   type SentReviewData,
@@ -75,6 +79,8 @@ type EditingTarget = {
   draft: string;
   /** Set when the target is one markdown list item (per-item comment). */
   itemIndex?: number | null;
+  /** Set when the target is one source line inside a Markdown code block. */
+  codeAnchor?: CodeLineAnchor | null;
   /** When set, the editor updates an existing comment instead of adding one. */
   commentId?: string;
 };
@@ -104,9 +110,26 @@ function commentAnchorsHere(
 ): boolean {
   // Per-list-item comments render inside their item row, never chunk-level.
   if (comment.itemIndex !== undefined && comment.itemIndex !== null) return false;
+  if (comment.codeAnchor) return false;
   if (comment.messageId !== null && comment.messageId !== messageId) return false;
   if (comment.paragraphIndex !== index) return false;
   return reviewCommentMatchesParagraph(comment, paragraph);
+}
+
+type CodeLineComment = ReviewComment & { codeAnchor: CodeLineAnchor };
+
+function codeLineComments(
+  comments: ReviewComment[],
+  messageId: string | null,
+  paragraph: string,
+  paragraphIndex: number,
+): CodeLineComment[] {
+  return comments.filter((comment): comment is CodeLineComment =>
+    comment.paragraphIndex === paragraphIndex &&
+    comment.codeAnchor !== null && comment.codeAnchor !== undefined &&
+    (comment.messageId === null || comment.messageId === messageId) &&
+    reviewCommentMatchesParagraph(comment, paragraph),
+  );
 }
 
 /** Comments anchored to one list item of the chunk at chunkIndex. */
@@ -306,11 +329,13 @@ function WebFilePreviewOverlay({
 function CommentCard({
   comment,
   theme,
+  targetLabel,
   onEdit,
   onRemove,
 }: {
   comment: ReviewComment;
   theme: PluginTheme;
+  targetLabel?: string;
   onEdit(comment: ReviewComment): void;
   onRemove(): void;
 }) {
@@ -343,7 +368,9 @@ function CommentCard({
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Text style={styles.label}>{sent ? "Your comment \u00b7 sent \u2713" : "Your comment \u00b7 pending"}</Text>
+        <Text style={styles.label}>
+          {["Your comment", targetLabel, sent ? "sent \u2713" : "pending"].filter(Boolean).join(" \u00b7 ")}
+        </Text>
         <View style={{ flexDirection: "row", gap: 10 }}>
           <Pressable accessibilityRole="button" accessibilityLabel="Edit comment" onPress={() => onEdit(comment)} hitSlop={6}>
             <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Edit</Text>
@@ -403,7 +430,17 @@ const ReviewParagraph = memo(function ReviewParagraph({
   const anchored = comments.filter((comment) =>
     commentAnchorsHere(messageId, paragraph, index, comment),
   );
+  const commentsByCodeBlock = useMemo(() => {
+    const grouped = new Map<number, CodeLineComment[]>();
+    for (const comment of codeLineComments(comments, messageId, paragraph, index)) {
+      const bucket = grouped.get(comment.codeAnchor.blockIndex) ?? [];
+      bucket.push(comment);
+      grouped.set(comment.codeAnchor.blockIndex, bucket);
+    }
+    return grouped;
+  }, [comments, index, messageId, paragraph]);
   const itemEditing = editing?.itemIndex !== null && editing?.itemIndex !== undefined;
+  const codeEditing = editing?.codeAnchor !== null && editing?.codeAnchor !== undefined;
   const openParagraphEditor = (): void => {
     onSetEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" });
   };
@@ -429,6 +466,59 @@ const ReviewParagraph = memo(function ReviewParagraph({
       ))}
     </>
   );
+  const openCodeLineEditor = (anchor: CodeLineAnchor, event?: unknown): void => {
+    const carrier = event as {
+      preventDefault?: () => void;
+      stopPropagation?: () => void;
+      nativeEvent?: { metaKey?: boolean; ctrlKey?: boolean };
+    } | undefined;
+    const native = carrier?.nativeEvent;
+    if (!(native?.metaKey || native?.ctrlKey)) return;
+    carrier?.preventDefault?.();
+    carrier?.stopPropagation?.();
+    onSetEditing({
+      paragraphIndex: index,
+      paragraphText: paragraph,
+      codeAnchor: anchor,
+      draft: "",
+    });
+  };
+  const codeExtras = (blockIndex: number): ReactNode => {
+    const blockComments = commentsByCodeBlock.get(blockIndex) ?? [];
+    const editorHere = editing?.codeAnchor?.blockIndex === blockIndex;
+    if (!editorHere && blockComments.length === 0) return null;
+    return (
+      <View style={{ gap: 4, marginTop: 2 }}>
+        {editorHere ? editorNode : null}
+        {blockComments.map((comment) => (
+          <CommentCard
+            key={comment.id}
+            comment={comment}
+            theme={theme}
+            targetLabel={`Line ${comment.codeAnchor.lineIndex + 1}`}
+            onEdit={() =>
+              onSetEditing({
+                paragraphIndex: index,
+                paragraphText: comment.paragraphText,
+                codeAnchor: comment.codeAnchor,
+                draft: comment.text,
+                commentId: comment.id,
+              })
+            }
+            onRemove={() => removeComment(comment.id)}
+          />
+        ))}
+      </View>
+    );
+  };
+  const annotatedCodeLines = (blockIndex: number): ReadonlySet<number> => {
+    const lines = new Set(
+      (commentsByCodeBlock.get(blockIndex) ?? [])
+        .map((comment) => comment.codeAnchor.lineIndex),
+    );
+    if (editing?.codeAnchor?.blockIndex === blockIndex) lines.add(editing.codeAnchor.lineIndex);
+    return lines;
+  };
   const markdown = (
     <MarkdownText
       text={paragraph}
@@ -439,6 +529,9 @@ const ReviewParagraph = memo(function ReviewParagraph({
       selectable={platform === "web" ? undefined : platform !== "ios"}
       onChunkPress={platform === "web" ? undefined : () => onChunkTap(index, -1, paragraph)}
       onCommentRequest={openParagraphEditor}
+      onCodeLinePress={platform === "web" ? openCodeLineEditor : undefined}
+      codeBlockExtras={codeExtras}
+      annotatedCodeLines={annotatedCodeLines}
       localFileResolver={(url) => classifyLocalFileLink(url, { workspaceRoot })}
       onLocalFilePress={onLocalFilePress}
       onListItemPress={(itemIndex, itemText, event) => onListItemTap(index, itemIndex, itemText, event)}
@@ -461,7 +554,7 @@ const ReviewParagraph = memo(function ReviewParagraph({
       ) : (
         <View>{markdown}</View>
       )}
-      {editing && !itemEditing ? editorNode : null}
+      {editing && !itemEditing && !codeEditing ? editorNode : null}
       {anchored.map((comment) => (
         <CommentCard
           key={comment.id}
@@ -755,6 +848,52 @@ function SentReviewCard({
       entry: { paddingHorizontal: 10, paddingVertical: 8, gap: 3 } as const,
       entryBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.border } as const,
       quote: { color: theme.colors.foregroundMuted, fontSize: 12, fontStyle: "italic" } as const,
+      codeHeader: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 11,
+        fontWeight: "600",
+        marginBottom: 4,
+      } as const,
+      codeFrame: {
+        backgroundColor: theme.colors.surface0,
+        borderColor: theme.colors.border,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 7,
+        overflow: "hidden",
+        marginBottom: 3,
+      } as const,
+      codeRow: {
+        flexDirection: "row",
+        alignItems: "stretch",
+        borderLeftWidth: 3,
+        borderLeftColor: "transparent",
+        minHeight: 22,
+      } as const,
+      codeSelectedRow: {
+        backgroundColor: withAlpha(theme.colors.accent, 0.16),
+        borderLeftColor: theme.colors.accent,
+      } as const,
+      codeLineNumber: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 11,
+        lineHeight: 22,
+        width: 34,
+        paddingRight: 8,
+        textAlign: "right",
+        userSelect: "none",
+      } as const,
+      codeSelectedLineNumber: { color: theme.colors.accent } as const,
+      codeLineText: {
+        color: theme.colors.foreground,
+        fontFamily: Platform.OS === "ios"
+          ? "Menlo"
+          : Platform.OS === "android"
+            ? "monospace"
+            : "ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace",
+        fontSize: 11,
+        lineHeight: 22,
+        paddingRight: 10,
+      } as const,
       comment: { color: theme.colors.foreground, fontSize: 14, lineHeight: 21 } as const,
     }),
     [theme, parsed.entries.length],
@@ -771,12 +910,47 @@ function SentReviewCard({
       {open || count === 0 ? (
         <View>
           {parsed.note.length > 0 ? <Text style={styles.note}>{parsed.note}</Text> : null}
-          {parsed.entries.map((entry, index) => (
-            <View key={index} style={[styles.entry, index > 0 ? styles.entryBorder : null]}>
-              <Text style={styles.quote} numberOfLines={2}>{`"${entry.quote}"`}</Text>
-              <Text style={styles.comment}>{entry.comment}</Text>
-            </View>
-          ))}
+          {parsed.entries.map((entry, index) => {
+            const codeQuote = parseCodeReviewQuote(entry.quote);
+            return (
+              <View key={index} style={[styles.entry, index > 0 ? styles.entryBorder : null]}>
+                {codeQuote ? (
+                  <View>
+                    <Text style={styles.codeHeader}>
+                      {`Code block ${codeQuote.blockNumber} · Line ${codeQuote.lineNumber}`}
+                    </Text>
+                    <View style={styles.codeFrame}>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                        <View style={{ minWidth: "100%" }}>
+                          {codeQuote.lines.map((codeLine) => (
+                            <View
+                              key={codeLine.lineNumber}
+                              style={[styles.codeRow, codeLine.selected ? styles.codeSelectedRow : null]}
+                            >
+                              <Text
+                                style={[
+                                  styles.codeLineNumber,
+                                  codeLine.selected ? styles.codeSelectedLineNumber : null,
+                                ]}
+                              >
+                                {codeLine.lineNumber}
+                              </Text>
+                              <Text style={styles.codeLineText}>
+                                {codeLine.text.length > 0 ? codeLine.text : " "}
+                              </Text>
+                            </View>
+                          ))}
+                        </View>
+                      </ScrollView>
+                    </View>
+                  </View>
+                ) : (
+                  <Text style={styles.quote} numberOfLines={2}>{`"${entry.quote}"`}</Text>
+                )}
+                <Text style={styles.comment}>{entry.comment}</Text>
+              </View>
+            );
+          })}
         </View>
       ) : null}
     </View>
@@ -917,12 +1091,16 @@ function ReviewAssistantMessage({
       const anchorKey = `${comment.revision}:${data.messageId}:${paragraphs.length}:${comment.paragraphText}`;
       if (reanchoredVersions.current.get(comment.id) === anchorKey) continue;
       const index = findReviewCommentParagraphIndex(comment, paragraphs);
+      const codeAnchor = comment.codeAnchor && index !== -1
+        ? locateCodeLineAnchor(paragraphs[index], comment.codeAnchor)
+        : undefined;
       if (index !== -1 && (
         comment.messageId !== data.messageId ||
         comment.paragraphIndex !== index ||
+        (codeAnchor !== undefined && !sameCodeLineAnchor(comment.codeAnchor, codeAnchor)) ||
         comment.sourceKey !== null
       )) {
-        relocateComment(comment.id, data.messageId, index);
+        relocateComment(comment.id, data.messageId, index, codeAnchor);
       }
       reanchoredVersions.current.set(comment.id, anchorKey);
     }
@@ -1179,6 +1357,7 @@ function ReviewAssistantMessage({
         messageId: data.messageId,
         paragraphIndex: editing.paragraphIndex,
         itemIndex: editing.itemIndex ?? null,
+        codeAnchor: editing.codeAnchor ?? null,
         paragraphText: editing.paragraphText,
         text: editing.draft.trim(),
         sourceKey: data.messageId === null ? sourceKey : null,
@@ -1191,6 +1370,11 @@ function ReviewAssistantMessage({
   // inside the tapped list item (per-item comments).
   const editorNode = editing ? (
     <View ref={editorRef} style={styles.editor}>
+      {editing.codeAnchor ? (
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+          {`Code block ${editing.codeAnchor.blockIndex + 1} \u00b7 line ${editing.codeAnchor.lineIndex + 1}`}
+        </Text>
+      ) : null}
       <TextInput
         value={editing.draft}
         onChangeText={(draft) => setEditing({ ...editing, draft })}
