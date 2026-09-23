@@ -508,7 +508,7 @@ function CompactionDivider({
   const label =
     item.data.status === "loading" ? "Compacting context…" : "Context compacted";
   return (
-    <View style={styles.root}>
+    <View testID="inline-review-root" style={styles.root}>
       <View style={styles.line} />
       <Icon name="Link" size={12} color={theme.colors.foregroundMuted} />
       <Text style={styles.label}>{label}</Text>

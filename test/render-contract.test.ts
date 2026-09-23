@@ -125,6 +125,15 @@ test("plain user messages use native cards without replacing web or attachment r
   assert.match(sharedSource, /export function userMessageHasHostAttachments/);
 });
 
+test("the compaction divider exposes the host-wide frame marker", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx"), "utf8"));
+  const component = timelineSource.slice(
+    timelineSource.indexOf("function CompactionDivider"),
+    timelineSource.indexOf("function timestampLabel"),
+  );
+  assert.match(component, /<View testID="inline-review-root" style=\{styles\.root\}>/);
+});
+
 test("timeline renderers are available before transformers can replace native rows", () => {
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx"), "utf8"));
   const registrationSource = timelineSource.slice(timelineSource.indexOf("export function registerTimeline"));

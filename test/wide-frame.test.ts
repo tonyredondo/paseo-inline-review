@@ -285,7 +285,10 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   const reviewCapped = fakeElement({ width: 820, maxWidth: "820px" });
   const sentReview = fakeElement({ attributes: { "data-testid": "inline-review-sent" } });
   append(reviewCapped, sentReview);
-  append(pane, staleCapped, capped, reviewCapped);
+  const compactionCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const compactionDivider = fakeElement({ attributes: { "data-testid": "inline-review-root" } });
+  append(compactionCapped, compactionDivider);
+  append(pane, staleCapped, capped, reviewCapped, compactionCapped);
   append(body, sidebar, pane);
 
   const resizeListeners = new Set<() => void>();
@@ -398,6 +401,11 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     reviewCapped.style.maxWidth,
     "1040px",
     "the compact sent-review widget must share the widened timeline frame",
+  );
+  assert.equal(
+    compactionCapped.style.maxWidth,
+    "1040px",
+    "the context-compaction divider must share the widened timeline frame",
   );
   assert.equal(message.style.maxWidth, "100%");
   assert.equal(message.style.paddingBottom, "8px");
@@ -583,6 +591,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(capped.style.maxWidth, "");
   assert.equal(capped.dataset.inlineReviewWide, "");
   assert.equal(reviewCapped.style.maxWidth, "");
+  assert.equal(compactionCapped.style.maxWidth, "");
   assert.equal(liveReviewCapped.style.maxWidth, "");
   assert.equal(message.style.paddingBottom, "");
   assert.equal(bubble.style.paddingTop, "");
