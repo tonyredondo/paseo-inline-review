@@ -28,6 +28,9 @@ interface TimelineHandle {
   }): Promise<TimelinePage>;
 }
 
+const INITIAL_TAIL_ENTRIES = 100;
+const HISTORICAL_PAGE_ENTRIES = 200;
+
 type Entry = {
   kind: "user" | "assistant" | "tool";
   id: string | null;
@@ -255,7 +258,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
           }
           const page = await refetchWithTimeout(
             timeline,
-            { direction: "before", cursor, limit: 400 },
+            { direction: "before", cursor, limit: HISTORICAL_PAGE_ENTRIES },
             8000,
           );
           if (!page || stopped) return;
@@ -302,9 +305,9 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     try {
       let payload: TimelinePage | null = null;
       const attempts = [
-        { direction: "tail", limit: 300 },
+        { direction: "tail", limit: INITIAL_TAIL_ENTRIES },
         undefined,
-        { limit: 300 },
+        { limit: INITIAL_TAIL_ENTRIES },
       ] as const;
       for (const attempt of attempts) {
         payload = await refetchWithTimeout(timeline, attempt, 4000);
@@ -478,8 +481,10 @@ type TurnFinalFragment = {
 };
 
 const finalFragments = new Map<string, Map<string, TurnFinalFragment>>();
-const finalFragmentListeners = new Map<string, Set<() => void>>();
-const finalFragmentVersions = new Map<string, number>();
+const finalFragmentSourcesByMessage = new Map<string, Map<string, Set<string>>>();
+const finalFragmentListeners = new Map<string, Map<string, Set<() => void>>>();
+const finalFragmentVersions = new Map<string, Map<string, number>>();
+const finalFragmentTopologyVersions = new Map<string, number>();
 const finalFragmentPositionCache = new Map<string, {
   fragmentVersion: number;
   indexVersion: number;
@@ -496,10 +501,66 @@ function hasRenderableText(text: string): boolean {
   });
 }
 
-function notifyFinalFragments(agentId: string): void {
-  finalFragmentVersions.set(agentId, (finalFragmentVersions.get(agentId) ?? 0) + 1);
+function affectedFragmentSources(
+  agentId: string,
+  sourceKey: string,
+  ...messageIds: Array<string | null>
+): Set<string> {
+  const affected = new Set<string>([sourceKey]);
+  const sourcesByMessage = finalFragmentSourcesByMessage.get(agentId);
+  for (const messageId of messageIds) {
+    if (messageId === null) continue;
+    for (const siblingSource of sourcesByMessage?.get(messageId) ?? []) {
+      affected.add(siblingSource);
+    }
+  }
+  return affected;
+}
+
+function updateFragmentMessageIndex(
+  agentId: string,
+  sourceKey: string,
+  previousMessageId: string | null,
+  nextMessageId: string | null,
+): void {
+  if (previousMessageId === nextMessageId) return;
+  let sourcesByMessage = finalFragmentSourcesByMessage.get(agentId);
+  if (previousMessageId !== null) {
+    const previousSources = sourcesByMessage?.get(previousMessageId);
+    previousSources?.delete(sourceKey);
+    if (previousSources?.size === 0) sourcesByMessage?.delete(previousMessageId);
+  }
+  if (nextMessageId !== null) {
+    sourcesByMessage ??= new Map<string, Set<string>>();
+    const nextSources = sourcesByMessage.get(nextMessageId) ?? new Set<string>();
+    nextSources.add(sourceKey);
+    sourcesByMessage.set(nextMessageId, nextSources);
+    finalFragmentSourcesByMessage.set(agentId, sourcesByMessage);
+  }
+  if (sourcesByMessage?.size === 0) finalFragmentSourcesByMessage.delete(agentId);
+}
+
+function notifyFinalFragments(agentId: string, sourceKeys: Iterable<string>): void {
   finalFragmentPositionCache.delete(agentId);
-  for (const listener of finalFragmentListeners.get(agentId) ?? []) listener();
+  finalFragmentTopologyVersions.set(
+    agentId,
+    (finalFragmentTopologyVersions.get(agentId) ?? 0) + 1,
+  );
+  const versions = finalFragmentVersions.get(agentId) ?? new Map<string, number>();
+  finalFragmentVersions.set(agentId, versions);
+  const listeners = finalFragmentListeners.get(agentId);
+  for (const sourceKey of sourceKeys) {
+    versions.set(sourceKey, (versions.get(sourceKey) ?? 0) + 1);
+    for (const listener of listeners?.get(sourceKey) ?? []) listener();
+  }
+}
+
+function pruneFinalFragmentSource(agentId: string, sourceKey: string): void {
+  if (finalFragments.get(agentId)?.has(sourceKey)) return;
+  if ((finalFragmentListeners.get(agentId)?.get(sourceKey)?.size ?? 0) > 0) return;
+  const versions = finalFragmentVersions.get(agentId);
+  versions?.delete(sourceKey);
+  if (versions?.size === 0) finalFragmentVersions.delete(agentId);
 }
 
 export type TurnFinalFragmentInput = {
@@ -530,11 +591,15 @@ export function mountTurnFinalFragment(input: TurnFinalFragmentInput): {
     const visible = hasRenderableText(next.text);
     const oldFinalText = existing ? (index?.isFinalText(existing.text) ?? false) : false;
     const nextFinalText = index?.isFinalText(next.text) ?? false;
+    const previousMessageId = existing?.messageId ?? null;
     const topologyChanged = !existing ||
       existing.messageId !== next.messageId ||
       existing.timestamp !== next.timestamp ||
       existing.visible !== visible ||
       oldFinalText !== nextFinalText;
+    const affected = topologyChanged
+      ? affectedFragmentSources(input.agentId, input.sourceKey, previousMessageId, next.messageId)
+      : null;
     fragments.set(input.sourceKey, {
       sourceKey: input.sourceKey,
       messageId: next.messageId,
@@ -545,9 +610,12 @@ export function mountTurnFinalFragment(input: TurnFinalFragmentInput): {
       visible,
       token,
     });
+    updateFragmentMessageIndex(input.agentId, input.sourceKey, previousMessageId, next.messageId);
     if (next.phase === "streaming") index?.forgetKnown(input.sourceKey);
     else index?.ensureKnown(input.sourceKey, next.messageId, next.text);
-    if (topologyChanged) notifyFinalFragments(input.agentId);
+    if (topologyChanged) {
+      notifyFinalFragments(input.agentId, affected!);
+    }
   }
 
   update(input);
@@ -556,10 +624,13 @@ export function mountTurnFinalFragment(input: TurnFinalFragmentInput): {
     release(): void {
       const current = finalFragments.get(input.agentId)?.get(input.sourceKey);
       if (!current || current.token !== token) return;
+      const affected = affectedFragmentSources(input.agentId, input.sourceKey, current.messageId);
+      updateFragmentMessageIndex(input.agentId, input.sourceKey, current.messageId, null);
       fragments.delete(input.sourceKey);
       stores.get(input.agentId)?.index.forgetKnown(input.sourceKey);
       if (fragments.size === 0) finalFragments.delete(input.agentId);
-      notifyFinalFragments(input.agentId);
+      notifyFinalFragments(input.agentId, affected);
+      pruneFinalFragmentSource(input.agentId, input.sourceKey);
     },
   };
 }
@@ -570,18 +641,26 @@ export function retainTurnFinalFragment(input: TurnFinalFragmentInput): () => vo
   return () => mounted.release();
 }
 
-export function subscribeTurnFinalFragments(agentId: string, listener: () => void): () => void {
-  const agentListeners = finalFragmentListeners.get(agentId) ?? new Set<() => void>();
-  agentListeners.add(listener);
+export function subscribeTurnFinalFragments(
+  agentId: string,
+  sourceKey: string,
+  listener: () => void,
+): () => void {
+  const agentListeners = finalFragmentListeners.get(agentId) ?? new Map<string, Set<() => void>>();
+  const sourceListeners = agentListeners.get(sourceKey) ?? new Set<() => void>();
+  sourceListeners.add(listener);
+  agentListeners.set(sourceKey, sourceListeners);
   finalFragmentListeners.set(agentId, agentListeners);
   return () => {
-    agentListeners.delete(listener);
+    sourceListeners.delete(listener);
+    if (sourceListeners.size === 0) agentListeners.delete(sourceKey);
     if (agentListeners.size === 0) finalFragmentListeners.delete(agentId);
+    pruneFinalFragmentSource(agentId, sourceKey);
   };
 }
 
-export function turnFinalFragmentVersion(agentId: string): number {
-  return finalFragmentVersions.get(agentId) ?? 0;
+export function turnFinalFragmentVersion(agentId: string, sourceKey: string): number {
+  return finalFragmentVersions.get(agentId)?.get(sourceKey) ?? 0;
 }
 
 /**
@@ -595,7 +674,7 @@ export function getTurnFinalCardPosition(
   const fragments = finalFragments.get(agentId);
   const index = stores.get(agentId)?.index;
   if (!fragments || !index) return "none";
-  const fragmentVersion = finalFragmentVersions.get(agentId) ?? 0;
+  const fragmentVersion = finalFragmentTopologyVersions.get(agentId) ?? 0;
   const cached = finalFragmentPositionCache.get(agentId);
   if (cached && cached.fragmentVersion === fragmentVersion && cached.indexVersion === index.version) {
     return cached.positions.get(sourceKey) ?? "none";
@@ -704,8 +783,10 @@ export function disposeTurnIndexes(): void {
   stores.clear();
   listeners.clear();
   finalFragments.clear();
+  finalFragmentSourcesByMessage.clear();
   finalFragmentListeners.clear();
   finalFragmentVersions.clear();
+  finalFragmentTopologyVersions.clear();
   finalFragmentPositionCache.clear();
   finalFragmentPositionBuilds.clear();
 }

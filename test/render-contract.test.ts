@@ -202,6 +202,16 @@ test("timeline rows use scoped agent state and one elected wide-frame controller
   assert.match(entrySource, /removeSettingsScreen\(\)/);
 });
 
+test("turn finality subscriptions and fragment mounts run before paint", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  const assistant = timelineSource.slice(
+    timelineSource.indexOf("function ReviewAssistantMessage"),
+    timelineSource.indexOf("export function registerTimeline"),
+  );
+  assert.match(assistant, /useLayoutEffect\(\(\) => \{[\s\S]{0,240}retainTurnIndex/);
+  assert.match(assistant, /useLayoutEffect\(\(\) => \{[\s\S]{0,240}mountTurnFinalFragment/);
+});
+
 test("wide-frame ownership is elected before the browser can paint", () => {
   const controllerSource = String(readFileSync(path.resolve("client/wide-frame-controller.tsx")));
   const ownerHook = controllerSource.slice(

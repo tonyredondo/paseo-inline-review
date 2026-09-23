@@ -21,7 +21,7 @@ import {
   updateTurnAgentStatus,
 } from "./turn-final-store";
 import { z } from "zod";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Image, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   openLocalFileRpc,
@@ -651,13 +651,13 @@ function ReviewAssistantMessage({
     () => turnIndexVersion(agentId),
   );
   const subscribeToFinalFragments = useCallback(
-    (listener: () => void) => subscribeTurnFinalFragments(agentId, listener),
-    [agentId],
+    (listener: () => void) => subscribeTurnFinalFragments(agentId, sourceKey, listener),
+    [agentId, sourceKey],
   );
   const fragmentVersion = useSyncExternalStore(
     subscribeToFinalFragments,
-    () => turnFinalFragmentVersion(agentId),
-    () => turnFinalFragmentVersion(agentId),
+    () => turnFinalFragmentVersion(agentId, sourceKey),
+    () => turnFinalFragmentVersion(agentId, sourceKey),
   );
   const timestampValue = timestamp.getTime();
   const finalCardPosition = useMemo(() => {
@@ -666,7 +666,7 @@ function ReviewAssistantMessage({
     void fragmentVersion;
     return getTurnFinalCardPosition(agentId, sourceKey);
   }, [turnVersion, fragmentVersion, agentId, sourceKey]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     try {
       const handle = paseo?.agents?.ref(agentId);
       if (!handle?.timeline) return;
@@ -685,7 +685,7 @@ function ReviewAssistantMessage({
   // The workspace root lives on the daemon machine; relative file links
   // resolve against it.
   const workspaceRoot = agentSnapshot?.cwd ?? null;
-  useEffect(() => {
+  useLayoutEffect(() => {
     updateTurnAgentStatus(agentId, agentSnapshot?.status);
   }, [agentId, agentSnapshot?.status]);
   const revealedRaw = useRevealedText(data.text, data.phase);
@@ -701,7 +701,7 @@ function ReviewAssistantMessage({
   const paragraphStream = useRef<ReturnType<typeof createStableParagraphs> | null>(null);
   if (!paragraphStream.current) paragraphStream.current = createStableParagraphs();
   const finalFragmentHandle = useRef<ReturnType<typeof mountTurnFinalFragment> | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const handle = mountTurnFinalFragment({
       agentId,
       sourceKey,
@@ -716,7 +716,7 @@ function ReviewAssistantMessage({
       handle.release();
     };
   }, [agentId, sourceKey]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     finalFragmentHandle.current?.update({
       messageId: data.messageId,
       text: revealed,

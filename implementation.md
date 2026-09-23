@@ -13,7 +13,7 @@ The initial performance work was published in `92c74ce`. The code preserves host
 | --- | --- |
 | 0 | Added deterministic `npm run perf`, source and installed-bundle size reports, injectable schedulers, operation/byte/cache counters, and characterization coverage. Structural output was identical across three consecutive runs after removing elapsed-time fields. |
 | 1 | Replaced per-agent five-second loads with one revision/epoch batch synchronization controller. It singleflights overlapping work, protects dirty agents, pauses in background, refreshes on resume/save recovery, and backs unchanged foreground polling from 15 to 30 to 60 seconds. |
-| 2 | Turn-final indexes fetch one 300-entry tail initially and older 400-entry pages only when a mounted row needs them. Page walks and indexes are shared, retained for 120 seconds, invalidated by epoch, and explicitly disposed on plugin cleanup. |
+| 2 | Turn-final indexes fetch one 100-entry tail initially and older 200-entry pages only when a mounted row needs them. Page walks and indexes are shared, retained for 120 seconds, invalidated by epoch, and explicitly disposed on plugin cleanup. Fragment topology is indexed by `messageId`, and only the affected rows are notified. |
 | 3 | Added a bounded thumbnail RPC and client/server stores with mount delay, singleflight, concurrency 2, stale-result rejection, byte-bounded LRU caches, file-identity verification, retry, and a 100 KiB output cap. Compact remote images and every full-resolution local image require interaction. |
 | 4 | Comment and file I/O now use asynchronous handles. Comment mutations use delta saves while the full RPC remains for compatibility. Downloads use 768 KiB compact and 2 MiB desktop chunks, sequential progressive writes, source-version validation, and destination abort on failure. |
 | 5 | Added compiled Markdown and inline-token caches bounded by 2,000,000 source characters, completed-message reuse, 50 ms streaming coalescing with immediate final publication, prefix-only collapsed highlighting, large-block virtualization, agent/message comment indexes, and stable re-anchor tracking. |
@@ -23,15 +23,15 @@ The initial performance work was published in `92c74ce`. The code preserves host
 
 ### Final measured evidence
 
-- `npm test`: 214 tests passed, including all pre-existing parser/render/persistence contracts and the new synchronization, lazy history, thumbnail, progressive download, streaming, startup-order, pre-paint, and fake-DOM regressions.
+- `npm test`: 240 tests passed, including all pre-existing parser/render/persistence contracts and the new synchronization, lazy history, thumbnail, progressive download, streaming, startup-order, pre-paint, and fake-DOM regressions.
 - `npm run typecheck` and `git diff --check`: passed.
 - Stress: 25 consecutive iterations passed for comment synchronization, thumbnail client/server singleflight and eviction, progressive download abort/order, adaptive sweeps, mutation routing, and turn-index lifecycle.
 - Comment synchronization: 1, 9, and 100 agents each produce one RPC per tick; unchanged foreground state backs off to one request per minute and background state produces none.
-- Initial turn history: one 300-entry tail request and zero historical requests. Older history remains demand-driven with a twelve-page safety cap.
+- Initial turn history: one 100-entry tail request and zero historical requests. Older history uses 200-entry demand-driven pages with a twelve-page safety cap.
 - Images: zero automatic full-resolution RPCs. Thumbnail work and client fetches are each capped at two concurrent operations; remounts hit bounded memory caches.
 - Markdown: a 500 KiB completed fixture reuses its compiled document on remount; the collapsed 500-line fixture highlights only 40 lines.
 - Downloads: a 5 MiB compact transfer uses seven bounded chunks; desktop uses three. Tests prove ordered writes and abort-on-error behavior.
-- Plugin: reloaded from this checkout, reported `running`, and logged `Plugin ready` at `2026-09-22T20:04:04.067Z` without a new processor error.
+- Plugin: reloaded from this checkout, reported `running`, and logged `Plugin ready` at `2026-09-23T09:46:39.699Z` without a new processor error.
 - Desktop: the post-reload timeline rendered at the widened stable width with plugin messages visible and no blank-row regression.
 
 ### Re-entry paint follow-up
@@ -43,6 +43,17 @@ A real re-entry still exposed three visible phases: native rows, partial plugin 
 - Transformers were installed before their renderers. Renderers now exist first, so a host that publishes registrations incrementally never sees a plugin timeline item without its component.
 
 The installed bundle is 246,418 raw bytes and 52,084 gzip bytes. Twenty local catalog samples measured 1.04 ms median / 2.01 ms p95; twenty parse/compile samples measured 1.90 ms median / 2.19 ms p95. Those values rule out plugin catalog lookup or JavaScript compilation as the source of a large local delay. A cold native frame painted before Paseo loads the client bundle remains host-owned; plugin-local persistence cannot execute early enough to remove it, and caching settings independently would risk painting the wrong saved state.
+
+### Timeline hot-path follow-up (2026-09-23)
+
+The next real-thread profile found two remaining plugin-controlled costs and fixed both behind red-capable regressions:
+
+- The initial timeline tail was reduced from 300 to 100 entries. On this thread the measured response fell from 2.84 MiB / 47 ms median to 0.86 MiB / 25.8 ms median, approximately 70% fewer bytes and 45% less local latency.
+- Demand-driven historical pages were reduced from 400 to 200 entries. The measured page fell from 3.82 MiB / 60 ms to 1.93 MiB / 28 ms. Existing cancellation, retry, shared-walk, epoch, and final-card tests remain unchanged and green.
+- Fragment topology subscriptions are now keyed by `sourceKey`, with a separate `messageId` index for the only siblings whose card position can change. The 300-row benchmark fell from 90,000 subscriber callbacks to 300 and no longer scans every mounted fragment to find siblings.
+- Index retention, agent status, fragment mounting, and topology updates now use layout effects so a warm index can apply the correct card state before the next paint.
+
+Verification for this follow-up: 240 tests, TypeScript, `git diff --check`, 25 repeated focused lifecycle/fan-out runs, 25 repeated pre-paint contract runs, exact plugin reload, clean `Plugin ready`, and Desktop inspection of agent and user cards. The installed bundle is 259,296 raw bytes / 54,972 gzip bytes, an increase of 3,266 raw / 610 gzip bytes over the previously installed build. Physical iPhone verification remains pending.
 
 ### Bundle warning analysis
 
@@ -200,7 +211,7 @@ The old `loadCommentsRpc` may remain temporarily as a compatibility fallback dur
 ### Design
 
 - Replace eager `backfillOlder()` with `ensureKnown(messageId, text)` requests triggered by mounted final-fragment candidates.
-- Fetch the 300-entry tail once. Fetch older pages only until the requested mounted message is found, history ends, or the existing safety cap is reached.
+- Fetch the 100-entry tail once. Fetch older 200-entry pages only until the requested mounted message is found, history ends, or the existing safety cap is reached.
 - Deduplicate simultaneous lookups for the same agent and share fetched pages across all mounted rows.
 - Cache page identities and final classifications by agent/epoch/message identity. Invalidate them on timeline epoch replacement rather than every row remount.
 - When the last row releases an index, keep it alive for a short grace period (initial target: 120 seconds). A remount inside the grace period reuses it and cancels disposal.

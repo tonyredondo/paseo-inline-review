@@ -175,7 +175,7 @@ test("live fragments sharing the final id form one continuous card", async () =>
 test("streaming fragment text updates do not fan out to every sibling", async () => {
   const agentId = `fragment-updates-${Date.now()}`;
   let notifications = 0;
-  const unsubscribe = subscribeTurnFinalFragments(agentId, () => { notifications += 1; });
+  const unsubscribe = subscribeTurnFinalFragments(agentId, "stream", () => { notifications += 1; });
   const mounted = mountTurnFinalFragment({
     agentId,
     sourceKey: "stream",
@@ -191,6 +191,73 @@ test("streaming fragment text updates do not fan out to every sibling", async ()
   mounted.release();
   assert.equal(notifications, 2);
   unsubscribe();
+});
+
+test("mounting unrelated fragments notifies only their own subscribers", () => {
+  const agentId = `fragment-scoped-mounts-${Date.now()}`;
+  const rowCount = 300;
+  let notifications = 0;
+  const unsubscribers = Array.from({ length: rowCount }, (_, index) =>
+    subscribeTurnFinalFragments(agentId, `source-${index}`, () => {
+      notifications += 1;
+    }),
+  );
+  const fragments = Array.from({ length: rowCount }, (_, index) =>
+    mountTurnFinalFragment({
+      agentId,
+      sourceKey: `source-${index}`,
+      messageId: `message-${index}`,
+      text: `message ${index}`,
+      timestamp: index,
+      phase: "streaming",
+    }),
+  );
+
+  assert.equal(notifications, rowCount);
+
+  for (const unsubscribe of unsubscribers) unsubscribe();
+  for (const fragment of fragments) fragment.release();
+});
+
+test("fragment topology changes notify only siblings sharing the message id", () => {
+  const agentId = `fragment-scoped-siblings-${Date.now()}`;
+  const notifications = new Map<string, number>();
+  const subscribe = (sourceKey: string) =>
+    subscribeTurnFinalFragments(agentId, sourceKey, () => {
+      notifications.set(sourceKey, (notifications.get(sourceKey) ?? 0) + 1);
+    });
+  const unsubscribeFirst = subscribe("first");
+  const unsubscribeLast = subscribe("last");
+  const unsubscribeOther = subscribe("other");
+  const first = mountTurnFinalFragment({
+    agentId, sourceKey: "first", messageId: "shared", text: "first", timestamp: 1, phase: "streaming",
+  });
+  const last = mountTurnFinalFragment({
+    agentId, sourceKey: "last", messageId: "shared", text: "last", timestamp: 2, phase: "streaming",
+  });
+  const other = mountTurnFinalFragment({
+    agentId, sourceKey: "other", messageId: "unrelated", text: "other", timestamp: 3, phase: "streaming",
+  });
+  notifications.clear();
+
+  first.update({ messageId: "shared", text: "---", timestamp: 1, phase: "streaming" });
+
+  assert.deepEqual(Object.fromEntries(notifications), { first: 1, last: 1 });
+
+  notifications.clear();
+  first.update({ messageId: "unrelated", text: "first", timestamp: 1, phase: "streaming" });
+  assert.deepEqual(Object.fromEntries(notifications), { first: 1, last: 1, other: 1 });
+
+  notifications.clear();
+  first.update({ messageId: "unrelated", text: "---", timestamp: 1, phase: "streaming" });
+  assert.deepEqual(Object.fromEntries(notifications), { first: 1, other: 1 });
+
+  unsubscribeOther();
+  unsubscribeLast();
+  unsubscribeFirst();
+  other.release();
+  last.release();
+  first.release();
 });
 
 test("final card positions are built once per fragment and index version", async () => {
@@ -479,9 +546,19 @@ test("startup fetches one tail and no historical page until an old row is mounte
   const agentId = `lazy-history-${Date.now()}`;
   let tailCalls = 0;
   let beforeCalls = 0;
+  const requests: Array<{
+    direction?: string;
+    limit?: number;
+    cursor?: { epoch: string; seq: number };
+  } | undefined> = [];
   const timeline = {
     subscribe(): () => void { return () => {}; },
-    async refetch(options?: { direction?: string }) {
+    async refetch(options?: {
+      direction?: string;
+      limit?: number;
+      cursor?: { epoch: string; seq: number };
+    }) {
+      requests.push(options);
       if (options?.direction === "before") {
         beforeCalls += 1;
         return {
@@ -510,6 +587,7 @@ test("startup fetches one tail and no historical page until an old row is mounte
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(tailCalls, 1);
   assert.equal(beforeCalls, 0);
+  assert.deepEqual(requests, [{ direction: "tail", limit: 100 }]);
   assert.equal(isTurnFinalMessage(agentId, "recent"), true);
 
   const releaseFragment = retainTurnFinalFragment({
@@ -517,6 +595,11 @@ test("startup fetches one tail and no historical page until an old row is mounte
   });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(beforeCalls, 1);
+  assert.deepEqual(requests[1], {
+    direction: "before",
+    cursor: { epoch: "e", seq: 1000 },
+    limit: 200,
+  });
   assert.equal(isTurnFinalMessage(agentId, "old"), true);
   releaseFragment();
   releaseIndex();

@@ -12,6 +12,11 @@ import {
 } from "../client/markdown-compile.ts";
 import { highlightCode } from "../shared/syntax.ts";
 import { FILE_TRANSFER_CHUNK_BYTES } from "../shared/review.ts";
+import {
+  disposeTurnIndexes,
+  mountTurnFinalFragment,
+  subscribeTurnFinalFragments,
+} from "../client/turn-final-store.ts";
 
 type Measurement = Record<string, unknown>;
 
@@ -252,19 +257,51 @@ function measureCompressionExperiment(): Measurement {
   };
 }
 
+function measureTurnFragmentNotifications(rowCount: number): Measurement {
+  const agentId = `perf-fragments-${rowCount}`;
+  let notifications = 0;
+  const unsubscribers = Array.from({ length: rowCount }, (_, index) =>
+    subscribeTurnFinalFragments(agentId, `source-${index}`, () => {
+      notifications += 1;
+    }),
+  );
+  const started = performance.now();
+  const fragments = Array.from({ length: rowCount }, (_, index) =>
+    mountTurnFinalFragment({
+      agentId,
+      sourceKey: `source-${index}`,
+      messageId: `message-${index}`,
+      text: `message ${index}`,
+      timestamp: index,
+      phase: "streaming",
+    }),
+  );
+  const elapsedMs = performance.now() - started;
+  unsubscribers.forEach((unsubscribe) => unsubscribe());
+  fragments.forEach((fragment) => fragment.release());
+  disposeTurnIndexes();
+  return {
+    rows: rowCount,
+    topologyChanges: rowCount,
+    subscriberNotifications: notifications,
+    elapsedMs,
+  };
+}
+
 const commentSync = await Promise.all([1, 9, 100].map(measureCommentSync));
 const thumbnailStore = await measureThumbnailStore();
 const report = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   scenarios: {
     commentSync,
     turnHistory: {
       initialTailRequests: 1,
       initialHistoricalRequests: 0,
-      initialEntriesRequested: 300,
+      initialEntriesRequested: 100,
       maximumDemandDrivenHistoricalPages: 12,
-      historicalPageEntries: 400,
+      historicalPageEntries: 200,
     },
+    turnFragments: measureTurnFragmentNotifications(300),
     markdown: {
       completed: [10_000, 100_000, 500_000].map(measureMarkdown),
       streamingReferences: measureStreamingReferences(2_000),
