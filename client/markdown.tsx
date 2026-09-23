@@ -42,6 +42,11 @@ const WEB_COPY_BUTTON_STYLE = Platform.OS === "web"
   ? ({ cursor: "pointer", userSelect: "none" } as object)
   : undefined;
 
+/** Keep browser selection ranges limited to code, never gutters or controls. */
+const WEB_NONSELECTABLE_STYLE = Platform.OS === "web"
+  ? ({ userSelect: "none", WebkitUserSelect: "none" } as object)
+  : undefined;
+
 /** Converts #rrggbb to rgba() so fills can fade without losing hue. */
 /** Line-highlight band over the black code background (gutter included). */
 const HIGHLIGHT_ALPHA = 0.38;
@@ -409,8 +414,10 @@ function VirtualizedCodeLine({
       }}
     >
       <Text
+        selectable={false}
         style={[
           mono,
+          WEB_NONSELECTABLE_STYLE,
           {
             width: 64,
             paddingRight: 10,
@@ -647,16 +654,25 @@ export function CodeBlockView({
                 keyExtractor={(_line, index) => String(index)}
                 renderItem={({ item: line, index: lineIndex }) => (
                   <View style={{ flexDirection: "row", height: VIRTUAL_LINE_HEIGHT }}>
-                    <Text style={[mono, {
-                      width: gutterWidth,
-                      paddingRight: 10,
-                      color: gutterColor,
-                      borderRightWidth: StyleSheet.hairlineWidth,
-                      borderRightColor: gutterRule,
-                      fontSize: styles.codeFontSize,
-                      lineHeight: VIRTUAL_LINE_HEIGHT,
-                      textAlign: "right",
-                    }]}>{lineIndex + 1}</Text>
+                    <Text
+                      selectable={false}
+                      style={[
+                        mono,
+                        WEB_NONSELECTABLE_STYLE,
+                        {
+                          width: gutterWidth,
+                          paddingRight: 10,
+                          color: gutterColor,
+                          borderRightWidth: StyleSheet.hairlineWidth,
+                          borderRightColor: gutterRule,
+                          fontSize: styles.codeFontSize,
+                          lineHeight: VIRTUAL_LINE_HEIGHT,
+                          textAlign: "right",
+                        },
+                      ]}
+                    >
+                      {lineIndex + 1}
+                    </Text>
                     <Text numberOfLines={1} style={[mono, nowrap, {
                       color: darkPalette.plain,
                       fontSize: styles.codeFontSize,
@@ -688,8 +704,10 @@ export function CodeBlockView({
                 {lines.map((_, lineIndex) => (
                   <Text
                     key={lineIndex}
+                    selectable={false}
                     style={[
                       mono,
+                      WEB_NONSELECTABLE_STYLE,
                       {
                         color: gutterColor,
                         fontSize: styles.codeFontSize,
@@ -754,8 +772,10 @@ export function CodeBlockView({
                 }}
               >
                 <Text
+                  selectable={false}
                   style={[
                     mono,
+                    WEB_NONSELECTABLE_STYLE,
                     {
                       color: gutterColor,
                       fontSize: styles.codeFontSize,
@@ -801,20 +821,25 @@ export function CodeBlockView({
           accessibilityRole="button"
           accessibilityLabel="Show more lines"
           onPress={() => setShowAll(true)}
-          style={{ paddingTop: 6 }}
+          style={[WEB_NONSELECTABLE_STYLE, { paddingTop: 6 }]}
         >
-          <Text style={{ color: "#58a6ff", fontSize: 11 }}>
+          <Text selectable={false} style={{ color: "#58a6ff", fontSize: 11 }}>
             {`Show ${codeWindow.totalLines - codeWindow.visibleLines} more lines`}
           </Text>
         </Pressable>
       ) : null}
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingTop: 6 }}>
+      <View
+        style={[
+          WEB_NONSELECTABLE_STYLE,
+          { flexDirection: "row", alignItems: "center", gap: 14, paddingTop: 6 },
+        ]}
+      >
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={wrapMode ? "Scroll long lines" : "Wrap long lines"}
           onPress={() => setWrapMode((value) => !value)}
         >
-          <Text style={{ color: "#8b949e", fontSize: 11 }}>{wrapMode ? "Scroll" : "Wrap"}</Text>
+          <Text selectable={false} style={{ color: "#8b949e", fontSize: 11 }}>{wrapMode ? "Scroll" : "Wrap"}</Text>
         </Pressable>
         {onComment ? (
           <Pressable
@@ -824,7 +849,7 @@ export function CodeBlockView({
           >
             <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
               <Icon name="MessageSquareQuote" size={11} color="#8b949e" />
-              <Text style={{ color: "#8b949e", fontSize: 11 }}>Comment</Text>
+              <Text selectable={false} style={{ color: "#8b949e", fontSize: 11 }}>Comment</Text>
             </View>
           </Pressable>
         ) : null}

@@ -52,6 +52,13 @@ test("code copy controls own a full hit target above selectable code", () => {
   assert.doesNotMatch(rendererSource, /styles\.copyButton, \{ zIndex: 2/);
 });
 
+test("code selection excludes every line-number gutter and action label", () => {
+  assert.match(rendererSource, /const WEB_NONSELECTABLE_STYLE = Platform\.OS === "web"/);
+  assert.match(rendererSource, /WebkitUserSelect: "none"/);
+  assert.equal(rendererSource.match(/WEB_NONSELECTABLE_STYLE/g)?.length, 7);
+  assert.equal(rendererSource.match(/selectable=\{false\}/g)?.length, 7);
+});
+
 test("inline code chips keep accent color, padding and monospace", () => {
   // the inline code case must include the monospace stack and surface2 chip
   const codeCase = String(rendererSource).slice(
