@@ -18,8 +18,16 @@ import {
   lowestCommonAncestor,
   type WideFrameMutation,
 } from "./wide-frame-mutations";
+import {
+  acquireWideFrameLease,
+  cancelPendingWideFrameCleanup,
+  releaseWideFrameCleanupLease,
+  WIDE_FRAME_CLEANUP_GRACE_MS,
+  type WideFrameLease,
+} from "./wide-frame-lease";
 
 export { wideFrameSettings };
+export { WIDE_FRAME_CLEANUP_GRACE_MS };
 
 export interface WideFrameColors {
   accent?: string;
@@ -657,6 +665,7 @@ function applyUserCardColors(colors?: WideFrameColors): void {
 
 /** Installs the web widening pass (idempotent). Colors refresh card styling. */
 export function ensureWideFrame(colors?: WideFrameColors): void {
+  cancelPendingWideFrameCleanup();
   if (Platform.OS !== "web") return;
   const g = globalThis as unknown as WWin & { document?: WDoc };
   const doc = g.document;
@@ -951,9 +960,27 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   };
 }
 
-export function undoWideFrame(): void {
+function undoWideFrameNow(): void {
   undo?.();
   undo = null;
   installedDocument = null;
   refreshInstalled = null;
+}
+
+/** Immediately restores the host layout, for an explicit disabled setting. */
+export function undoWideFrame(): void {
+  cancelPendingWideFrameCleanup();
+  undoWideFrameNow();
+}
+
+export function retainWideFrameLease(): WideFrameLease {
+  return acquireWideFrameLease();
+}
+
+/**
+ * Plugin disposal gets a grace period so reload/re-entry can transfer DOM
+ * ownership without flashing Paseo's default 820px frame between bundles.
+ */
+export function releaseWideFrameLease(lease: WideFrameLease): void {
+  releaseWideFrameCleanupLease(lease, undoWideFrameNow);
 }

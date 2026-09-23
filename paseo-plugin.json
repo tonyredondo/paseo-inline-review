@@ -1,5 +1,9 @@
 {
   "id": "inline-review",
+  "build": [
+    ["npm", "ci", "--ignore-scripts"],
+    ["npm", "run", "build:client"]
+  ],
   "requirements": {
     "paseo": ">=0.8.0"
   }

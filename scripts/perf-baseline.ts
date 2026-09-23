@@ -10,7 +10,11 @@ import {
   compileMarkdown,
   markdownCacheDiagnostics,
 } from "../client/markdown-compile.ts";
-import { highlightCode } from "../shared/syntax.ts";
+import {
+  clearSyntaxScannerCache,
+  highlightCode,
+  syntaxScannerCacheDiagnostics,
+} from "../shared/syntax.ts";
 import { FILE_TRANSFER_CHUNK_BYTES } from "../shared/review.ts";
 import {
   disposeTurnIndexes,
@@ -156,6 +160,30 @@ function measureCode(lines: number, visibleLines: number): Measurement {
     highlightedInputBytes: Buffer.byteLength(visible),
     invocations: 1,
     elapsedMs: performance.now() - started,
+  };
+}
+
+function measureSyntaxScannerCache(iterations: number): Measurement {
+  const code = Array.from(
+    { length: 40 },
+    (_, index) => `const value${index}: string = String(${index});`,
+  ).join("\n");
+  clearSyntaxScannerCache();
+  const coldStarted = performance.now();
+  highlightCode(code, "typescript");
+  const coldMs = performance.now() - coldStarted;
+  const warmStarted = performance.now();
+  for (let index = 0; index < iterations; index += 1) highlightCode(code, "ts");
+  const warmMs = performance.now() - warmStarted;
+  const cache = syntaxScannerCacheDiagnostics();
+  clearSyntaxScannerCache();
+  return {
+    iterations,
+    inputBytes: Buffer.byteLength(code),
+    coldMs,
+    warmTotalMs: warmMs,
+    warmAverageMs: warmMs / iterations,
+    cache,
   };
 }
 
@@ -370,7 +398,7 @@ function measureWideFrameObserverScope(): Measurement {
 const commentSync = await Promise.all([1, 9, 100].map(measureCommentSync));
 const thumbnailStore = await measureThumbnailStore();
 const report = {
-  schemaVersion: 6,
+  schemaVersion: 7,
   scenarios: {
     commentSync,
     commentNotifications: measureCommentNotificationFanout(300),
@@ -392,6 +420,7 @@ const report = {
     code: {
       collapsed: measureCode(500, 40),
       expanded: measureCode(500, 500),
+      scannerCache: measureSyntaxScannerCache(1_000),
     },
     images: {
       transferModels: [100 * 1024, 1024 * 1024, 5 * 1024 * 1024].map(imageTransfer),

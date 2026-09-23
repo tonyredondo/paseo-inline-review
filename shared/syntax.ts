@@ -7,42 +7,60 @@
 export type CodeTokenType = "plain" | "keyword" | "string" | "comment" | "number" | "function" | "type" | "added" | "removed" | "meta" | "tag";
 export type CodeToken = { type: CodeTokenType; text: string };
 
-type Family = {
-  keywords: string[];
-  /** Language built-in functions that render in the function color. */
-  builtins?: string[];
-  lineComments?: string[];
-  blockComments?: [string, string][];
-  stringDelims?: string[];
-  tripleStringDelims?: [string, string][];
-  caseInsensitive?: boolean;
-};
+const C_TEMPLATE = 0;
+const C_QUOTES = 1;
+const C_DOUBLE = 2;
+const HASH_QUOTES = 3;
+const PYTHON = 4;
+const POWERSHELL = 5;
+const JSON_PROFILE = 6;
+const SQL = 7;
+const PHP = 8;
+const INI = 9;
+const DOCKERFILE = 10;
+const HTML = 11;
+const CSS = 12;
 
-const FAMILIES: Record<string, Family> = {
-  "js": { keywords: ["abstract", "as", "async", "await", "break", "case", "catch", "class", "const", "constructor", "continue", "debugger", "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for", "from", "func", "function", "get", "go", "goto", "if", "implements", "import", "in", "instanceof", "interface", "internal", "is", "let", "lock", "mut", "namespace", "new", "null", "nullptr", "operator", "out", "override", "package", "private", "protected", "pub", "public", "readonly", "ref", "return", "sealed", "self", "set", "sizeof", "static", "struct", "super", "switch", "template", "this", "throw", "throws", "trait", "true", "try", "type", "typedef", "typeof", "union", "unsafe", "use", "using", "val", "var", "virtual", "void", "volatile", "where", "while", "with", "yield", "undefined", "NaN", "console"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'", "`"] },
-  "ts": { keywords: ["abstract", "as", "async", "await", "break", "case", "catch", "class", "const", "constructor", "continue", "debugger", "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for", "from", "func", "function", "get", "go", "goto", "if", "implements", "import", "in", "instanceof", "interface", "internal", "is", "let", "lock", "mut", "namespace", "new", "null", "nullptr", "operator", "out", "override", "package", "private", "protected", "pub", "public", "readonly", "ref", "return", "sealed", "self", "set", "sizeof", "static", "struct", "super", "switch", "template", "this", "throw", "throws", "trait", "true", "try", "type", "typedef", "typeof", "union", "unsafe", "use", "using", "val", "var", "virtual", "void", "volatile", "where", "while", "with", "yield", "interface", "type", "declare", "keyof", "infer", "unknown", "never", "any", "satisfies"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'", "`"] },
-  "go": { keywords: ["package", "import", "func", "type", "struct", "interface", "map", "chan", "go", "defer", "select", "switch", "case", "default", "fallthrough", "for", "range", "if", "else", "return", "var", "const", "break", "continue", "goto", "nil", "true", "false", "string", "int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uintptr", "byte", "rune", "float64", "float32", "complex64", "complex128", "bool", "error", "any"], builtins: ["make", "len", "cap", "append", "copy", "new", "delete", "panic", "recover", "print", "println", "close", "min", "max", "clear"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'", "`"] },
-  "cs": { keywords: ["using", "namespace", "class", "struct", "interface", "record", "enum", "static", "public", "private", "protected", "internal", "readonly", "override", "virtual", "sealed", "abstract", "async", "await", "var", "new", "return", "if", "else", "switch", "case", "default", "for", "foreach", "while", "do", "break", "continue", "try", "catch", "finally", "throw", "null", "true", "false", "void", "bool", "string", "int", "long", "double", "float", "decimal", "object", "this", "base", "get", "set", "partial", "out", "ref", "is", "as", "where", "yield", "global", "file", "required", "init", "scoped", "nint", "nuint", "sbyte", "short", "ushort", "uint", "ulong", "nameof", "typeof", "sizeof", "checked", "unchecked", "lock", "params", "when", "event", "delegate", "explicit", "implicit", "unmanaged", "record"], builtins: ["Console", "Math", "Environment", "Task", "List", "Dictionary", "HashSet", "Enumerable", "String", "Int32", "Int64", "Double", "Boolean", "Object", "Exception"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
-  "java": { keywords: ["abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const", "continue", "default", "do", "double", "else", "enum", "extends", "final", "finally", "float", "for", "goto", "if", "implements", "import", "instanceof", "int", "interface", "long", "native", "new", "package", "private", "protected", "public", "return", "short", "static", "strictfp", "super", "switch", "synchronized", "this", "throw", "throws", "transient", "try", "void", "volatile", "while", "var", "record", "sealed", "yield", "permits", "true", "false", "null"], builtins: ["String", "Integer", "Long", "Boolean", "Double", "Character", "Math", "System", "Objects", "Optional", "Arrays", "Collections", "List", "Map", "Set", "ArrayList", "HashMap", "HashSet"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
-  "c": { keywords: ["#include", "#define", "#pragma", "#ifndef", "#endif", "#ifdef", "int", "char", "void", "long", "short", "unsigned", "signed", "float", "double", "struct", "union", "enum", "typedef", "static", "extern", "const", "volatile", "register", "return", "if", "else", "switch", "case", "default", "for", "while", "do", "break", "continue", "goto", "sizeof", "NULL"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
-  "cpp": { keywords: ["#include", "#define", "#pragma", "class", "struct", "template", "typename", "namespace", "using", "public", "private", "protected", "virtual", "override", "inline", "constexpr", "static", "const", "auto", "new", "delete", "nullptr", "true", "false", "return", "if", "else", "switch", "case", "default", "for", "while", "do", "break", "continue", "try", "catch", "throw", "operator", "friend", "explicit", "enum", "union"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
-  "rust": { keywords: ["fn", "let", "mut", "const", "static", "struct", "enum", "trait", "impl", "for", "in", "while", "loop", "if", "else", "match", "return", "break", "continue", "pub", "crate", "mod", "use", "as", "where", "unsafe", "async", "await", "move", "dyn", "ref", "self", "Self", "true", "false", "Some", "None", "Ok", "Err", "Vec", "String", "u8", "u32", "u64", "usize", "i32", "i64", "isize", "f32", "f64", "bool", "char", "str"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\""] },
-  "python": { keywords: ["def", "class", "import", "from", "as", "return", "if", "elif", "else", "for", "while", "break", "continue", "pass", "with", "try", "except", "finally", "raise", "yield", "lambda", "global", "nonlocal", "assert", "del", "in", "is", "not", "and", "or", "True", "False", "None", "async", "await", "match", "case", "self", "print", "len", "range", "str", "int", "float", "bool", "list", "dict", "set", "tuple"], lineComments: ["#"], stringDelims: ["\"", "'"], tripleStringDelims: [["\"\"\"", "\"\"\""], ["'''", "'''"]] },
-  "sh": { keywords: ["if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function", "return", "export", "source", "local", "set", "unset", "shift", "trap", "exit", "echo", "cd", "printf", "read", "test", "eval", "exec"], lineComments: ["#"], stringDelims: ["\"", "'"] },
-  "ps": { keywords: ["function", "param", "if", "elseif", "else", "switch", "foreach", "for", "while", "do", "until", "return", "throw", "try", "catch", "finally", "begin", "process", "end", "class", "enum", "break", "continue", "in", "true", "false", "null"], lineComments: ["#"], blockComments: [["<#", "#>"]], stringDelims: ["\"", "'"], caseInsensitive: true },
-  "ruby": { keywords: ["def", "end", "class", "module", "if", "elsif", "else", "unless", "while", "until", "for", "in", "do", "then", "return", "yield", "begin", "rescue", "ensure", "raise", "case", "when", "break", "next", "redo", "retry", "self", "nil", "true", "false", "and", "or", "not", "require", "puts", "print"], lineComments: ["#"], stringDelims: ["\"", "'"] },
-  "json": { keywords: ["true", "false", "null"], stringDelims: ["\""] },
-  "yaml": { keywords: ["true", "false", "null", "yes", "no", "on", "off"], lineComments: ["#"], stringDelims: ["\"", "'"] },
-  "sql": { keywords: ["SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON", "GROUP", "BY", "ORDER", "HAVING", "LIMIT", "CREATE", "TABLE", "ALTER", "DROP", "AND", "OR", "NOT", "NULL", "AS", "DISTINCT", "UNION", "CASE", "WHEN", "THEN", "ELSE", "END", "PRIMARY", "KEY", "WITH", "RETURNING", "TRUE", "FALSE"], lineComments: ["--"], blockComments: [["/*", "*/"]], caseInsensitive: true },
-  "swift": { keywords: ["associatedtype", "class", "deinit", "enum", "extension", "fileprivate", "func", "import", "init", "inout", "internal", "let", "open", "operator", "private", "protocol", "public", "rethrows", "static", "struct", "subscript", "typealias", "var", "break", "case", "continue", "default", "defer", "do", "else", "fallthrough", "for", "guard", "if", "in", "repeat", "return", "switch", "where", "while", "as", "catch", "is", "nil", "rethrows", "super", "self", "Self", "throw", "throws", "try", "await", "async", "true", "false", "some", "any"], builtins: ["print", "String", "Int", "Double", "Bool", "Array", "Dictionary", "Set", "Optional"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\""] },
-  "php": { keywords: ["abstract", "and", "array", "as", "break", "callable", "case", "catch", "class", "clone", "const", "continue", "declare", "default", "do", "echo", "else", "elseif", "empty", "enddeclare", "endfor", "endforeach", "endif", "endswitch", "endwhile", "enum", "extends", "final", "finally", "fn", "for", "foreach", "function", "global", "if", "implements", "include", "include_once", "instanceof", "insteadof", "interface", "isset", "list", "match", "namespace", "new", "or", "print", "private", "protected", "public", "readonly", "require", "require_once", "return", "static", "switch", "throw", "trait", "try", "unset", "use", "var", "while", "xor", "yield", "true", "false", "null", "int", "string", "bool", "float", "array", "void", "mixed"], builtins: ["strlen", "count", "array_map", "array_filter", "implode", "explode", "preg_match", "preg_replace", "sprintf", "printf", "json_encode", "json_decode", "var_dump", "print_r", "str_replace", "trim", "date", "time"], lineComments: ["//", "#"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
-  "dart": { keywords: ["abstract", "as", "assert", "async", "await", "break", "case", "catch", "class", "const", "continue", "covariant", "default", "deferred", "do", "dynamic", "else", "enum", "export", "extends", "extension", "external", "factory", "false", "final", "finally", "for", "get", "hide", "if", "implements", "import", "in", "interface", "is", "late", "library", "mixin", "new", "null", "on", "operator", "part", "required", "rethrow", "return", "sealed", "set", "show", "static", "super", "switch", "sync", "this", "throw", "true", "try", "typedef", "var", "void", "while", "with", "yield", "int", "double", "num", "bool", "String", "List", "Map", "Set", "Object"], builtins: ["print", "main", "runApp", "setState", "build", "initState", "dispose"], lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
-  "toml": { keywords: ["true", "false"], lineComments: ["#"], stringDelims: ["\"", "'"] },
-  "ini": { keywords: ["true", "false"], lineComments: ["#", ";"], stringDelims: ["\""] },
-  "dockerfile": { keywords: ["FROM", "AS", "RUN", "CMD", "LABEL", "MAINTAINER", "EXPOSE", "ENV", "ADD", "COPY", "ENTRYPOINT", "VOLUME", "USER", "WORKDIR", "ARG", "ONBUILD", "STOPSIGNAL", "HEALTHCHECK", "SHELL", "true", "false"], lineComments: ["#"], stringDelims: ["\""] },
-  "diff": { keywords: [] },
-  "html": { keywords: [], lineComments: [], blockComments: [["<!--", "-->"]], stringDelims: ["\"", "'"] },
-  "css": { keywords: [], lineComments: [], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"] },
+type Profile =
+  | typeof C_TEMPLATE
+  | typeof C_QUOTES
+  | typeof C_DOUBLE
+  | typeof HASH_QUOTES
+  | typeof PYTHON
+  | typeof POWERSHELL
+  | typeof JSON_PROFILE
+  | typeof SQL
+  | typeof PHP
+  | typeof INI
+  | typeof DOCKERFILE
+  | typeof HTML
+  | typeof CSS;
+type PackedFamily = readonly [keywords: string, builtins: string, profile: Profile];
+
+/** Word lists stay packed until the first fenced block for that language. */
+const PACKED_FAMILIES: Record<string, PackedFamily> = {
+  js: [`abstract as async await break case catch class const constructor continue debugger default delete do else enum export extends false finally for from func function get go goto if implements import in instanceof interface internal is let lock mut namespace new null nullptr operator out override package private protected pub public readonly ref return sealed self set sizeof static struct super switch template this throw throws trait true try type typedef typeof union unsafe use using val var virtual void volatile where while with yield undefined NaN console`, "", C_TEMPLATE],
+  go: [`package import func type struct interface map chan go defer select switch case default fallthrough for range if else return var const break continue goto nil true false string int int64 int32 int16 int8 uint uint64 uint32 uintptr byte rune float64 float32 complex64 complex128 bool error any`, `make len cap append copy new delete panic recover print println close min max clear`, C_TEMPLATE],
+  cs: [`using namespace class struct interface record enum static public private protected internal readonly override virtual sealed abstract async await var new return if else switch case default for foreach while do break continue try catch finally throw null true false void bool string int long double float decimal object this base get set partial out ref is as where yield global file required init scoped nint nuint sbyte short ushort uint ulong nameof typeof sizeof checked unchecked lock params when event delegate explicit implicit unmanaged record`, `Console Math Environment Task List Dictionary HashSet Enumerable String Int32 Int64 Double Boolean Object Exception`, C_QUOTES],
+  java: [`abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for goto if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized this throw throws transient try void volatile while var record sealed yield permits true false null`, `String Integer Long Boolean Double Character Math System Objects Optional Arrays Collections List Map Set ArrayList HashMap HashSet`, C_QUOTES],
+  c: [`#include #define #pragma #ifndef #endif #ifdef int char void long short unsigned signed float double struct union enum typedef static extern const volatile register return if else switch case default for while do break continue goto sizeof NULL`, "", C_QUOTES],
+  cpp: [`#include #define #pragma class struct template typename namespace using public private protected virtual override inline constexpr static const auto new delete nullptr true false return if else switch case default for while do break continue try catch throw operator friend explicit enum union`, "", C_QUOTES],
+  rust: [`fn let mut const static struct enum trait impl for in while loop if else match return break continue pub crate mod use as where unsafe async await move dyn ref self Self true false Some None Ok Err Vec String u8 u32 u64 usize i32 i64 isize f32 f64 bool char str`, "", C_DOUBLE],
+  python: [`def class import from as return if elif else for while break continue pass with try except finally raise yield lambda global nonlocal assert del in is not and or True False None async await match case self print len range str int float bool list dict set tuple`, "", PYTHON],
+  sh: [`if then elif else fi for while until do done case esac in function return export source local set unset shift trap exit echo cd printf read test eval exec`, "", HASH_QUOTES],
+  ps: [`function param if elseif else switch foreach for while do until return throw try catch finally begin process end class enum break continue in true false null`, "", POWERSHELL],
+  ruby: [`def end class module if elsif else unless while until for in do then return yield begin rescue ensure raise case when break next redo retry self nil true false and or not require puts print`, "", HASH_QUOTES],
+  json: [`true false null`, "", JSON_PROFILE],
+  yaml: [`true false null yes no on off`, "", HASH_QUOTES],
+  sql: [`SELECT FROM WHERE INSERT INTO VALUES UPDATE SET DELETE JOIN LEFT RIGHT INNER OUTER ON GROUP BY ORDER HAVING LIMIT CREATE TABLE ALTER DROP AND OR NOT NULL AS DISTINCT UNION CASE WHEN THEN ELSE END PRIMARY KEY WITH RETURNING TRUE FALSE`, "", SQL],
+  swift: [`associatedtype class deinit enum extension fileprivate func import init inout internal let open operator private protocol public rethrows static struct subscript typealias var break case continue default defer do else fallthrough for guard if in repeat return switch where while as catch is nil rethrows super self Self throw throws try await async true false some any`, `print String Int Double Bool Array Dictionary Set Optional`, C_DOUBLE],
+  php: [`abstract and array as break callable case catch class clone const continue declare default do echo else elseif empty enddeclare endfor endforeach endif endswitch endwhile enum extends final finally fn for foreach function global if implements include include_once instanceof insteadof interface isset list match namespace new or print private protected public readonly require require_once return static switch throw trait try unset use var while xor yield true false null int string bool float array void mixed`, `strlen count array_map array_filter implode explode preg_match preg_replace sprintf printf json_encode json_decode var_dump print_r str_replace trim date time`, PHP],
+  dart: [`abstract as assert async await break case catch class const continue covariant default deferred do dynamic else enum export extends extension external factory false final finally for get hide if implements import in interface is late library mixin new null on operator part required rethrow return sealed set show static super switch sync this throw true try typedef var void while with yield int double num bool String List Map Set Object`, `print main runApp setState build initState dispose`, C_QUOTES],
+  toml: [`true false`, "", HASH_QUOTES],
+  ini: [`true false`, "", INI],
+  dockerfile: [`FROM AS RUN CMD LABEL MAINTAINER EXPOSE ENV ADD COPY ENTRYPOINT VOLUME USER WORKDIR ARG ONBUILD STOPSIGNAL HEALTHCHECK SHELL true false`, "", DOCKERFILE],
+  html: ["", "", HTML],
+  css: ["", "", CSS],
 };
 
 const ALIASES: Record<string, string> = {
@@ -54,29 +72,21 @@ const ALIASES: Record<string, string> = {
   "tsx": "js",
   "ts": "js",
   "golang": "go",
-  "go": "go",
   "c#": "cs",
   "csharp": "cs",
-  "cs": "cs",
-  "c": "c",
   "h": "c",
   "c++": "cpp",
-  "cpp": "cpp",
   "cc": "cpp",
   "cxx": "cpp",
   "hpp": "cpp",
-  "rust": "rust",
   "rs": "rust",
-  "python": "python",
   "py": "python",
   "bash": "sh",
-  "sh": "sh",
   "shell": "sh",
   "zsh": "sh",
   "console": "sh",
   "terminal": "sh",
   "shellsession": "sh",
-  "java": "java",
   "jvm": "java",
   "kotlin": "java",
   "kt": "java",
@@ -85,34 +95,21 @@ const ALIASES: Record<string, string> = {
   "powershell": "ps",
   "pwsh": "ps",
   "ps1": "ps",
-  "ruby": "ruby",
   "rb": "ruby",
-  "json": "json",
   "jsonc": "json",
   "json5": "json",
-  "yaml": "yaml",
   "yml": "yaml",
-  "sql": "sql",
-  "diff": "diff",
   "patch": "diff",
-  "html": "html",
   "xml": "html",
   "svg": "html",
   "xhtml": "html",
   "vue": "html",
-  "css": "css",
   "scss": "css",
   "less": "css",
-  "swift": "swift",
-  "php": "php",
-  "dart": "dart",
   "flutter": "dart",
-  "toml": "toml",
-  "ini": "ini",
   "cfg": "ini",
   "conf": "ini",
   "properties": "ini",
-  "dockerfile": "dockerfile",
   "docker": "dockerfile",
   "containerfile": "dockerfile",
 };
@@ -138,28 +135,82 @@ type Scanner = {
   firstWordInTag?: boolean;
 };
 
-function buildScanner(family: Family): Scanner {
+type ScannerTemplate = Omit<Scanner, "inTag" | "firstWordInTag">;
+const scannerTemplates = new Map<string, ScannerTemplate>();
+let scannerTemplateBuilds = 0;
+
+function words(packed: string): string[] {
+  return packed.length > 0 ? packed.split(" ") : [];
+}
+
+function profile(kind: Profile): Pick<
+  ScannerTemplate,
+  "lineComments" | "blockComments" | "stringDelims" | "tripleStringDelims" | "caseInsensitive"
+> {
+  switch (kind) {
+    case C_TEMPLATE:
+      return { lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'", "`"], caseInsensitive: false };
+    case C_QUOTES:
+      return { lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"], caseInsensitive: false };
+    case C_DOUBLE:
+      return { lineComments: ["//"], blockComments: [["/*", "*/"]], stringDelims: ["\""], caseInsensitive: false };
+    case HASH_QUOTES:
+      return { lineComments: ["#"], blockComments: [], stringDelims: ["\"", "'"], caseInsensitive: false };
+    case PYTHON:
+      return { lineComments: ["#"], blockComments: [], stringDelims: ["\"", "'"], tripleStringDelims: [["\"\"\"", "\"\"\""], ["'''", "'''"]], caseInsensitive: false };
+    case POWERSHELL:
+      return { lineComments: ["#"], blockComments: [["<#", "#>"]], stringDelims: ["\"", "'"], caseInsensitive: true };
+    case JSON_PROFILE:
+      return { lineComments: [], blockComments: [], stringDelims: ["\""], caseInsensitive: false };
+    case SQL:
+      return { lineComments: ["--"], blockComments: [["/*", "*/"]], stringDelims: [], caseInsensitive: true };
+    case PHP:
+      return { lineComments: ["//", "#"], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"], caseInsensitive: false };
+    case INI:
+      return { lineComments: ["#", ";"], blockComments: [], stringDelims: ["\""], caseInsensitive: false };
+    case DOCKERFILE:
+      return { lineComments: ["#"], blockComments: [], stringDelims: ["\""], caseInsensitive: false };
+    case HTML:
+      return { lineComments: [], blockComments: [["<!--", "-->"]], stringDelims: ["\"", "'"], caseInsensitive: false };
+    case CSS:
+      return { lineComments: [], blockComments: [["/*", "*/"]], stringDelims: ["\"", "'"], caseInsensitive: false };
+  }
+}
+
+function scannerTemplate(language: string): ScannerTemplate | null {
+  const cached = scannerTemplates.get(language);
+  if (cached) return cached;
+  const packed = PACKED_FAMILIES[language];
+  if (!packed) return null;
+  const config = profile(packed[2]);
+  const normalize = (word: string): string => config.caseInsensitive ? word.toLowerCase() : word;
+  const template: ScannerTemplate = {
+    ...config,
+    keywordSet: new Set(words(packed[0]).map(normalize)),
+    builtinSet: new Set(words(packed[1]).map(normalize)),
+    isHtml: language === "html",
+    isCss: language === "css",
+  };
+  scannerTemplates.set(language, template);
+  scannerTemplateBuilds += 1;
+  return template;
+}
+
+export function syntaxScannerCacheDiagnostics(): {
+  entries: number;
+  builds: number;
+  languages: string[];
+} {
   return {
-    keywordSet: new Set(family.keywords.map((keyword) => (family.caseInsensitive ? keyword.toLowerCase() : keyword))),
-    lineComments: family.lineComments ?? [],
-    blockComments: family.blockComments ?? [],
-    stringDelims: family.stringDelims ?? [],
-    tripleStringDelims: family.tripleStringDelims,
-    caseInsensitive: family.caseInsensitive ?? false,
-    builtinSet: new Set((family.builtins ?? []).map((builtin) => (family.caseInsensitive ? builtin.toLowerCase() : builtin))),
-    isHtml: normalizedHtml(family),
-    isCss: normalizedCss(family),
-    inTag: false,
-    firstWordInTag: false,
+    entries: scannerTemplates.size,
+    builds: scannerTemplateBuilds,
+    languages: [...scannerTemplates.keys()],
   };
 }
 
-function normalizedHtml(family: Family): boolean {
-  return family.keywords.length === 0 && family.blockComments?.[0]?.[0] === "<!--";
-}
-
-function normalizedCss(family: Family): boolean {
-  return family.keywords.length === 0 && family.blockComments?.[0]?.[0] === "/*";
+export function clearSyntaxScannerCache(): void {
+  scannerTemplates.clear();
+  scannerTemplateBuilds = 0;
 }
 
 function isKeyword(scanner: Scanner, word: string): boolean {
@@ -178,11 +229,17 @@ export function highlightCode(code: string, language: string): CodeToken[][] {
       return [{ type: "plain" as const, text: line }];
     });
   }
-  const family = FAMILIES[normalized];
-  if (!family) {
+  const template = scannerTemplate(normalized);
+  if (!template) {
     return code.split("\n").map((line) => [{ type: "plain" as const, text: line }]);
   }
-  const scanner = buildScanner(family);
+  // Per-highlight structural state stays isolated; the expensive word sets
+  // and delimiter profiles are immutable and shared by language.
+  const scanner: Scanner = {
+    ...template,
+    inTag: false,
+    firstWordInTag: false,
+  };
 
   const lines: CodeToken[][] = [];
   let current: CodeToken[] = [];

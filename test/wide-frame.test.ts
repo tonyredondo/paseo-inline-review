@@ -381,6 +381,12 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     .replace('import { Platform } from "react-native";', "const Platform = globalThis.__wideFramePlatform;")
     .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};")
     .replace(/import \{ parseInline[^;]+;/, "const parseInline = globalThis.__wideFrameParseInline;")
+    .replace(/import \{\s*acquireWideFrameLease,[\s\S]*?\} from "\.\/wide-frame-lease";/, `
+      const WIDE_FRAME_CLEANUP_GRACE_MS = 5000;
+      const acquireWideFrameLease = () => Symbol("test-wide-frame-lease");
+      const cancelPendingWideFrameCleanup = () => {};
+      const releaseWideFrameCleanupLease = () => true;
+    `)
     .replace(/import \{ createAdaptiveSweep \}[^;]+;/, `
       const createAdaptiveSweep = () => ({ start() {}, stop() {}, wake() {} });
     `)

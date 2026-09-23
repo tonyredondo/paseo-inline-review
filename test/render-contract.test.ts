@@ -27,6 +27,16 @@ test("code blocks scroll horizontally and never wrap", () => {
   assert.match(rendererSource, /whiteSpace: "pre"/);
 });
 
+test("selected inline code lines fill the visible scroll viewport", () => {
+  const inlineScrollSource = rendererSource.slice(
+    rendererSource.indexOf("if (!wrapMode)"),
+    rendererSource.indexOf("const webWrap"),
+  );
+  assert.match(inlineScrollSource, /contentContainerStyle=\{\{ minWidth: "100%" \}\}/);
+  assert.match(inlineScrollSource, /paddingLeft: 10, minWidth: "100%"/);
+  assert.match(inlineScrollSource, /backgroundColor: withAlpha\(theme\.colors\.accent, HIGHLIGHT_ALPHA\), alignSelf: "stretch"/);
+});
+
 test("code blocks render on a solid black background with the custom palette", () => {
   assert.match(rendererSource, /backgroundColor: "#000000"/);
   assert.match(rendererSource, /const darkPalette = \{/);
@@ -245,14 +255,15 @@ test("image user messages contain their controls and shrink within the timeline"
 test("timeline rows use scoped agent state and one elected wide-frame controller", () => {
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
   const controllerSource = String(readFileSync(path.resolve("client/wide-frame-controller.tsx")));
-  const entrySource = String(readFileSync(path.resolve("index.client.tsx")));
+  const entrySource = String(readFileSync(path.resolve("client/plugin-entry.tsx")));
   assert.ok(!timelineSource.includes("useSettings("));
   assert.ok(!timelineSource.includes("(agent) => agent)"));
   assert.match(timelineSource, /subscribeTurnIndex\(agentId, listener\)/);
   assert.match(timelineSource, /useWideFrameControllerOwner\(\)/);
   assert.doesNotMatch(controllerSource, /return \(\) => undoWideFrame\(\)/);
   assert.match(controllerSource, /enabled === null/);
-  assert.match(entrySource, /return async \(\) => \{[\s\S]{0,240}undoWideFrame\(\)/);
+  assert.match(entrySource, /const wideFrameLease = retainWideFrameLease\(\)/);
+  assert.match(entrySource, /return async \(\) => \{[\s\S]{0,240}releaseWideFrameLease\(wideFrameLease\)/);
   assert.match(entrySource, /const removeSettingsScreen = client\.addSettingsScreen/);
   assert.match(entrySource, /removeSettingsScreen\(\)/);
 });
@@ -412,7 +423,7 @@ test("streaming assistant text preserves completed paragraph renderers", () => {
 });
 
 test("file tabs are owned by one context and use the host's real tab close control", () => {
-  const entrySource = String(readFileSync(path.resolve("index.client.tsx")));
+  const entrySource = String(readFileSync(path.resolve("client/plugin-entry.tsx")));
   const panelSource = String(readFileSync(path.resolve("client/panel.tsx")));
   assert.match(entrySource, /target\.workspaceId === workspaceId && target\.agentId === agentId/);
   assert.match(panelSource, /target\.agentId !== agentId \|\| target\.workspaceId !== workspaceId/);

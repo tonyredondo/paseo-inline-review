@@ -748,11 +748,15 @@ export function CodeBlockView({
                   </Text>
                 ))}
               </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator style={{ flex: 1 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator
+                style={{ flex: 1 }}
+                contentContainerStyle={{ minWidth: "100%" }}
+              >
                 {/* Column layout: the container width grows to the longest
-                    line, so the horizontal scroll range is right and each
-                    line stays on its own row, aligned with its number. */}
-                <View style={{ alignItems: "flex-start", paddingLeft: 10 }}>
+                    line, but never shrinks below the visible viewport. This
+                    lets a selected short line paint one continuous band to
+                    the right edge, matching the full-file viewer. */}
+                <View style={{ alignItems: "flex-start", paddingLeft: 10, minWidth: "100%" }}>
                   {lines.map((line, lineIndex) => (
                     <Pressable
                       key={lineIndex}

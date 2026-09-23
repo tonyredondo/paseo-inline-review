@@ -1,3 +1,5 @@
 node_modules/
+client/generated-entry.js
+client/generated-entry.js.tmp
 *.log
 .DS_Store

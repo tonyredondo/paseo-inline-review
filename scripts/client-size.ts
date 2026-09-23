@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const files = [
-  "index.client.tsx",
+  "client/plugin-entry.tsx",
+  "client/wide-frame-lease.ts",
   "client/adaptive-sweep.ts",
   "client/comment-delta.ts",
   "client/comment-sync.ts",
@@ -41,13 +42,16 @@ if (forbidden.length > 0) {
   process.exitCode = 1;
 } else {
   const joined = parts.map(({ file, source }) => `// ${file}\n${source}`).join("\n");
-  const rawBytes = Buffer.byteLength(joined);
-  const gzipBytes = gzipSync(joined).byteLength;
+  const generated = readFileSync(resolve("client/generated-entry.js"));
+  const rawBytes = generated.byteLength;
+  const gzipBytes = gzipSync(generated).byteLength;
   const rawGrowthPercent = ((rawBytes / baselineRawBytes) - 1) * 100;
   const gzipGrowthPercent = ((gzipBytes / baselineGzipBytes) - 1) * 100;
   process.stdout.write(`${JSON.stringify({
-    kind: "client-source-size",
+    kind: "client-prebundle-size",
     fileCount: files.length,
+    sourceRawBytes: Buffer.byteLength(joined),
+    sourceGzipBytes: gzipSync(joined).byteLength,
     rawBytes,
     gzipBytes,
     baselineRawBytes,
@@ -57,7 +61,7 @@ if (forbidden.length > 0) {
     warningThresholdRawBytes: Math.floor(baselineRawBytes * growthLimit),
     warningThresholdGzipBytes: Math.floor(baselineGzipBytes * growthLimit),
     warning: rawGrowthPercent > 10 || gzipGrowthPercent > 10,
-    analysis: "This source-level proxy includes comments and modules before Paseo bundling/tree-shaking; plugin reload is the authoritative boundary check.",
+    analysis: "The generated minified entry is the transfer proxy; plugin reload plus size:installed is the authoritative Paseo boundary check.",
     forbiddenImports: 0,
   }, null, 2)}\n`);
 }
