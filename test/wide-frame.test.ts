@@ -365,12 +365,66 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(trail.style.position, "relative");
   assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
 
+  // CSSOM writes made by the plugin are themselves observed. A synchronous
+  // decoration pass must not clear and rebuild the image rail from inside the
+  // observer callback: that creates another style mutation batch before the
+  // browser can paint, and repeats until the renderer becomes unresponsive.
+  const pluginStyleMutations: Array<{
+    target: FakeElement;
+    attributeName: string;
+    addedNodes: FakeElement[];
+  }> = [];
+  const trackedNodes = [
+    message,
+    bubble,
+    images,
+    imageOne,
+    imageTwo,
+    trail,
+    ...message.querySelectorAll('[data-inline-review-user-backdrop="1"]'),
+  ];
+  for (const node of trackedNodes) {
+    node.style = new Proxy(node.style, {
+      set(target, property: string, value: string) {
+        if (target[property] !== value) {
+          target[property] = value;
+          pluginStyleMutations.push({
+            target: node,
+            attributeName: "style",
+            addedNodes: [],
+          });
+        }
+        return true;
+      },
+    });
+  }
+
   // React can rewrite an already widened host wrapper after the current frame
   // has started. Waiting for another animation frame leaves one visible paint
   // at the native 820px width; the observer must repair it synchronously.
   capped.style.maxWidth = "820px";
   const deliverMutations = observerCallback as unknown as (mutations: unknown) => void;
   assert.equal(typeof deliverMutations, "function");
+  deliverMutations([{
+    target: images,
+    attributeName: "style",
+    addedNodes: [],
+  }]);
+  assert.equal(
+    pluginStyleMutations.length,
+    0,
+    "an observed image style change cannot synchronously generate another image style batch",
+  );
+  assert.equal(frames.size, 1, "card decoration is deferred out of the observer callback");
+  const imageDecorationFrame = [...frames.entries()][0];
+  assert.ok(imageDecorationFrame);
+  frames.delete(imageDecorationFrame[0]);
+  imageDecorationFrame[1]();
+  assert.equal(
+    pluginStyleMutations.length,
+    0,
+    "redecorating an image card is idempotent across every styled node",
+  );
   deliverMutations([{
     target: capped,
     attributeName: "style",
@@ -387,7 +441,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     addedNodes: [liveCapped],
   }]);
   assert.equal(liveCapped.style.maxWidth, "1040px");
-  assert.equal(frames.size, 0, "mutation repair finishes before another animation frame");
+  assert.equal(frames.size, 1, "new content is widened before its deferred decoration frame");
 
   const reenteredCapped = fakeElement({ width: 820, maxWidth: "820px" });
   const reenteredMessage = fakeElement({ attributes: { "data-testid": "user-message" } });

@@ -102,23 +102,14 @@ function styleUserMessages(root: WDoc | WNode, win: WWin, doc: WDoc): void {
   const cs = win as unknown as UWin;
   for (const el of Array.from(nodes)) {
     el.style.borderRadius = "8px";
-    // Solid raised fill + hairline border on the other sides for contrast
-    // against the timeline; the accent stays on the left edge (3px).
-    el.style.borderTopWidth = "1px";
     el.style.borderTopStyle = "solid";
     el.style.borderTopColor = userCardBorder;
-    el.style.borderRightWidth = "1px";
     el.style.borderRightStyle = "solid";
     el.style.borderRightColor = userCardBorder;
-    el.style.borderBottomWidth = "1px";
     el.style.borderBottomStyle = "solid";
     el.style.borderBottomColor = userCardBorder;
-    el.style.borderLeftWidth = "5px";
     el.style.borderLeftStyle = "solid";
     el.style.borderLeftColor = withAlpha(userCardAccent, 0.35);
-    // The card surface goes on the OUTSIDE element; the host's own inner
-    // bubble is neutralized so there is one card, not a box in a box.
-    el.style.backgroundColor = userCardRaised;
     // Chat-bubble sizing: the card hugs its text and sits at the right edge
     // (margin-left auto right-aligns a fit-content block), wrapping at the
     // pane width for long text.
@@ -130,10 +121,6 @@ function styleUserMessages(root: WDoc | WNode, win: WWin, doc: WDoc): void {
     el.style.overflow = "visible";
     el.style.paddingLeft = "10px";
     el.style.paddingRight = "10px";
-    // The trailing row leaves dead space at the bottom; pad the top so the
-    // text sits vertically centered in the card.
-    el.style.paddingTop = "12px";
-    el.style.paddingBottom = "2px";
     el.dataset.inlineReviewUser = "1";
     // Clear the first painted descendant (the host bubble background) and
     // tighten its vertical padding — the card ran taller than its text.
@@ -152,8 +139,6 @@ function styleUserMessages(root: WDoc | WNode, win: WWin, doc: WDoc): void {
     }
     if (cardBubble) {
       cardBubble.style.backgroundColor = "transparent";
-      cardBubble.style.paddingTop = "6px";
-      cardBubble.style.paddingBottom = "6px";
     }
     // Keep the host attachment buttons and their lightbox behavior intact.
     // The attachment row and text already share this painted host container,
@@ -169,6 +154,9 @@ function styleUserMessages(root: WDoc | WNode, win: WWin, doc: WDoc): void {
     for (const previous of Array.from(
       rootEl.querySelectorAll('[data-inline-review-user-images="1"]'),
     )) {
+      // Keep the active rail intact. Clearing and rebuilding it makes the
+      // plugin's own CSSOM writes wake the MutationObserver again.
+      if (previous === imageRow) continue;
       previous.style.position = "";
       previous.style.bottom = "";
       previous.style.left = "";
@@ -266,10 +254,25 @@ function styleUserMessages(root: WDoc | WNode, win: WWin, doc: WDoc): void {
       backdrop.style.borderBottom = `1px solid ${userCardBorder}`;
       backdrop.style.borderLeft = `5px solid ${withAlpha(userCardAccent, 0.35)}`;
     } else {
+      // Solid raised fill + hairline border on the other sides for contrast
+      // against the timeline; the accent stays on the left edge. Assign the
+      // final no-image state directly so repeated passes do not oscillate
+      // between regular and image-card styles.
+      el.style.backgroundColor = userCardRaised;
+      el.style.borderTopWidth = "1px";
+      el.style.borderRightWidth = "1px";
+      el.style.borderBottomWidth = "1px";
+      el.style.borderLeftWidth = "5px";
+      // The trailing row leaves dead space at the bottom; pad the top so the
+      // text sits vertically centered in the card.
+      el.style.paddingTop = "12px";
+      el.style.paddingBottom = "2px";
       el.style.minWidth = "";
       el.style.isolation = "";
       for (const backdrop of previousBackdrops) backdrop.remove();
       if (cardBubble) {
+        cardBubble.style.paddingTop = "6px";
+        cardBubble.style.paddingBottom = "6px";
         cardBubble.style.display = "";
         cardBubble.style.gridTemplateColumns = "";
         cardBubble.style.gridAutoFlow = "";
@@ -522,7 +525,7 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     }
   };
 
-  const apply = (scope: WNode | WDoc | null = null): void => {
+  const applyWidths = (scope: WNode | WDoc | null = null): boolean => {
     // Discover newly mounted 820-capped host elements (tool calls, user
     // messages, plugin items — everything shares the reading frame).
     for (const el of scanCandidates(scope)) {
@@ -532,7 +535,7 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
         widened.add(el);
       }
     }
-    if (widened.size === 0) return;
+    if (widened.size === 0) return false;
     const innerWidth = g.innerWidth ?? -1;
     if (paneWidthCache === 0) {
       // First pass: measure the pane BEFORE widening anything (clean chain).
@@ -546,11 +549,16 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
       paneWidthCache = first ? paneWidthFor(first) : 0;
     }
     const paneWidth = paneWidthCache;
-    if (paneWidth < 900) return; // narrow pane: leave the host frame alone
+    if (paneWidth < 900) return false; // narrow pane: leave the host frame alone
     const target = `${paneWidth - BREATHING}px`;
     for (const el of widened) {
       if (el.style.maxWidth !== target) el.style.maxWidth = target;
     }
+    return true;
+  };
+
+  const apply = (scope: WNode | WDoc | null = null): void => {
+    if (!applyWidths(scope)) return;
     // User messages: review-card look (re-applied; host re-renders wipe it).
     const styleRoot = scope ?? doc;
     styleUserMessages(styleRoot, g, doc);
@@ -625,13 +633,18 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
         mutations,
         markerSelector,
       });
-      // MutationObserver callbacks run before the browser paints. Repair the
-      // width inside this callback: deferring to requestAnimationFrame can
-      // expose one frame at the host's native 820px width when React rewrites
-      // an existing wrapper or mounts a new one late in the current frame.
+      // MutationObserver callbacks run before the browser paints. Repair only
+      // width inside this callback: deferring that work can expose one frame
+      // at 820px, while running card decoration here can make its own style
+      // mutations recursively wake the observer and lock the renderer.
       if (work.repairWidenedStyles) applyStylesOnly();
-      if (work.scopes.length === 1) apply(work.scopes[0]);
-      else if (work.scopes.length > 1) apply();
+      if (work.scopes.length === 1) {
+        applyWidths(work.scopes[0]);
+        schedule(work.scopes[0]);
+      } else if (work.scopes.length > 1) {
+        applyWidths();
+        schedule();
+      }
       if (work.repairWidenedStyles || work.scopes.length > 0) adaptiveSweep.wake();
     });
     observer.observe(observerRoot, {
