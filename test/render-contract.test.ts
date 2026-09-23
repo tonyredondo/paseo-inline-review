@@ -35,6 +35,23 @@ test("code blocks render on a solid black background with the custom palette", (
   }
 });
 
+test("code copy controls own a full hit target above selectable code", () => {
+  const copyButtonStyle = rendererSource.slice(
+    rendererSource.indexOf("copyButton:"),
+    rendererSource.indexOf("copyText:"),
+  );
+  assert.match(copyButtonStyle, /zIndex: 4/);
+  assert.match(copyButtonStyle, /minWidth: 32/);
+  assert.match(copyButtonStyle, /minHeight: 32/);
+  assert.match(copyButtonStyle, /alignItems: "center"/);
+  assert.match(copyButtonStyle, /justifyContent: "center"/);
+  assert.match(rendererSource, /const WEB_COPY_BUTTON_STYLE/);
+  assert.match(rendererSource, /cursor: "pointer"/);
+  assert.equal(rendererSource.match(/pointerEvents="box-only"/g)?.length, 2);
+  assert.equal(rendererSource.match(/hitSlop=\{6\}/g)?.length, 2);
+  assert.doesNotMatch(rendererSource, /styles\.copyButton, \{ zIndex: 2/);
+});
+
 test("inline code chips keep accent color, padding and monospace", () => {
   // the inline code case must include the monospace stack and surface2 chip
   const codeCase = String(rendererSource).slice(
@@ -125,13 +142,29 @@ test("plain user messages use native cards without replacing web or attachment r
   assert.match(sharedSource, /export function userMessageHasHostAttachments/);
 });
 
-test("the compaction divider exposes the host-wide frame marker", () => {
+test("the compaction divider exposes the host-wide frame marker and a native dotted rule", () => {
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx"), "utf8"));
   const component = timelineSource.slice(
     timelineSource.indexOf("function CompactionDivider"),
     timelineSource.indexOf("function timestampLabel"),
   );
   assert.match(component, /<View testID="inline-review-root" style=\{styles\.root\}>/);
+  assert.match(component, /layout\.platform === "web"/);
+  assert.equal(component.match(/<CompactionRule /g)?.length, 2);
+
+  const rule = timelineSource.slice(
+    timelineSource.indexOf("const NATIVE_COMPACTION_DOTS"),
+    timelineSource.indexOf("function CompactionDivider"),
+  );
+  assert.match(rule, /if \(platform === "web"\)/);
+  assert.match(rule, /borderStyle: "dotted"/);
+  assert.match(rule, /NATIVE_COMPACTION_DOTS = "● "/);
+  assert.match(rule, /flex: 1/);
+  assert.match(rule, /color: theme\.colors\.border/);
+  assert.match(rule, /height: 9/);
+  assert.match(rule, /fontSize: 9/);
+  assert.match(rule, /lineHeight: 9/);
+  assert.match(rule, /accessible=\{false\}/);
 });
 
 test("timeline renderers are available before transformers can replace native rows", () => {
@@ -295,14 +328,16 @@ test("streamed final fragments render as slices of one card", () => {
     shellSource.indexOf("const FinalCardControls"),
   );
   assert.doesNotMatch(shellOnly, /useState\(|useEffect\(|setTimeout\(/);
-  assert.match(shellSource, /text !== null \? \(\s*<FinalCardControls/);
-  assert.match(shellSource, /controlsRef\.current\?\.setHovered\(true\)/);
-  assert.match(shellSource, /if \(hoveredRef\.current === next\) return/);
+  assert.match(shellSource, /text !== null && hoverKey !== null \? \(\s*<FinalCardControls/);
+  assert.match(shellSource, /finalCardHoverStore\.show\(hoverKey\)/);
+  assert.match(shellSource, /finalCardHoverStore\.hide\(hoverKey\)/);
   assert.match(
     shellSource,
-    /onPointerMove=\{text !== null && platform === "web"/,
-    "hover must bubble from markdown descendants across the complete card",
+    /onPointerMove=\{hoverKey !== null && platform === "web"/,
+    "every visual slice must publish hover, including the first paragraphs",
   );
+  assert.doesNotMatch(shellSource, /onPointerMove=\{text !== null/);
+  assert.match(timelineSource, /hoverKey=\{finalCardHoverKey\}/);
   assert.doesNotMatch(timelineSource, /onPointerEnter=.*setHovered\(true\)/);
   assert.doesNotMatch(timelineSource, /accessibilityLabel="Rewind agent response"/);
 });

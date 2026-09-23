@@ -23,7 +23,7 @@ import {
   updateTurnAgentStatus,
 } from "./turn-final-store";
 import { z } from "zod";
-import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Image, Platform, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   openLocalFileRpc,
@@ -58,6 +58,7 @@ import { createStableParagraphs } from "./paragraph-stream";
 import { createStreamingTextCoalescer } from "./stream-text";
 import { DownloadCancelledError } from "./web";
 import { WideFrameController, useWideFrameControllerOwner } from "./wide-frame-controller";
+import { finalCardHoverStore } from "./final-card-hover";
 
 /** Data for the dotted compaction divider replacing the host's hairline. */
 const compactionDividerSchema = z.object({
@@ -483,9 +484,52 @@ const ReviewParagraph = memo(function ReviewParagraph({
 
 /** Compact card replacing the raw review text in the timeline. */
 /** Dotted-line divider for compaction markers (replaces the host hairline). */
+const NATIVE_COMPACTION_DOTS = "● ".repeat(160);
+
+function CompactionRule({
+  platform,
+  theme,
+}: {
+  platform: "web" | "native";
+  theme: PluginTheme;
+}) {
+  if (platform === "web") {
+    return (
+      <View
+        style={{
+          flex: 1,
+          borderBottomWidth: 4,
+          borderBottomColor: theme.colors.border,
+          borderStyle: "dotted",
+        }}
+      />
+    );
+  }
+
+  return (
+    <Text
+      accessible={false}
+      numberOfLines={1}
+      ellipsizeMode="clip"
+      style={{
+        flex: 1,
+        height: 9,
+        overflow: "hidden",
+        color: theme.colors.border,
+        fontSize: 9,
+        lineHeight: 9,
+        letterSpacing: 2,
+      }}
+    >
+      {NATIVE_COMPACTION_DOTS}
+    </Text>
+  );
+}
+
 function CompactionDivider({
   item,
   theme,
+  layout,
 }: PluginTimelineItemProps<CompactionDividerData>) {
   const styles = useMemo(
     () => ({
@@ -495,24 +539,19 @@ function CompactionDivider({
         gap: 10,
         paddingVertical: 14,
       } as const,
-      line: {
-        flex: 1,
-        borderBottomWidth: 4,
-        borderBottomColor: theme.colors.border,
-        borderStyle: "dotted",
-      } as const,
       label: { color: theme.colors.foregroundMuted, fontSize: 12 } as const,
     }),
     [theme],
   );
   const label =
     item.data.status === "loading" ? "Compacting context…" : "Context compacted";
+  const rulePlatform = layout.platform === "web" ? "web" : "native";
   return (
     <View testID="inline-review-root" style={styles.root}>
-      <View style={styles.line} />
+      <CompactionRule platform={rulePlatform} theme={theme} />
       <Icon name="Link" size={12} color={theme.colors.foregroundMuted} />
       <Text style={styles.label}>{label}</Text>
-      <View style={styles.line} />
+      <CompactionRule platform={rulePlatform} theme={theme} />
     </View>
   );
 }
@@ -522,11 +561,7 @@ function timestampLabel(timestamp: Date): string {
   return timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-/** Keeps hover state local so showing the controls does not rerender markdown. */
-type FinalCardControlsHandle = {
-  setHovered(next: boolean): void;
-};
-
+/** Keeps hover subscriptions inside the controls so markdown never rerenders. */
 const FinalCardShell = memo(function FinalCardShell({
   children,
   style,
@@ -534,6 +569,7 @@ const FinalCardShell = memo(function FinalCardShell({
   text,
   theme,
   platform,
+  hoverKey,
 }: {
   children: ReactNode;
   style: StyleProp<ViewStyle>;
@@ -541,50 +577,58 @@ const FinalCardShell = memo(function FinalCardShell({
   text: string | null;
   theme: PluginTheme;
   platform: string;
+  hoverKey: string | null;
 }) {
-  const controlsRef = useRef<FinalCardControlsHandle>(null);
   return (
     <View
       testID="inline-review-root"
       style={style}
-      onPointerMove={text !== null && platform === "web"
-        ? () => controlsRef.current?.setHovered(true)
+      onPointerMove={hoverKey !== null && platform === "web"
+        ? () => finalCardHoverStore.show(hoverKey)
         : undefined}
-      onPointerLeave={text !== null && platform === "web"
-        ? () => controlsRef.current?.setHovered(false)
+      onPointerLeave={hoverKey !== null && platform === "web"
+        ? () => finalCardHoverStore.hide(hoverKey)
         : undefined}
     >
       {children}
-      {text !== null ? (
+      {text !== null && hoverKey !== null ? (
         <FinalCardControls
-          ref={controlsRef}
           timestamp={timestamp}
           text={text}
           theme={theme}
           platform={platform}
+          hoverKey={hoverKey}
         />
       ) : null}
     </View>
   );
 });
 
-const FinalCardControls = memo(forwardRef<FinalCardControlsHandle, {
+const FinalCardControls = memo(function FinalCardControls({
+  timestamp,
+  text,
+  theme,
+  platform,
+  hoverKey,
+}: {
   timestamp: Date;
   text: string;
   theme: PluginTheme;
   platform: string;
-}>(function FinalCardControls({ timestamp, text, theme, platform }, ref) {
-  const [hovered, setHovered] = useState(false);
-  const hoveredRef = useRef(false);
+  hoverKey: string;
+}) {
+  const subscribeHover = useCallback(
+    (listener: () => void) => finalCardHoverStore.subscribe(hoverKey, listener),
+    [hoverKey],
+  );
+  const hovered = useSyncExternalStore(
+    subscribeHover,
+    () => finalCardHoverStore.isHovered(hoverKey),
+    () => false,
+  );
   const [focused, setFocused] = useState(false);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const updateHovered = useCallback((next: boolean) => {
-    if (hoveredRef.current === next) return;
-    hoveredRef.current = next;
-    setHovered(next);
-  }, []);
-  useImperativeHandle(ref, () => ({ setHovered: updateHovered }), [updateHovered]);
   useEffect(() => () => {
     if (copiedTimer.current) clearTimeout(copiedTimer.current);
   }, []);
@@ -634,7 +678,7 @@ const FinalCardControls = memo(forwardRef<FinalCardControlsHandle, {
       </Pressable>
     </View>
   );
-}));
+});
 
 /**
  * Native equivalent of the desktop user-message card. Web keeps Paseo's host
@@ -788,6 +832,9 @@ function ReviewAssistantMessage({
     void fragmentVersion;
     return getTurnFinalCardText(agentId, sourceKey);
   }, [turnVersion, fragmentVersion, agentId, sourceKey]);
+  const finalCardHoverKey = finalCardPosition === "none"
+    ? null
+    : `${agentId}:${data.messageId ?? sourceKey}`;
   useLayoutEffect(() => {
     try {
       const handle = paseo?.agents?.ref(agentId);
@@ -1188,6 +1235,7 @@ function ReviewAssistantMessage({
         text={finalCardText}
         theme={theme}
         platform={layout.platform}
+        hoverKey={finalCardHoverKey}
       >
       {paragraphs.map((paragraph, index) => (
         <ReviewParagraph

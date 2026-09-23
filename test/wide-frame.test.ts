@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 
 import { classifyWideFrameMutations } from "../client/wide-frame-mutations.ts";
+import { parseInline } from "../shared/markdown-parse.ts";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 
@@ -22,8 +23,10 @@ type FakeElement = {
   attributes: Record<string, string>;
   computedMaxWidth: string;
   computedBackgroundColor: string;
+  textContent: string;
   setAttribute(name: string, value: string): void;
   insertBefore(node: FakeElement, before: FakeElement | null): void;
+  cloneNode(deep?: boolean): FakeElement;
   remove(): void;
   matches(selector: string): boolean;
   querySelectorAll(selector: string): FakeElement[];
@@ -48,12 +51,14 @@ function fakeElement({
   maxWidth = "none",
   backgroundColor = "transparent",
   attributes = {},
+  text = "",
 }: {
   width?: number;
   height?: number;
   maxWidth?: string;
   backgroundColor?: string;
   attributes?: Record<string, string>;
+  text?: string;
 } = {}): FakeElement {
   const node: FakeElement = {
     clientHeight: height,
@@ -68,6 +73,7 @@ function fakeElement({
     attributes: { ...attributes },
     computedMaxWidth: maxWidth,
     computedBackgroundColor: backgroundColor,
+    textContent: text,
     setAttribute(name, value) {
       if (name.startsWith("data-")) this.dataset[dataKey(name)] = value;
       else this.attributes[name] = value;
@@ -79,6 +85,22 @@ function fakeElement({
       else this.children.push(child);
       child.parentElement = this;
       relink(this);
+    },
+    cloneNode(deep = false) {
+      const clone = fakeElement({
+        width: this.clientWidth,
+        height: this.clientHeight,
+        maxWidth: this.computedMaxWidth,
+        backgroundColor: this.computedBackgroundColor,
+        attributes: this.attributes,
+        text: deep ? this.textContent : "",
+      });
+      clone.style = { ...this.style };
+      clone.dataset = { ...this.dataset };
+      if (deep) {
+        for (const child of this.children) clone.insertBefore(child.cloneNode(true), null);
+      }
+      return clone;
     },
     remove() {
       const parent = this.parentElement;
@@ -277,9 +299,12 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   const images = fakeElement({ height: 90 });
   const imageOne = fakeElement({ attributes: { "aria-label": "Open image attachment" } });
   const imageTwo = fakeElement({ attributes: { "aria-label": "Open image attachment" } });
+  const messageText = fakeElement({
+    text: "tampoco estiramos `Context compacted` y **ancho**.",
+  });
   const trail = fakeElement({ attributes: { "data-testid": "user-message-trailing-row" } });
   append(images, imageOne, imageTwo);
-  append(bubble, images, trail);
+  append(bubble, images, messageText, trail);
   append(message, bubble);
   append(capped, message);
   const reviewCapped = fakeElement({ width: 820, maxWidth: "820px" });
@@ -310,6 +335,11 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   globals.__wideFramePlatform = { OS: "web" };
   globals.__wideFrameDocument = document;
   globals.__wideFrameClassify = classifyWideFrameMutations;
+  let parseInlineCalls = 0;
+  globals.__wideFrameParseInline = (text: string) => {
+    parseInlineCalls += 1;
+    return parseInline(text);
+  };
   globals.__wideFrameWindow = {
     document,
     innerWidth: 1200,
@@ -350,6 +380,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   const source = readFileSync(sourcePath, "utf8")
     .replace('import { Platform } from "react-native";', "const Platform = globalThis.__wideFramePlatform;")
     .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};")
+    .replace(/import \{ parseInline[^;]+;/, "const parseInline = globalThis.__wideFrameParseInline;")
     .replace(/import \{ createAdaptiveSweep \}[^;]+;/, `
       const createAdaptiveSweep = () => ({ start() {}, stop() {}, wake() {} });
     `)
@@ -420,6 +451,22 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(imageOne.style.flexShrink, "0");
   assert.equal(trail.style.position, "relative");
   assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
+  assert.equal(messageText.textContent, "tampoco estiramos `Context compacted` y **ancho**.");
+  assert.equal(imageOne.parentElement, images, "Markdown must not move host-owned attachments");
+  assert.equal(images.parentElement, bubble);
+  assert.equal(messageText.style.display, "none", "the untouched host text is hidden, not rewritten");
+  const renderedMarkdown = message.querySelectorAll('[data-inline-review-user-markdown="1"]');
+  assert.equal(renderedMarkdown.length, 1, "a formatted message gets one visual Markdown clone");
+  assert.ok(renderedMarkdown[0].children.length > 0, "formatting is composed from safe child nodes");
+  const code = renderedMarkdown[0].querySelectorAll('[data-inline-review-markdown-kind="code"]');
+  assert.equal(code.length, 1);
+  assert.equal(code[0].textContent, "Context compacted");
+  assert.equal(code[0].style.fontFamily.includes("monospace"), true);
+  const strong = renderedMarkdown[0].querySelectorAll('[data-inline-review-markdown-kind="bold"]');
+  assert.equal(strong.length, 1);
+  assert.equal(strong[0].children[0]?.textContent, "ancho");
+  assert.equal(strong[0].style.fontWeight, "700");
+  assert.equal(parseInlineCalls, 1);
 
   // CSSOM writes made by the plugin are themselves observed. A synchronous
   // decoration pass must not clear and rebuild the image rail from inside the
@@ -438,6 +485,8 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     imageTwo,
     trail,
     ...message.querySelectorAll('[data-inline-review-user-backdrop="1"]'),
+    ...message.querySelectorAll('[data-inline-review-user-markdown="1"]'),
+    messageText,
   ];
   for (const node of trackedNodes) {
     node.style = new Proxy(node.style, {
@@ -481,6 +530,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     0,
     "redecorating an image card is idempotent across every styled node",
   );
+  assert.equal(parseInlineCalls, 1, "unchanged Markdown is not reparsed during style repair");
   deliverMutations([{
     target: capped,
     attributeName: "style",
@@ -516,6 +566,11 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   const reenteredCapped = fakeElement({ width: 820, maxWidth: "820px" });
   const reenteredMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
   const reenteredBubble = fakeElement({ backgroundColor: "rgb(36, 38, 54)" });
+  const reenteredText = fakeElement({
+    attributes: { "data-message-text": "true" },
+    text: "an unmatched ` stays literal",
+  });
+  append(reenteredBubble, reenteredText);
   append(reenteredMessage, reenteredBubble);
   append(reenteredCapped, reenteredMessage);
   append(pane, reenteredCapped);
@@ -525,6 +580,18 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(observerDisconnections, 0);
   assert.equal(reenteredCapped.style.maxWidth, "1040px");
   assert.equal(reenteredMessage.style.backgroundColor, "#242636");
+  assert.equal(reenteredText.style.display, undefined, "plain or incomplete Markdown stays native");
+  assert.equal(
+    reenteredMessage.querySelectorAll('[data-inline-review-user-markdown="1"]').length,
+    0,
+  );
+  const parseCallsAfterPlainMessage = parseInlineCalls;
+  module.ensureWideFrame();
+  assert.equal(
+    parseInlineCalls,
+    parseCallsAfterPlainMessage,
+    "unchanged plain messages are cached without creating a clone",
+  );
   assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
   assert.equal(resizeListeners.size, 1);
 
@@ -599,6 +666,8 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(imageOne.style.flexShrink, "");
   assert.equal(trail.style.position, "");
   assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 0);
+  assert.equal(message.querySelectorAll('[data-inline-review-user-markdown="1"]').length, 0);
+  assert.equal(messageText.style.display, "", "cleanup restores the host text node");
 
   staleResize();
   for (const callback of frames.values()) callback();
@@ -607,5 +676,6 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   delete globals.__wideFramePlatform;
   delete globals.__wideFrameDocument;
   delete globals.__wideFrameClassify;
+  delete globals.__wideFrameParseInline;
   delete globals.__wideFrameWindow;
 });

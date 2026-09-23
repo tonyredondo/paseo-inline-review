@@ -10,6 +10,7 @@
  * The user flag lives in plugin settings (host scope) as wideFrame.
  */
 import { Platform } from "react-native";
+import { parseInline, type InlineToken } from "../shared/markdown-parse";
 import { wideFrameSettings } from "../shared/wide-frame-settings";
 import { createAdaptiveSweep } from "./adaptive-sweep";
 import {
@@ -36,8 +37,10 @@ type WNode = {
   childElementCount: number;
   style: Record<string, string>;
   dataset: Record<string, string>;
+  textContent: string | null;
   setAttribute(name: string, value: string): void;
   insertBefore(node: WNode, before: WNode | null): void;
+  cloneNode(deep?: boolean): WNode;
   remove(): void;
   matches?(selector: string): boolean;
   querySelectorAll?(selector: string): ArrayLike<WNode>;
@@ -67,6 +70,7 @@ const BREATHING = 160; // 80px of air per side
 const USER_CARD_IMAGE_OVERLAP = 6;
 const USER_CARD_TEXT_VERTICAL_PADDING = 5;
 const USER_CARD_CONTROLS_BOTTOM_PADDING = 8;
+const EMPTY_DISPLAY = "__inline_review_empty__";
 
 /** Converts #rrggbb to rgba() so fills can fade without losing hue. */
 function withAlpha(hex: string, alpha: number): string {
@@ -75,6 +79,192 @@ function withAlpha(hex: string, alpha: number): string {
   const g = parseInt(value.slice(2, 4), 16);
   const b = parseInt(value.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** Lightens a hex color so inline code remains legible on a raised surface. */
+function lighten(hex: string, factor: number): string {
+  const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (!match) return hex;
+  const value = parseInt(match[1], 16);
+  const channels = [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff];
+  return `#${channels
+    .map((channel) => Math.round(channel + (255 - channel) * factor))
+    .map((channel) => channel.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+function markdownFingerprint(text: string): string {
+  // FNV-1a keeps the idempotency marker small even for long user messages.
+  let hash = 0x811c9dc5;
+  const input = `${userCardAccent}\0${userCardRaised}\0${userCardBorder}\0${text}`;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${input.length}:${(hash >>> 0).toString(16)}`;
+}
+
+function hasInlineMarkdown(tokens: InlineToken[]): boolean {
+  return tokens.some((token) => token.type !== "text");
+}
+
+function safeLink(url: string): string | null {
+  return /^(?:https?:|mailto:)/i.test(url) ? url : null;
+}
+
+function appendInlineMarkdown(parent: WNode, tokens: InlineToken[], doc: WDoc): void {
+  for (const token of tokens) {
+    if (token.type === "break") {
+      const lineBreak = doc.createElement("br");
+      lineBreak.dataset.inlineReviewMarkdownKind = "break";
+      parent.insertBefore(lineBreak, null);
+      continue;
+    }
+
+    const tag = token.type === "link" && safeLink(token.url) ? "a" : "span";
+    const node = doc.createElement(tag);
+    if (token.type !== "text") node.dataset.inlineReviewMarkdownKind = token.type;
+
+    switch (token.type) {
+      case "bold":
+        node.style.fontWeight = "700";
+        appendInlineMarkdown(node, token.tokens, doc);
+        break;
+      case "italic":
+        node.style.fontStyle = "italic";
+        appendInlineMarkdown(node, token.tokens, doc);
+        break;
+      case "strike":
+        node.style.textDecoration = "line-through";
+        appendInlineMarkdown(node, token.tokens, doc);
+        break;
+      case "code":
+        node.style.color = lighten(userCardAccent, 0.45);
+        node.style.backgroundColor = userCardBorder;
+        node.style.fontFamily =
+          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace";
+        node.style.fontSize = "0.92em";
+        node.style.padding = "2px 5px";
+        node.style.borderRadius = "6px";
+        node.style.whiteSpace = "pre-wrap";
+        node.textContent = token.text;
+        break;
+      case "link": {
+        node.style.color = userCardAccent;
+        node.style.textDecoration = "none";
+        const href = safeLink(token.url);
+        if (href) {
+          node.setAttribute("href", href);
+          node.setAttribute("target", "_blank");
+          node.setAttribute("rel", "noopener noreferrer");
+        }
+        if (token.tokens) appendInlineMarkdown(node, token.tokens, doc);
+        else node.textContent = token.text;
+        break;
+      }
+      case "image":
+        // Do not turn Markdown image syntax into another eager image fetch.
+        // The host attachment rail remains the only automatic image surface.
+        node.style.color = userCardAccent;
+        node.textContent = `[${token.alt}]`;
+        break;
+      case "footnoteRef":
+        node.style.color = userCardAccent;
+        node.style.fontSize = "0.85em";
+        node.style.fontWeight = "600";
+        node.textContent = `[^${token.label}]`;
+        break;
+      case "text":
+        node.textContent = token.text;
+        break;
+    }
+    parent.insertBefore(node, null);
+  }
+}
+
+function restoreUserMessageText(source: WNode): void {
+  const saved = source.dataset.inlineReviewMarkdownDisplay;
+  if (saved === undefined) return;
+  const display = saved === EMPTY_DISPLAY ? "" : saved;
+  if (source.style.display !== display) source.style.display = display;
+  delete source.dataset.inlineReviewMarkdownDisplay;
+}
+
+/**
+ * Adds inline Markdown without taking ownership of Paseo's message node.
+ * The original stays untouched (and continues to back Copy/rewind); a shallow
+ * visual clone carries safe DOM nodes for code, emphasis and links.
+ */
+function renderUserMessageMarkdown(
+  root: WNode,
+  doc: WDoc,
+  fallbackSource: WNode | null,
+): void {
+  const query = root.querySelectorAll?.bind(root);
+  if (!query) return;
+  const markedSources = Array.from(query('[data-message-text="true"]'));
+  // Paseo 0.8.0 predates the data-message-text marker. In that release the
+  // raw Text node is the only leaf directly inside the bubble; image and file
+  // attachment rows are nested containers. Keep this structural fallback
+  // until the installed host reaches the newer explicit marker contract.
+  const sources = markedSources.length > 0
+    ? markedSources
+    : fallbackSource
+      ? [fallbackSource]
+      : [];
+  const clones = (): WNode[] =>
+    Array.from(query('[data-inline-review-user-markdown="1"]'));
+
+  for (const source of sources) {
+    source.dataset.inlineReviewUserMarkdownSource = "1";
+    const text = source.textContent ?? "";
+    const parent = source.parentElement;
+    const existing = clones().find((candidate) => candidate.parentElement === parent) ?? null;
+
+    if (!parent) {
+      existing?.remove();
+      restoreUserMessageText(source);
+      continue;
+    }
+
+    const fingerprint = markdownFingerprint(text);
+    if (existing?.dataset.inlineReviewMarkdownFingerprint === fingerprint) {
+      if (source.style.display !== "none") source.style.display = "none";
+      continue;
+    }
+    if (
+      !existing &&
+      source.dataset.inlineReviewMarkdownPlainFingerprint === fingerprint
+    ) {
+      continue;
+    }
+
+    const tokens = parseInline(text);
+    if (!hasInlineMarkdown(tokens)) {
+      existing?.remove();
+      restoreUserMessageText(source);
+      source.dataset.inlineReviewMarkdownPlainFingerprint = fingerprint;
+      continue;
+    }
+    existing?.remove();
+    delete source.dataset.inlineReviewMarkdownPlainFingerprint;
+
+    if (source.dataset.inlineReviewMarkdownDisplay === undefined) {
+      source.dataset.inlineReviewMarkdownDisplay = source.style.display || EMPTY_DISPLAY;
+    }
+    const display = source.dataset.inlineReviewMarkdownDisplay;
+    const rendered = source.cloneNode(false);
+    rendered.textContent = "";
+    rendered.dataset.messageText = "";
+    rendered.dataset.inlineReviewUserMarkdown = "1";
+    rendered.dataset.inlineReviewMarkdownFingerprint = fingerprint;
+    rendered.style.display = display === EMPTY_DISPLAY ? "" : display;
+    rendered.style.whiteSpace = "pre-wrap";
+    rendered.style.overflowWrap = "anywhere";
+    appendInlineMarkdown(rendered, tokens, doc);
+    parent.insertBefore(rendered, source.nextElementSibling);
+    source.style.display = "none";
+  }
 }
 
 /** Colors for the user-message card pass (set at install time). */
@@ -154,6 +344,23 @@ function styleUserMessages(root: WDoc | WNode, win: WWin, doc: WDoc): void {
     let imageRow: WNode | null = imageButton ?? null;
     while (imageRow && imageRow.parentElement !== cardBubble) {
       imageRow = imageRow.parentElement;
+    }
+    let fallbackMessageText: WNode | null = null;
+    if (cardBubble) {
+      const directChildren = Array.from(cardBubble.children);
+      for (let index = directChildren.length - 1; index >= 0; index -= 1) {
+        const child = directChildren[index];
+        if (
+          child === imageRow ||
+          child.dataset.inlineReviewUserMarkdown === "1" ||
+          child.childElementCount > 0 ||
+          (child.textContent ?? "").trim().length === 0
+        ) {
+          continue;
+        }
+        fallbackMessageText = child;
+        break;
+      }
     }
     for (const previous of Array.from(
       rootEl.querySelectorAll('[data-inline-review-user-images="1"]'),
@@ -299,6 +506,7 @@ function styleUserMessages(root: WDoc | WNode, win: WWin, doc: WDoc): void {
       trail.style.position = "relative";
       trail.style.zIndex = "2";
     }
+    renderUserMessageMarkdown(el, doc, fallbackMessageText);
   }
 }
 
@@ -420,6 +628,18 @@ function unstyleUserMessages(doc: WDoc): void {
       trail.style.marginBottom = "";
       trail.style.position = "";
       trail.style.zIndex = "";
+    }
+    for (const rendered of Array.from(
+      rootEl.querySelectorAll('[data-inline-review-user-markdown="1"]'),
+    )) {
+      rendered.remove();
+    }
+    for (const source of Array.from(
+      rootEl.querySelectorAll('[data-inline-review-user-markdown-source="1"]'),
+    )) {
+      restoreUserMessageText(source);
+      delete source.dataset.inlineReviewMarkdownPlainFingerprint;
+      delete source.dataset.inlineReviewUserMarkdownSource;
     }
   }
 }

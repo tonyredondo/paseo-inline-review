@@ -37,6 +37,11 @@ const ZWSP = "\u200B";
 /** Code blocks longer than this collapse behind a "Show more" control. */
 const CODE_COLLAPSE_LINES = 40;
 
+/** Web-only pointer affordance; the native Pressable keeps its normal style. */
+const WEB_COPY_BUTTON_STYLE = Platform.OS === "web"
+  ? ({ cursor: "pointer", userSelect: "none" } as object)
+  : undefined;
+
 /** Converts #rrggbb to rgba() so fills can fade without losing hue. */
 /** Line-highlight band over the black code background (gutter included). */
 const HIGHLIGHT_ALPHA = 0.38;
@@ -490,7 +495,9 @@ function VirtualizedFileCodeBlock({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Copy code"
-        style={[styles.copyButton, { zIndex: 2, backgroundColor: "#000000" }]}
+        pointerEvents="box-only"
+        hitSlop={6}
+        style={[styles.copyButton, WEB_COPY_BUTTON_STYLE, { backgroundColor: "#000000" }]}
         onPress={() => void copy()}
       >
         {copied ? <Text style={styles.copyText}>Copied</Text> : <Icon name="Copy" size={13} color="#8b949e" />}
@@ -605,7 +612,9 @@ export function CodeBlockView({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Copy code"
-        style={styles.copyButton}
+        pointerEvents="box-only"
+        hitSlop={6}
+        style={[styles.copyButton, WEB_COPY_BUTTON_STYLE]}
         onPress={() => {
           void copy();
         }}
@@ -877,7 +886,17 @@ function useStyles(theme: PluginTheme, compact: boolean) {
         borderRadius: 8,
         padding: 10,
       } as const,
-      copyButton: { position: "absolute", top: 6, right: 6, padding: 4, borderRadius: 6 } as const,
+      copyButton: {
+        position: "absolute",
+        top: 4,
+        right: 4,
+        zIndex: 4,
+        minWidth: 32,
+        minHeight: 32,
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 6,
+      } as const,
       copyText: { color: "#58a6ff", fontSize: 11 } as const,
       codeText: { color: theme.colors.foreground, fontSize: compact ? 12 : 13, lineHeight: 18 } as const,
       heading: (level: number) =>
