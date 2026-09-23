@@ -3,10 +3,11 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import type { ReactNode } from "react";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Image, Platform, Pressable, ScrollView, Text, View } from "react-native";
-import { COMPACT_FILE_TRANSFER_CHUNK_BYTES, DESKTOP_FILE_TRANSFER_CHUNK_BYTES, openLocalFileRpc, previewLanguage } from "../shared/review";
+import { COMPACT_FILE_TRANSFER_CHUNK_BYTES, DESKTOP_FILE_TRANSFER_CHUNK_BYTES, isMarkdownPath, openLocalFileRpc, previewLanguage } from "../shared/review";
 import { formatReview, type ReviewComment } from "../shared/review";
+import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-parse";
 import {
   clearAgent,
   getComments,
@@ -21,9 +22,10 @@ import {
 import {
   getPreviewTarget,
   type PreviewTarget,
+  openFileTab,
   subscribe as subscribePreview,
 } from "./preview-store";
-import { FileCodeBlock } from "./markdown";
+import { FileCodeBlock, MarkdownText } from "./markdown";
 import { downloadLocalFileProgressively, formatFileSize } from "./file-download";
 import { DownloadCancelledError } from "./web";
 
@@ -50,6 +52,7 @@ export function FilePreviewPanel({ panelId, agentId, workspaceId, theme, layout 
   }
   return (
     <PanelFilePreview
+      key={target.requestId}
       target={target}
       theme={theme}
       layout={layout}
@@ -71,6 +74,7 @@ function PanelFilePreview({
   const toast = useToast();
   const canDownload = Platform.OS === "web";
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+  const [textView, setTextView] = useState<"source" | "preview">("source");
   const [state, setState] = useState<
     | { kind: "loading" }
     | { kind: "error"; message: string }
@@ -78,6 +82,32 @@ function PanelFilePreview({
     | { kind: "text"; content: string; truncated: boolean }
     | { kind: "image"; dataUri?: string; mimeType: string; size?: number }
   >({ kind: "loading" });
+  const canPreviewMarkdown = state.kind === "text" && isMarkdownPath(target.path);
+  const markdownRoot = useMemo(() => {
+    const normalized = target.path.replace(/\\/g, "/");
+    const slash = normalized.lastIndexOf("/");
+    if (slash < 0) return null;
+    if (slash === 0) return "/";
+    const parent = normalized.slice(0, slash);
+    return parent.startsWith("/") || /^[A-Za-z]:\//.test(parent) ? parent : null;
+  }, [target.path]);
+  const resolveMarkdownLink = useCallback(
+    (href: string): LocalFileTarget | null =>
+      classifyLocalFileLink(href, { workspaceRoot: markdownRoot }),
+    [markdownRoot],
+  );
+  const openMarkdownLink = useCallback(
+    (next: LocalFileTarget): void => {
+      openFileTab(
+        next.path,
+        next.lineStart,
+        next.lineEnd,
+        target.workspaceId,
+        target.agentId,
+      );
+    },
+    [target.agentId, target.workspaceId],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -124,6 +154,7 @@ function PanelFilePreview({
       body: { flex: 1 } as const,
       image: { width: "100%" as const, height: "100%" as const } as const,
       binaryBox: { gap: 8, paddingVertical: 24, alignItems: "center" } as const,
+      markdownBody: { paddingHorizontal: 8, paddingTop: 4, paddingBottom: 28 } as const,
       downloadButton: {
         backgroundColor: theme.colors.accent,
         borderRadius: 8,
@@ -165,6 +196,19 @@ function PanelFilePreview({
         <Text style={styles.path} numberOfLines={2}>
           {`${target.path}${state.kind === "text" && state.truncated ? " (truncated)" : ""}`}
         </Text>
+        {canPreviewMarkdown ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={textView === "preview" ? "Show Markdown source" : "Preview rendered Markdown"}
+              hitSlop={6}
+              onPress={() => setTextView((current) => current === "source" ? "preview" : "source")}
+            >
+              <Text style={styles.link}>{textView === "preview" ? "Source" : "Preview"}</Text>
+            </Pressable>
+            <Text style={styles.muted}>|</Text>
+          </>
+        ) : null}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Open the file on the agent machine"
@@ -232,6 +276,23 @@ function PanelFilePreview({
             )
           ) : null}
         </View>
+      ) : textView === "preview" && canPreviewMarkdown ? (
+        <ScrollView
+          key={target.requestId}
+          style={styles.body}
+          contentContainerStyle={styles.markdownBody}
+          showsVerticalScrollIndicator
+        >
+          <MarkdownText
+            text={state.content}
+            theme={theme}
+            compact={layout.compact}
+            selectable={layout.platform === "web" ? undefined : layout.platform !== "ios"}
+            cacheKey={target.path}
+            localFileResolver={resolveMarkdownLink}
+            onLocalFilePress={openMarkdownLink}
+          />
+        </ScrollView>
       ) : (
         <View key={target.requestId} style={[styles.body, { padding: 4 }]}>
           <FileCodeBlock

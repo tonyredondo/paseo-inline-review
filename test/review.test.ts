@@ -5,6 +5,7 @@ import {
   commentBelongsToReviewSource,
   findReviewCommentParagraphIndex,
   formatReview,
+  isMarkdownPath,
   openLocalFileRpc,
   parseReviewMessage,
   reviewCommentSchema,
@@ -12,6 +13,15 @@ import {
   splitParagraphs,
   userMessageHasHostAttachments,
 } from "../shared/review.ts";
+
+test("Markdown preview recognizes common Markdown file extensions", () => {
+  for (const path of ["README.md", "/tmp/report.MD", "guide.markdown", "notes.mdown", "doc.mkd", "doc.mkdn", "page.mdx"]) {
+    assert.equal(isMarkdownPath(path), true, path);
+  }
+  for (const path of ["README", "report.txt", "/tmp/archive.md.bak", ".markdownlint.json"]) {
+    assert.equal(isMarkdownPath(path), false, path);
+  }
+});
 
 test("splitParagraphs splits on blank lines and trims empties", () => {
   assert.deepEqual(splitParagraphs("one\n\ntwo\n\n\n\nthree"), ["one", "two", "three"]);

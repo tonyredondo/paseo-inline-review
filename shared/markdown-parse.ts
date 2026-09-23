@@ -600,11 +600,11 @@ export type LocalFileTarget = {
 };
 
 const LOCAL_FILE_EXTENSIONS = new Set([
-  "astro", "bash", "c", "cc", "cjs", "cpp", "cs", "css", "cts", "cxx", "env", "fish", "go",
+  "astro", "avif", "bash", "bmp", "c", "cc", "cjs", "cpp", "cs", "css", "cts", "cxx", "env", "fish", "gif", "go",
   "gql", "gradle", "graphql", "h", "hpp", "htm", "html", "ini", "java", "js", "json", "jsonc",
-  "jsx", "kt", "kts", "less", "lock", "lua", "md", "mdx", "mjs", "mts", "php", "proto", "py",
+  "jpeg", "jpg", "jsx", "kt", "kts", "less", "lock", "lua", "md", "mdx", "mjs", "mts", "php", "png", "proto", "py",
   "rb", "rs", "sass", "scss", "sh", "sql", "svelte", "swift", "toml", "ts", "tsx", "txt",
-  "vue", "xml", "yaml", "yml", "zsh", "log", "conf",
+  "svg", "vue", "webp", "xml", "yaml", "yml", "zsh", "log", "conf",
 ]);
 
 const LINE_FRAGMENT_PATTERNS = [

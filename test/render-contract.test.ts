@@ -316,6 +316,21 @@ test("file preview panels render detected images instead of the binary fallback"
   assert.match(timelineSource, /<Image[\s\S]{0,200}source=\{\{ uri: filePreview\.dataUri \}\}/);
 });
 
+test("Markdown file tabs switch between source and an on-demand rendered preview", () => {
+  const panelSource = String(readFileSync(path.resolve("client/panel.tsx")));
+  assert.match(panelSource, /import \{ FileCodeBlock, MarkdownText \} from "\.\/markdown"/);
+  assert.match(panelSource, /key=\{target\.requestId\}/);
+  assert.match(panelSource, /useState<"source" \| "preview">\("source"\)/);
+  assert.match(panelSource, /state\.kind === "text" && isMarkdownPath\(target\.path\)/);
+  assert.match(panelSource, /accessibilityLabel=\{textView === "preview" \? "Show Markdown source" : "Preview rendered Markdown"\}/);
+  assert.match(panelSource, /\{textView === "preview" \? "Source" : "Preview"\}/);
+  assert.match(panelSource, /textView === "preview" && canPreviewMarkdown/);
+  assert.match(panelSource, /<ScrollView[\s\S]{0,500}<MarkdownText/);
+  assert.match(panelSource, /cacheKey=\{target\.path\}/);
+  assert.match(panelSource, /localFileResolver=\{resolveMarkdownLink\}/);
+  assert.match(panelSource, /onLocalFilePress=\{openMarkdownLink\}/);
+});
+
 test("streamed final fragments render as slices of one card", () => {
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
   assert.match(timelineSource, /getTurnFinalCardPosition/);

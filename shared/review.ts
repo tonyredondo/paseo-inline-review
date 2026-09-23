@@ -342,3 +342,10 @@ export function previewLanguage(path: string): string {
   const dot = base.lastIndexOf(".");
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : "txt";
 }
+
+const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd", "mkdn", "mdx"]);
+
+/** Whether a file path should offer the rendered Markdown preview. */
+export function isMarkdownPath(path: string): boolean {
+  return MARKDOWN_EXTENSIONS.has(previewLanguage(path));
+}

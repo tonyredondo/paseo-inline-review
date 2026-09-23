@@ -828,3 +828,10 @@ test("local file classifier: home-relative and workspace-relative", () => {
   // Without a workspace root, relative paths stay unresolved.
   assert.equal(classifyLocalFileLink("main.go"), null);
 });
+
+test("local file classifier resolves relative Markdown images", () => {
+  for (const image of ["diagram.png", "assets/photo.jpg", "images/flow.svg", "preview.webp"]) {
+    const target = classifyLocalFileLink(image, { workspaceRoot: "/docs/report" });
+    assert.equal(target?.path, `/docs/report/${image}`);
+  }
+});
