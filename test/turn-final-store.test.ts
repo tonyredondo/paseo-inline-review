@@ -142,6 +142,7 @@ test("live fragments sharing the final id form one continuous card", async () =>
     messageId: "shared-final",
     text: "First paragraph.",
     timestamp: 1,
+    phase: "complete",
   });
   const releaseDivider = retainTurnFinalFragment({
     agentId,
@@ -149,6 +150,7 @@ test("live fragments sharing the final id form one continuous card", async () =>
     messageId: "shared-final",
     text: "---",
     timestamp: 2,
+    phase: "complete",
   });
   const releaseLast = retainTurnFinalFragment({
     agentId,
@@ -156,6 +158,7 @@ test("live fragments sharing the final id form one continuous card", async () =>
     messageId: "shared-final",
     text: "Last paragraph.",
     timestamp: 3,
+    phase: "complete",
   });
   await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -179,9 +182,10 @@ test("streaming fragment text updates do not fan out to every sibling", async ()
     messageId: "message",
     text: "start",
     timestamp: 1,
+    phase: "streaming",
   });
   for (let index = 0; index < 100; index += 1) {
-    mounted.update({ messageId: "message", text: `stream ${index}`, timestamp: 1 });
+    mounted.update({ messageId: "message", text: `stream ${index}`, timestamp: 1, phase: "streaming" });
   }
   assert.equal(notifications, 1);
   mounted.release();
@@ -206,8 +210,8 @@ test("final card positions are built once per fragment and index version", async
     },
   };
   const releaseIndex = retainTurnIndex(agentId, timeline, 0);
-  const first = mountTurnFinalFragment({ agentId, sourceKey: "first", messageId: "shared", text: "first", timestamp: 1 });
-  const last = mountTurnFinalFragment({ agentId, sourceKey: "last", messageId: "shared", text: "last", timestamp: 2 });
+  const first = mountTurnFinalFragment({ agentId, sourceKey: "first", messageId: "shared", text: "first", timestamp: 1, phase: "complete" });
+  const last = mountTurnFinalFragment({ agentId, sourceKey: "last", messageId: "shared", text: "last", timestamp: 2, phase: "complete" });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(getTurnFinalCardPosition(agentId, "first"), "start");
   assert.equal(getTurnFinalCardPosition(agentId, "last"), "end");
@@ -457,6 +461,7 @@ test("failed history backfill is eligible for retry on the next update", async (
     messageId: "old",
     text: "old text",
     timestamp: 1,
+    phase: "complete",
   });
   const release = retainTurnIndex(agentId, timeline, 0);
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -508,7 +513,7 @@ test("startup fetches one tail and no historical page until an old row is mounte
   assert.equal(isTurnFinalMessage(agentId, "recent"), true);
 
   const releaseFragment = retainTurnFinalFragment({
-    agentId, sourceKey: "old-source", messageId: "old", text: "old final", timestamp: 1,
+    agentId, sourceKey: "old-source", messageId: "old", text: "old final", timestamp: 1, phase: "complete",
   });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(beforeCalls, 1);
@@ -517,14 +522,159 @@ test("startup fetches one tail and no historical page until an old row is mounte
   releaseIndex();
 });
 
+test("a live id-less streaming fragment never requests historical pages", async () => {
+  const agentId = `live-idless-${Date.now()}`;
+  let beforeCalls = 0;
+  const timeline = {
+    subscribe(): () => void { return () => {}; },
+    async refetch(options?: { direction?: string }) {
+      if (options?.direction === "before") {
+        beforeCalls += 1;
+        return {
+          entries: [],
+          agent: { status: "running" },
+          hasOlder: true,
+          startCursor: { epoch: "e", seq: 100 - beforeCalls },
+        };
+      }
+      return {
+        entries: [],
+        agent: { status: "running" },
+        hasOlder: true,
+        startCursor: { epoch: "e", seq: 100 },
+      };
+    },
+  };
+  const fragment = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "live-row",
+    messageId: null,
+    text: "streaming prefix",
+    timestamp: 1,
+    phase: "streaming",
+  });
+  const releaseIndex = retainTurnIndex(agentId, timeline, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(beforeCalls, 0);
+  fragment.release();
+  releaseIndex();
+});
+
+test("an id-less fragment requests history once after it becomes complete", async () => {
+  const agentId = `completed-idless-${Date.now()}`;
+  let beforeCalls = 0;
+  const timeline = {
+    subscribe(): () => void { return () => {}; },
+    async refetch(options?: { direction?: string }) {
+      if (options?.direction === "before") {
+        beforeCalls += 1;
+        return {
+          entries: [{
+            item: { type: "assistant_message", text: "final text" },
+            turnId: "old-turn",
+            seqEnd: 1,
+          }],
+          agent: { status: "idle" },
+          hasOlder: false,
+          startCursor: null,
+        };
+      }
+      return {
+        entries: [],
+        agent: { status: "idle" },
+        hasOlder: true,
+        startCursor: { epoch: "e", seq: 100 },
+      };
+    },
+  };
+  const fragment = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "transitioning-row",
+    messageId: null,
+    text: "partial",
+    timestamp: 1,
+    phase: "streaming",
+  });
+  const releaseIndex = retainTurnIndex(agentId, timeline, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(beforeCalls, 0);
+
+  fragment.update({
+    messageId: null,
+    text: "final text",
+    timestamp: 1,
+    phase: "complete",
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(beforeCalls, 1);
+  assert.equal(isTurnFinalText(agentId, "final text"), true);
+
+  fragment.release();
+  releaseIndex();
+});
+
+test("unmounting a historical fragment stops its page walk", async () => {
+  const agentId = `cancelled-history-${Date.now()}`;
+  let beforeCalls = 0;
+  let resolveBefore: ((page: {
+    entries: never[];
+    hasOlder: boolean;
+    startCursor: { epoch: string; seq: number };
+  }) => void) | null = null;
+  const timeline = {
+    subscribe(): () => void { return () => {}; },
+    refetch(options?: { direction?: string }) {
+      if (options?.direction === "before") {
+        beforeCalls += 1;
+        return new Promise<{
+          entries: never[];
+          hasOlder: boolean;
+          startCursor: { epoch: string; seq: number };
+        }>((resolve) => { resolveBefore = resolve; });
+      }
+      return Promise.resolve({
+        entries: [],
+        agent: { status: "idle" },
+        hasOlder: true,
+        startCursor: { epoch: "e", seq: 100 },
+      });
+    },
+  };
+  const fragment = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "old-row",
+    messageId: "missing",
+    text: "missing text",
+    timestamp: 1,
+    phase: "complete",
+  });
+  const releaseIndex = retainTurnIndex(agentId, timeline, 0);
+  for (let attempt = 0; attempt < 20 && beforeCalls === 0; attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(beforeCalls, 1);
+
+  fragment.release();
+  (resolveBefore as unknown as (page: {
+    entries: never[];
+    hasOlder: boolean;
+    startCursor: { epoch: string; seq: number };
+  }) => void)({ entries: [], hasOlder: true, startCursor: { epoch: "e", seq: 99 } });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(beforeCalls, 1);
+  releaseIndex();
+});
+
 test("two mounted historical rows share one demand-driven page walk", async () => {
   const agentId = `shared-history-${Date.now()}`;
   let beforeCalls = 0;
   const releaseFirstFragment = retainTurnFinalFragment({
-    agentId, sourceKey: "one", messageId: "old-1", text: "old one", timestamp: 1,
+    agentId, sourceKey: "one", messageId: "old-1", text: "old one", timestamp: 1, phase: "complete",
   });
   const releaseSecondFragment = retainTurnFinalFragment({
-    agentId, sourceKey: "two", messageId: "old-2", text: "old two", timestamp: 2,
+    agentId, sourceKey: "two", messageId: "old-2", text: "old two", timestamp: 2, phase: "complete",
   });
   const timeline = {
     subscribe(): () => void { return () => {}; },
@@ -648,7 +798,7 @@ test("a historical lookup completing after disposal cannot publish", async () =>
     },
   };
   const releaseFragment = retainTurnFinalFragment({
-    agentId, sourceKey: "old", messageId: "old", text: "old final", timestamp: 1,
+    agentId, sourceKey: "old", messageId: "old", text: "old final", timestamp: 1, phase: "complete",
   });
   const releaseIndex = retainTurnIndex(agentId, timeline, 0);
   let publications = 0;

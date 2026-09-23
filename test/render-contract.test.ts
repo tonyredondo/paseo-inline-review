@@ -265,6 +265,15 @@ test("streamed final fragments render as slices of one card", () => {
   assert.match(timelineSource, /finalCardPosition === "end"/);
 });
 
+test("streaming assistant text preserves completed paragraph renderers", () => {
+  const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
+  assert.match(timelineSource, /createStableParagraphs/);
+  assert.match(timelineSource, /const ReviewParagraph = memo\(/);
+  assert.match(timelineSource, /paragraphStream\.current!\.update\(revealed\)/);
+  assert.match(timelineSource, /paragraphs\.map\(\(paragraph, index\) => \(\s*<ReviewParagraph/);
+  assert.match(timelineSource, /selectable=\{platform === "web" \? undefined : platform !== "ios"\}/);
+});
+
 test("file tabs are owned by one context and use the host's real tab close control", () => {
   const entrySource = String(readFileSync(path.resolve("index.client.tsx")));
   const panelSource = String(readFileSync(path.resolve("client/panel.tsx")));

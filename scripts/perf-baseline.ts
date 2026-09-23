@@ -4,6 +4,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { createCommentSyncController } from "../client/comment-sync.ts";
 import { createImagePreviewStore } from "../client/image-preview-store.ts";
 import { createStableReferenceDefinitions } from "../client/markdown-stream.ts";
+import { createStableParagraphs } from "../client/paragraph-stream.ts";
 import {
   clearMarkdownCache,
   compileMarkdown,
@@ -106,6 +107,32 @@ function measureStreamingReferences(lineCount: number): Measurement {
     incrementalInspectedCharacters: diagnostics.inspectedCharacters,
     scanReduction: 1 - diagnostics.inspectedCharacters / naiveInputCharacters,
     publications: diagnostics.publications,
+    elapsedMs: performance.now() - started,
+  };
+}
+
+function measureStreamingParagraphs(size: number, updateCount: number): Measurement {
+  const text = markdownFixture(size);
+  const paragraphs = createStableParagraphs();
+  let naiveInputCharacters = 0;
+  let rendered: string[] = [];
+  const started = performance.now();
+  for (let update = 1; update <= updateCount; update += 1) {
+    const end = Math.ceil((text.length * update) / updateCount);
+    const snapshot = text.slice(0, end);
+    naiveInputCharacters += snapshot.length;
+    rendered = paragraphs.update(snapshot);
+  }
+  const diagnostics = paragraphs.diagnostics();
+  return {
+    updates: updateCount,
+    finalInputCharacters: text.length,
+    finalParagraphs: rendered.length,
+    naiveFullScanCharacters: naiveInputCharacters,
+    incrementalInspectedCharacters: diagnostics.inspectedCharacters,
+    incrementalMaterializedCharacters: diagnostics.materializedCharacters,
+    scanReduction: 1 - diagnostics.inspectedCharacters / naiveInputCharacters,
+    fullRebuilds: diagnostics.fullRebuilds,
     elapsedMs: performance.now() - started,
   };
 }
@@ -228,7 +255,7 @@ function measureCompressionExperiment(): Measurement {
 const commentSync = await Promise.all([1, 9, 100].map(measureCommentSync));
 const thumbnailStore = await measureThumbnailStore();
 const report = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   scenarios: {
     commentSync,
     turnHistory: {
@@ -241,6 +268,8 @@ const report = {
     markdown: {
       completed: [10_000, 100_000, 500_000].map(measureMarkdown),
       streamingReferences: measureStreamingReferences(2_000),
+      streamingParagraphs: [10_000, 100_000, 500_000]
+        .map((size) => measureStreamingParagraphs(size, 200)),
     },
     code: {
       collapsed: measureCode(500, 40),

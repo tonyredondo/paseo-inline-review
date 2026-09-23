@@ -70,7 +70,8 @@ interface AgentTurnIndex {
   subscribe(cb: () => void): () => void;
   isFinal(messageId: string | null): boolean;
   isFinalText(text: string | null): boolean;
-  ensureKnown(messageId: string | null, text: string | null): void;
+  ensureKnown(sourceKey: string, messageId: string | null, text: string | null): void;
+  forgetKnown(sourceKey: string): void;
 }
 
 function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
@@ -435,12 +436,20 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     isFinalText(text: string | null): boolean {
       return text !== null && finalTexts.has(text);
     },
-    ensureKnown(messageId: string | null, text: string | null): void {
+    ensureKnown(sourceKey: string, messageId: string | null, text: string | null): void {
       if (stopped || (messageId === null && text === null)) return;
       const request = { id: messageId, text };
-      if (isKnown(request)) return;
-      requestedMessages.set(`${messageId ?? ""}\u0000${text ?? ""}`, request);
+      if (isKnown(request)) {
+        requestedMessages.delete(sourceKey);
+        return;
+      }
+      // One mounted source owns one lookup. A completed snapshot replaces any
+      // earlier candidate instead of retaining every streamed text prefix.
+      requestedMessages.set(sourceKey, request);
       startBackfill();
+    },
+    forgetKnown(sourceKey: string): void {
+      requestedMessages.delete(sourceKey);
     },
   };
 }
@@ -462,6 +471,7 @@ type TurnFinalFragment = {
   messageId: string | null;
   text: string;
   timestamp: number;
+  phase: "streaming" | "complete";
   order: number;
   visible: boolean;
   token: symbol;
@@ -498,6 +508,7 @@ export type TurnFinalFragmentInput = {
   messageId: string | null;
   text: string;
   timestamp: number;
+  phase: "streaming" | "complete";
 };
 
 /**
@@ -529,11 +540,13 @@ export function mountTurnFinalFragment(input: TurnFinalFragmentInput): {
       messageId: next.messageId,
       text: next.text,
       timestamp: next.timestamp,
+      phase: next.phase,
       order: existing?.order ?? nextFinalFragmentOrder++,
       visible,
       token,
     });
-    index?.ensureKnown(next.messageId, next.text);
+    if (next.phase === "streaming") index?.forgetKnown(input.sourceKey);
+    else index?.ensureKnown(input.sourceKey, next.messageId, next.text);
     if (topologyChanged) notifyFinalFragments(input.agentId);
   }
 
@@ -544,6 +557,7 @@ export function mountTurnFinalFragment(input: TurnFinalFragmentInput): {
       const current = finalFragments.get(input.agentId)?.get(input.sourceKey);
       if (!current || current.token !== token) return;
       fragments.delete(input.sourceKey);
+      stores.get(input.agentId)?.index.forgetKnown(input.sourceKey);
       if (fragments.size === 0) finalFragments.delete(input.agentId);
       notifyFinalFragments(input.agentId);
     },
@@ -652,7 +666,9 @@ export function retainTurnIndex(
       stores.set(agentId, stored);
       index.start();
       for (const fragment of finalFragments.get(agentId)?.values() ?? []) {
-        index.ensureKnown(fragment.messageId, fragment.text);
+        if (fragment.phase === "complete") {
+          index.ensureKnown(fragment.sourceKey, fragment.messageId, fragment.text);
+        }
       }
     } catch {
       return () => {};

@@ -11,6 +11,7 @@ const files = [
   "client/image-preview-store.ts",
   "client/markdown-compile.ts",
   "client/markdown-stream.ts",
+  "client/paragraph-stream.ts",
   "client/markdown-span.tsx",
   "client/markdown.tsx",
   "client/panel.tsx",

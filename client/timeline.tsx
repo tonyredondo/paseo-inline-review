@@ -21,7 +21,7 @@ import {
   updateTurnAgentStatus,
 } from "./turn-final-store";
 import { z } from "zod";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Image, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   openLocalFileRpc,
@@ -34,7 +34,6 @@ import {
   commentBelongsToReviewSource,
   findReviewCommentParagraphIndex,
   reviewCommentMatchesParagraph,
-  splitParagraphs,
   looksLikeSentReview,
   parseReviewMessage,
   type ReviewComment,
@@ -54,6 +53,7 @@ import {
 import { FileCodeBlock, MarkdownText } from "./markdown";
 import { downloadLocalFileProgressively, formatFileSize } from "./file-download";
 import { createStableReferenceDefinitions } from "./markdown-stream";
+import { createStableParagraphs } from "./paragraph-stream";
 import { createStreamingTextCoalescer } from "./stream-text";
 import { DownloadCancelledError } from "./web";
 import { WideFrameController, useWideFrameControllerOwner } from "./wide-frame-controller";
@@ -95,14 +95,14 @@ function withAlpha(hex: string, alpha: number): string {
 }
 
 function commentAnchorsHere(
-  data: ReviewItemData,
+  messageId: string | null,
   paragraph: string,
   index: number,
   comment: ReviewComment,
 ): boolean {
   // Per-list-item comments render inside their item row, never chunk-level.
   if (comment.itemIndex !== undefined && comment.itemIndex !== null) return false;
-  if (comment.messageId !== null && comment.messageId !== data.messageId) return false;
+  if (comment.messageId !== null && comment.messageId !== messageId) return false;
   if (comment.paragraphIndex !== index) return false;
   return reviewCommentMatchesParagraph(comment, paragraph);
 }
@@ -357,6 +357,127 @@ function CommentCard({
   );
 }
 
+const ReviewParagraph = memo(function ReviewParagraph({
+  paragraph,
+  index,
+  messageId,
+  phase,
+  sourceKey,
+  theme,
+  compact,
+  platform,
+  refs,
+  workspaceRoot,
+  comments,
+  editing,
+  editorNode,
+  commentsStyle,
+  onSetEditing,
+  onChunkTap,
+  onListItemTap,
+  onLocalFilePress,
+}: {
+  paragraph: string;
+  index: number;
+  messageId: string | null;
+  phase: ReviewItemData["phase"];
+  sourceKey: string;
+  theme: PluginTheme;
+  compact: boolean;
+  platform: string;
+  refs: Map<string, string>;
+  workspaceRoot: string | null;
+  comments: ReviewComment[];
+  editing: EditingTarget | null;
+  editorNode: ReactNode;
+  commentsStyle: object;
+  onSetEditing(next: EditingTarget | null): void;
+  onChunkTap(chunkIndex: number, itemIndex: number, itemText: string): void;
+  onListItemTap(chunkIndex: number, itemIndex: number, itemText: string, event?: unknown): void;
+  onLocalFilePress(target: LocalFileTarget): void;
+}) {
+  const anchored = comments.filter((comment) =>
+    commentAnchorsHere(messageId, paragraph, index, comment),
+  );
+  const itemEditing = editing?.itemIndex !== null && editing?.itemIndex !== undefined;
+  const openParagraphEditor = (): void => {
+    onSetEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" });
+  };
+  const listExtras = (itemIndex: number): ReactNode => (
+    <>
+      {editing?.itemIndex === itemIndex ? editorNode : null}
+      {listItemComments(comments, index, itemIndex).map((comment) => (
+        <CommentCard
+          key={comment.id}
+          comment={comment}
+          theme={theme}
+          onEdit={() =>
+            onSetEditing({
+              paragraphIndex: index,
+              itemIndex,
+              paragraphText: comment.paragraphText,
+              draft: comment.text,
+              commentId: comment.id,
+            })
+          }
+          onRemove={() => removeComment(comment.id)}
+        />
+      ))}
+    </>
+  );
+  const markdown = (
+    <MarkdownText
+      text={paragraph}
+      cacheKey={phase === "complete" ? `${messageId ?? sourceKey}:${index}` : undefined}
+      theme={theme}
+      compact={compact}
+      refs={refs}
+      selectable={platform === "web" ? undefined : platform !== "ios"}
+      onChunkPress={platform === "web" ? undefined : () => onChunkTap(index, -1, paragraph)}
+      onCommentRequest={openParagraphEditor}
+      localFileResolver={(url) => classifyLocalFileLink(url, { workspaceRoot })}
+      onLocalFilePress={onLocalFilePress}
+      onListItemPress={(itemIndex, itemText, event) => onListItemTap(index, itemIndex, itemText, event)}
+      listItemExtras={listExtras}
+    />
+  );
+
+  return (
+    <View style={commentsStyle}>
+      {platform === "web" ? (
+        <Pressable
+          style={{ cursor: "text", userSelect: "text" } as object}
+          onPress={(event) => {
+            const native = event.nativeEvent as unknown as { metaKey?: boolean; ctrlKey?: boolean };
+            if (native.metaKey || native.ctrlKey) openParagraphEditor();
+          }}
+        >
+          {markdown}
+        </Pressable>
+      ) : (
+        <View>{markdown}</View>
+      )}
+      {editing && !itemEditing ? editorNode : null}
+      {anchored.map((comment) => (
+        <CommentCard
+          key={comment.id}
+          comment={comment}
+          theme={theme}
+          onEdit={() =>
+            onSetEditing({
+              paragraphIndex: index,
+              paragraphText: comment.paragraphText,
+              draft: comment.text,
+              commentId: comment.id,
+            })
+          }
+          onRemove={() => removeComment(comment.id)}
+        />
+      ))}
+    </View>
+  );
+});
+
 /** Compact card replacing the raw review text in the timeline. */
 /** Dotted-line divider for compaction markers (replaces the host hairline). */
 function CompactionDivider({
@@ -577,6 +698,8 @@ function ReviewAssistantMessage({
     () => referenceDefinitions.current!.update(revealed),
     [revealed],
   );
+  const paragraphStream = useRef<ReturnType<typeof createStableParagraphs> | null>(null);
+  if (!paragraphStream.current) paragraphStream.current = createStableParagraphs();
   const finalFragmentHandle = useRef<ReturnType<typeof mountTurnFinalFragment> | null>(null);
   useEffect(() => {
     const handle = mountTurnFinalFragment({
@@ -585,6 +708,7 @@ function ReviewAssistantMessage({
       messageId: data.messageId,
       text: revealed,
       timestamp: timestampValue,
+      phase: data.phase,
     });
     finalFragmentHandle.current = handle;
     return () => {
@@ -597,9 +721,13 @@ function ReviewAssistantMessage({
       messageId: data.messageId,
       text: revealed,
       timestamp: timestampValue,
+      phase: data.phase,
     });
-  }, [data.messageId, revealed, timestampValue]);
-  const paragraphs = useMemo(() => splitParagraphs(revealed), [revealed]);
+  }, [data.messageId, data.phase, revealed, timestampValue]);
+  const paragraphs = useMemo(
+    () => paragraphStream.current!.update(revealed),
+    [revealed],
+  );
   const comments = useMessageComments(agentId, data, sourceKey);
   const reanchoredVersions = useRef(new Map<string, string>());
   // Re-anchor streaming-time comments once the complete message exists: bind
@@ -728,7 +856,7 @@ function ReviewAssistantMessage({
     [theme, layout.compact, finalCardPosition],
   );
 
-  function handleChunkTap(chunkIndex: number, itemIndex: number = -1, itemText: string = ""): void {
+  const handleChunkTap = useCallback((chunkIndex: number, itemIndex: number, itemText: string): void => {
     // Touch: a double-tap on the same chunk (or list item) opens the editor, so
     // single taps and long-presses stay free for scroll and native selection.
     const now = Date.now();
@@ -738,21 +866,21 @@ function ReviewAssistantMessage({
       setEditing({
         paragraphIndex: chunkIndex,
         itemIndex: itemIndex >= 0 ? itemIndex : null,
-        paragraphText: itemIndex >= 0 ? itemText : paragraphs[chunkIndex] ?? "",
+        paragraphText: itemText,
         draft: "",
       });
       return;
     }
     lastTapRef.current = { index: chunkIndex, itemIndex, at: now };
-  }
+  }, []);
 
   /** List item taps: web opens per-item with Cmd/Ctrl; native uses double-tap. */
-  function handleListItemTap(
+  const handleListItemTap = useCallback((
     chunkIndex: number,
     itemIndex: number,
     itemText: string,
     event?: unknown,
-  ): void {
+  ): void => {
     const carrier = event as {
       preventDefault?: () => void;
       nativeEvent?: { metaKey?: boolean; ctrlKey?: boolean };
@@ -771,9 +899,9 @@ function ReviewAssistantMessage({
       return;
     }
     handleChunkTap(chunkIndex, itemIndex, itemText);
-  }
+  }, [handleChunkTap, layout.platform]);
 
-  function handleLocalFilePress(target: LocalFileTarget): void {
+  const handleLocalFilePress = useCallback((target: LocalFileTarget): void => {
     // Desktop and tablets (iPad): open the review panel tab with the file
     // preview — the panel is the large surface (the host sheet caps at
     // 520px with no size escape). Phones get the host bottom sheet.
@@ -826,7 +954,7 @@ function ReviewAssistantMessage({
     }).catch(() => {
       toast.error("Could not open the file.");
     });
-  }
+  }, [agentId, agentWorkspaceId, layout.compact, layout.platform, openLocalFile, toast]);
 
   function openFileOnAgentMachine(): void {
     if (!filePreview) return;
@@ -933,127 +1061,29 @@ function ReviewAssistantMessage({
     <>
       {ownsWideFrameController ? <WideFrameController theme={theme} layout={layout} /> : null}
       <View testID="inline-review-root" style={styles.root}>
-      {paragraphs.map((paragraph, index) => {
-        const anchored = comments.filter((comment) =>
-          commentAnchorsHere(data, paragraph, index, comment),
-        );
-        const isEditing = editing !== null && editing.paragraphIndex === index;
-        const itemEditing = isEditing && editing.itemIndex !== null && editing.itemIndex !== undefined;
-        return (
-          <View key={index} style={styles.comments}>
-            {layout.platform === "web" ? (
-              <Pressable
-                // Web: keep the text cursor and selectable text; only the
-                // platform modifier opens the inline comment editor, so a
-                // normal drag selects text.
-                style={{ cursor: "text", userSelect: "text" } as object}
-                onPress={(event) => {
-                  const native = event.nativeEvent as unknown as {
-                    metaKey?: boolean;
-                    ctrlKey?: boolean;
-                  };
-                  if (native.metaKey || native.ctrlKey) {
-                    setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" });
-                  }
-                }}
-              >
-                <MarkdownText
-                  text={paragraph}
-                  cacheKey={data.phase === "complete" ? `${data.messageId ?? sourceKey}:${index}` : undefined}
-                  theme={theme}
-                  compact={layout.compact}
-                  refs={refs}
-                  onCommentRequest={() => setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })}
-                  localFileResolver={(url) => classifyLocalFileLink(url, { workspaceRoot })}
-                  onLocalFilePress={handleLocalFilePress}
-                  onListItemPress={(itemIndex, itemText, event) => handleListItemTap(index, itemIndex, itemText, event)}
-                  listItemExtras={(itemIndex) => (
-                    <>
-                      {editing !== null && editing.paragraphIndex === index && editing.itemIndex === itemIndex ? editorNode : null}
-                      {listItemComments(comments, index, itemIndex).map((comment) => (
-                        <CommentCard
-                          key={comment.id}
-                          comment={comment}
-                          theme={theme}
-                          onEdit={() =>
-                            setEditing({
-                              paragraphIndex: index,
-                              itemIndex,
-                              paragraphText: comment.paragraphText,
-                              draft: comment.text,
-                              commentId: comment.id,
-                            })
-                          }
-                          onRemove={() => removeComment(comment.id)}
-                        />
-                      ))}
-                    </>
-                  )}
-                />
-              </Pressable>
-            ) : (
-              // Native: no Pressable (it cancels text selection). Texts are
-              // selectable and the double-tap opens the comment editor.
-              <View>
-                <MarkdownText
-                  text={paragraph}
-                  cacheKey={data.phase === "complete" ? `${data.messageId ?? sourceKey}:${index}` : undefined}
-                  theme={theme}
-                  compact={layout.compact}
-                  refs={refs}
-                  // iOS: RN selectable Text is block-level-only (Copy menu);
-                  // disable selection there entirely per user decision.
-                  selectable={layout.platform !== "ios"}
-                  onChunkPress={() => handleChunkTap(index)}
-                  onCommentRequest={() => setEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" })}
-                  localFileResolver={(url) => classifyLocalFileLink(url, { workspaceRoot })}
-                  onLocalFilePress={handleLocalFilePress}
-                  onListItemPress={(itemIndex, itemText, event) => handleListItemTap(index, itemIndex, itemText, event)}
-                  listItemExtras={(itemIndex) => (
-                    <>
-                      {editing !== null && editing.paragraphIndex === index && editing.itemIndex === itemIndex ? editorNode : null}
-                      {listItemComments(comments, index, itemIndex).map((comment) => (
-                        <CommentCard
-                          key={comment.id}
-                          comment={comment}
-                          theme={theme}
-                          onEdit={() =>
-                            setEditing({
-                              paragraphIndex: index,
-                              itemIndex,
-                              paragraphText: comment.paragraphText,
-                              draft: comment.text,
-                              commentId: comment.id,
-                            })
-                          }
-                          onRemove={() => removeComment(comment.id)}
-                        />
-                      ))}
-                    </>
-                  )}
-                />
-              </View>
-            )}
-            {isEditing && !itemEditing ? editorNode : null}
-            {anchored.map((comment) => (
-              <CommentCard
-                key={comment.id}
-                comment={comment}
-                theme={theme}
-                onEdit={() =>
-                  setEditing({
-                    paragraphIndex: index,
-                    paragraphText: comment.paragraphText,
-                    draft: comment.text,
-                    commentId: comment.id,
-                  })
-                }
-                onRemove={() => removeComment(comment.id)}
-              />
-            ))}
-          </View>
-        );
-      })}
+      {paragraphs.map((paragraph, index) => (
+        <ReviewParagraph
+          key={index}
+          paragraph={paragraph}
+          index={index}
+          messageId={data.messageId}
+          phase={data.phase}
+          sourceKey={sourceKey}
+          theme={theme}
+          compact={layout.compact}
+          platform={layout.platform}
+          refs={refs}
+          workspaceRoot={workspaceRoot}
+          comments={comments}
+          editing={editing?.paragraphIndex === index ? editing : null}
+          editorNode={editing?.paragraphIndex === index ? editorNode : null}
+          commentsStyle={styles.comments}
+          onSetEditing={setEditing}
+          onChunkTap={handleChunkTap}
+          onListItemTap={handleListItemTap}
+          onLocalFilePress={handleLocalFilePress}
+        />
+      ))}
       {finalCardPosition === "start" || finalCardPosition === "middle" ? (
         <View pointerEvents="none" style={styles.cardBridge} />
       ) : null}
