@@ -476,6 +476,41 @@ test("starting a new user turn keeps the previous final card while history catch
   release();
 });
 
+test("an identified user boundary closes a preceding anonymous assistant turn", async () => {
+  const agentId = `mixed-turn-boundary-${Date.now()}`;
+  const timeline = {
+    subscribe(): () => void { return () => {}; },
+    async refetch() {
+      return {
+        entries: [
+          {
+            item: {
+              type: "assistant_message",
+              messageId: "anonymous-final",
+              text: "Previous final response.",
+            },
+            seqEnd: 1,
+          },
+          {
+            item: { type: "user_message", messageId: "identified-user", text: "Follow up." },
+            turnId: "turn-2",
+            seqEnd: 2,
+          },
+        ],
+        agent: { status: "running" },
+        hasOlder: false,
+      };
+    },
+  };
+
+  const release = retainTurnIndex(agentId, timeline, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(isTurnFinalMessage(agentId, "anonymous-final"), true);
+  assert.equal(isTurnFinalText(agentId, "Previous final response."), true);
+  release();
+});
+
 test("a native fragment without an id matches final text after host separators are removed", async () => {
   const agentId = `native-normalized-final-${Date.now()}`;
   let notify: ((message: unknown) => void) | null = null;

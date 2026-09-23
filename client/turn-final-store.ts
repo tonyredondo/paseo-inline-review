@@ -193,17 +193,19 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     let anonymousAssistant: Entry | null = null;
     let anonymousToolSeq = Number.NEGATIVE_INFINITY;
     for (const entry of entries) {
-      if (entry.turnId) continue;
-      if (entry.kind === "assistant") {
-        anonymousAssistant = entry;
-      } else if (entry.kind === "tool") {
-        anonymousToolSeq = Math.max(anonymousToolSeq, entry.seq);
-      } else {
+      if (entry.kind === "user") {
         if (anonymousAssistant && anonymousAssistant.seq > anonymousToolSeq) {
           selected.push(anonymousAssistant);
         }
         anonymousAssistant = null;
         anonymousToolSeq = Number.NEGATIVE_INFINITY;
+        continue;
+      }
+      if (entry.turnId) continue;
+      if (entry.kind === "assistant") {
+        anonymousAssistant = entry;
+      } else {
+        anonymousToolSeq = Math.max(anonymousToolSeq, entry.seq);
       }
     }
     if (anonymousAssistant && anonymousAssistant.seq > anonymousToolSeq) {
