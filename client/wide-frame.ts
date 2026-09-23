@@ -625,8 +625,13 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
         mutations,
         markerSelector,
       });
-      if (work.repairWidenedStyles) scheduleStyleOnly();
-      for (const scope of work.scopes) schedule(scope);
+      // MutationObserver callbacks run before the browser paints. Repair the
+      // width inside this callback: deferring to requestAnimationFrame can
+      // expose one frame at the host's native 820px width when React rewrites
+      // an existing wrapper or mounts a new one late in the current frame.
+      if (work.repairWidenedStyles) applyStylesOnly();
+      if (work.scopes.length === 1) apply(work.scopes[0]);
+      else if (work.scopes.length > 1) apply();
       if (work.repairWidenedStyles || work.scopes.length > 0) adaptiveSweep.wake();
     });
     observer.observe(observerRoot, {

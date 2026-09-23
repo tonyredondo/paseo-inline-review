@@ -5,6 +5,8 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 
+import { classifyWideFrameMutations } from "../client/wide-frame-mutations.ts";
+
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 
 type FakeElement = {
@@ -279,6 +281,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   const frames = new Map<number, () => void>();
   let observerConstructions = 0;
   let observerDisconnections = 0;
+  let observerCallback: ((mutations: unknown) => void) | null = null;
   let observedRoot: FakeElement | null = null;
   let nextFrame = 1;
   const document = {
@@ -289,6 +292,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   const globals = globalThis as unknown as Record<string, unknown>;
   globals.__wideFramePlatform = { OS: "web" };
   globals.__wideFrameDocument = document;
+  globals.__wideFrameClassify = classifyWideFrameMutations;
   globals.__wideFrameWindow = {
     document,
     innerWidth: 1200,
@@ -303,8 +307,9 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     },
     cancelAnimationFrame(id: number) { frames.delete(id); },
     MutationObserver: class {
-      constructor(_callback: (mutations: unknown) => void) {
+      constructor(callback: (mutations: unknown) => void) {
         observerConstructions += 1;
+        observerCallback = callback;
       }
       observe(root: FakeElement) {
         observedRoot = root;
@@ -329,7 +334,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
       const createAdaptiveSweep = () => ({ start() {}, stop() {}, wake() {} });
     `)
     .replace(/import \{ classifyWideFrameMutations[^;]+;/, `
-      const classifyWideFrameMutations = () => ({ repairWidenedStyles: false, scopes: [] });
+      const classifyWideFrameMutations = globalThis.__wideFrameClassify;
     `)
     .replace(
       "const g = globalThis as unknown as WWin & { document?: WDoc };",
@@ -359,6 +364,30 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(imageOne.style.flexShrink, "0");
   assert.equal(trail.style.position, "relative");
   assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
+
+  // React can rewrite an already widened host wrapper after the current frame
+  // has started. Waiting for another animation frame leaves one visible paint
+  // at the native 820px width; the observer must repair it synchronously.
+  capped.style.maxWidth = "820px";
+  const deliverMutations = observerCallback as unknown as (mutations: unknown) => void;
+  assert.equal(typeof deliverMutations, "function");
+  deliverMutations([{
+    target: capped,
+    attributeName: "style",
+    addedNodes: [],
+  }]);
+  assert.equal(capped.style.maxWidth, "1040px");
+
+  const liveCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const liveMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
+  append(liveCapped, liveMessage);
+  append(pane, liveCapped);
+  deliverMutations([{
+    target: pane,
+    addedNodes: [liveCapped],
+  }]);
+  assert.equal(liveCapped.style.maxWidth, "1040px");
+  assert.equal(frames.size, 0, "mutation repair finishes before another animation frame");
 
   const reenteredCapped = fakeElement({ width: 820, maxWidth: "820px" });
   const reenteredMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
@@ -394,5 +423,6 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
 
   delete globals.__wideFramePlatform;
   delete globals.__wideFrameDocument;
+  delete globals.__wideFrameClassify;
   delete globals.__wideFrameWindow;
 });
