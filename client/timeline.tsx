@@ -23,7 +23,7 @@ import {
   updateTurnAgentStatus,
 } from "./turn-final-store";
 import { z } from "zod";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Image, Platform, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   openLocalFileRpc,
@@ -33,7 +33,6 @@ import {
   sentReviewSchema,
   userMessageCardSchema,
   userMessageHasHostAttachments,
-  commentBelongsToReviewSource,
   findReviewCommentParagraphIndex,
   reviewCommentMatchesParagraph,
   looksLikeSentReview,
@@ -46,10 +45,10 @@ import {
 } from "../shared/review";
 import {
   addComment,
-  getCommentsForAgent,
+  getCommentsForSource,
   relocateComment,
   removeComment,
-  subscribe,
+  subscribeCommentsForSource,
   updateComment,
 } from "./review-store";
 import { FileCodeBlock, MarkdownText } from "./markdown";
@@ -123,14 +122,16 @@ function listItemComments(
 }
 
 function useMessageComments(agentId: string, data: ReviewItemData, sourceKey: string) {
-  const getAgentSnapshot = useCallback(() => getCommentsForAgent(agentId), [agentId]);
-  const all = useSyncExternalStore(subscribe, getAgentSnapshot, getAgentSnapshot);
-  return useMemo(
-    () => all.filter(
-      (comment) => comment.agentId === agentId && commentBelongsToReviewSource(comment, data.messageId, sourceKey),
-    ),
-    [all, agentId, data.messageId, sourceKey],
+  const subscribeToSource = useCallback(
+    (listener: () => void) =>
+      subscribeCommentsForSource(agentId, data.messageId, sourceKey, listener),
+    [agentId, data.messageId, sourceKey],
   );
+  const getSourceSnapshot = useCallback(
+    () => getCommentsForSource(agentId, data.messageId, sourceKey),
+    [agentId, data.messageId, sourceKey],
+  );
+  return useSyncExternalStore(subscribeToSource, getSourceSnapshot, getSourceSnapshot);
 }
 
 let nextMessageSourceKey = 1;
@@ -522,6 +523,10 @@ function timestampLabel(timestamp: Date): string {
 }
 
 /** Keeps hover state local so showing the controls does not rerender markdown. */
+type FinalCardControlsHandle = {
+  setHovered(next: boolean): void;
+};
+
 const FinalCardShell = memo(function FinalCardShell({
   children,
   style,
@@ -537,16 +542,54 @@ const FinalCardShell = memo(function FinalCardShell({
   theme: PluginTheme;
   platform: string;
 }) {
+  const controlsRef = useRef<FinalCardControlsHandle>(null);
+  return (
+    <View
+      testID="inline-review-root"
+      style={style}
+      onPointerMove={text !== null && platform === "web"
+        ? () => controlsRef.current?.setHovered(true)
+        : undefined}
+      onPointerLeave={text !== null && platform === "web"
+        ? () => controlsRef.current?.setHovered(false)
+        : undefined}
+    >
+      {children}
+      {text !== null ? (
+        <FinalCardControls
+          ref={controlsRef}
+          timestamp={timestamp}
+          text={text}
+          theme={theme}
+          platform={platform}
+        />
+      ) : null}
+    </View>
+  );
+});
+
+const FinalCardControls = memo(forwardRef<FinalCardControlsHandle, {
+  timestamp: Date;
+  text: string;
+  theme: PluginTheme;
+  platform: string;
+}>(function FinalCardControls({ timestamp, text, theme, platform }, ref) {
   const [hovered, setHovered] = useState(false);
+  const hoveredRef = useRef(false);
   const [focused, setFocused] = useState(false);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const updateHovered = useCallback((next: boolean) => {
+    if (hoveredRef.current === next) return;
+    hoveredRef.current = next;
+    setHovered(next);
+  }, []);
+  useImperativeHandle(ref, () => ({ setHovered: updateHovered }), [updateHovered]);
   useEffect(() => () => {
     if (copiedTimer.current) clearTimeout(copiedTimer.current);
   }, []);
 
   async function copy(): Promise<void> {
-    if (text === null) return;
     try {
       await copyText(text);
       setCopied(true);
@@ -557,53 +600,41 @@ const FinalCardShell = memo(function FinalCardShell({
     }
   }
 
-  const controlsVisible = text !== null && (
-    platform !== "web" || hovered || focused || copied
-  );
+  const controlsVisible = platform !== "web" || hovered || focused || copied;
   return (
     <View
-      testID="inline-review-root"
-      style={style}
-      onPointerMove={text !== null && platform === "web" ? () => setHovered(true) : undefined}
-      onPointerLeave={text !== null && platform === "web" ? () => setHovered(false) : undefined}
+      style={{
+        position: "absolute",
+        right: 12,
+        bottom: 4,
+        zIndex: 3,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        opacity: controlsVisible ? 1 : 0,
+      }}
     >
-      {children}
-      {text !== null ? (
-        <View
-          style={{
-            position: "absolute",
-            right: 12,
-            bottom: 4,
-            zIndex: 3,
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 8,
-            opacity: controlsVisible ? 1 : 0,
-          }}
-        >
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
-            {timestampLabel(timestamp)}
-          </Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Copy agent response"
-            hitSlop={6}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            onPress={() => void copy()}
-            style={{ minWidth: 18, minHeight: 18, alignItems: "center", justifyContent: "center" }}
-          >
-            <Icon
-              name={copied ? "Check" : "Copy"}
-              size={14}
-              color={copied ? theme.colors.accent : theme.colors.foregroundMuted}
-            />
-          </Pressable>
-        </View>
-      ) : null}
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+        {timestampLabel(timestamp)}
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Copy agent response"
+        hitSlop={6}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onPress={() => void copy()}
+        style={{ minWidth: 18, minHeight: 18, alignItems: "center", justifyContent: "center" }}
+      >
+        <Icon
+          name={copied ? "Check" : "Copy"}
+          size={14}
+          color={copied ? theme.colors.accent : theme.colors.foregroundMuted}
+        />
+      </Pressable>
     </View>
   );
-});
+}));
 
 /**
  * Native equivalent of the desktop user-message card. Web keeps Paseo's host

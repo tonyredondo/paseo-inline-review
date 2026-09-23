@@ -12,6 +12,23 @@ export type WideFrameMutation = {
   attributeName?: string;
 };
 
+type ParentLinked<T> = { parentElement: T | null };
+
+/** Returns the lowest node that contains every parent-linked input node. */
+export function lowestCommonAncestor<T extends ParentLinked<T>>(nodes: readonly T[]): T | null {
+  if (nodes.length === 0) return null;
+  for (let candidate: T | null = nodes[0]; candidate; candidate = candidate.parentElement) {
+    const containsEveryNode = nodes.every((node) => {
+      for (let current: T | null = node; current; current = current.parentElement) {
+        if (current === candidate) return true;
+      }
+      return false;
+    });
+    if (containsEveryNode) return candidate;
+  }
+  return null;
+}
+
 /**
  * Reduces a MutationObserver batch to the exact repair work it requires.
  * Keeping this DOM-independent makes the hot-path routing executable in Node:
@@ -29,6 +46,12 @@ export function classifyWideFrameMutations<T extends MutationNode>({
   const scopes = new Set<T>();
 
   for (const mutation of mutations) {
+    if (
+      mutation.attributeName === "data-testid" &&
+      mutation.target.matches?.(markerSelector)
+    ) {
+      scopes.add(mutation.target as T);
+    }
     if (
       mutation.attributeName === "style" &&
       mutation.target.dataset?.inlineReviewWide === "1"

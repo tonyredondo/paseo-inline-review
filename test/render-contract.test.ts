@@ -277,9 +277,21 @@ test("streamed final fragments render as slices of one card", () => {
   assert.match(timelineSource, /accessibilityLabel="Copy agent response"/);
   assert.match(timelineSource, /copyText\(text\)/);
   assert.match(timelineSource, /timestampLabel\(timestamp\)/);
+  const shellSource = timelineSource.slice(
+    timelineSource.indexOf("const FinalCardShell"),
+    timelineSource.indexOf("function UserMessageCard"),
+  );
+  const shellOnly = shellSource.slice(
+    shellSource.indexOf("const FinalCardShell"),
+    shellSource.indexOf("const FinalCardControls"),
+  );
+  assert.doesNotMatch(shellOnly, /useState\(|useEffect\(|setTimeout\(/);
+  assert.match(shellSource, /text !== null \? \(\s*<FinalCardControls/);
+  assert.match(shellSource, /controlsRef\.current\?\.setHovered\(true\)/);
+  assert.match(shellSource, /if \(hoveredRef\.current === next\) return/);
   assert.match(
-    timelineSource,
-    /onPointerMove=\{text !== null && platform === "web" \? \(\) => setHovered\(true\) : undefined\}/,
+    shellSource,
+    /onPointerMove=\{text !== null && platform === "web"/,
     "hover must bubble from markdown descendants across the complete card",
   );
   assert.doesNotMatch(timelineSource, /onPointerEnter=.*setHovered\(true\)/);

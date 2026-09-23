@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   addComment,
+  getCommentsForSource,
   getComments,
   hasPendingSaves,
   hydrate,
   markAgentCommentsSent,
   markCommentsSent,
   persistAgentNow,
+  relocateComment,
   registerPersist,
+  subscribeCommentsForSource,
   updateComment,
 } from "../client/review-store.ts";
 
@@ -219,4 +222,58 @@ test("duplicate detection keeps identical comments on different list items", asy
   assert.equal(getComments().filter((comment) => comment.agentId === agentId).length, 2);
   await persistAgentNow(agentId);
   await unregister();
+});
+
+test("one comment mutation notifies only its mounted message source", () => {
+  const agentId = `source-notifications-${Date.now()}`;
+  const notifications = Array.from({ length: 300 }, () => 0);
+  const unsubscribers = notifications.map((_, index) =>
+    subscribeCommentsForSource(agentId, `message-${index}`, `source-${index}`, () => {
+      notifications[index] += 1;
+    }),
+  );
+
+  addComment({
+    agentId,
+    messageId: "message-137",
+    paragraphIndex: 0,
+    paragraphText: "paragraph",
+    text: "comment",
+  });
+
+  assert.equal(notifications.reduce((total, count) => total + count, 0), 1);
+  assert.equal(notifications[137], 1);
+  assert.equal(getCommentsForSource(agentId, "message-137", "source-137").length, 1);
+  assert.equal(getCommentsForSource(agentId, "message-138", "source-138").length, 0);
+  unsubscribers.forEach((unsubscribe) => unsubscribe());
+});
+
+test("relocating a streaming comment notifies its old and completed sources", () => {
+  const agentId = `source-relocation-${Date.now()}`;
+  let streamingNotifications = 0;
+  let completedNotifications = 0;
+  const unsubscribeStreaming = subscribeCommentsForSource(agentId, null, "stream-source", () => {
+    streamingNotifications += 1;
+  });
+  const unsubscribeCompleted = subscribeCommentsForSource(agentId, "message-final", "unused", () => {
+    completedNotifications += 1;
+  });
+  const comment = addComment({
+    agentId,
+    messageId: null,
+    sourceKey: "stream-source",
+    paragraphIndex: 0,
+    paragraphText: "paragraph",
+    text: "comment",
+  });
+
+  assert.equal(streamingNotifications, 1);
+  assert.equal(completedNotifications, 0);
+  relocateComment(comment.id, "message-final", 0);
+  assert.equal(streamingNotifications, 2);
+  assert.equal(completedNotifications, 1);
+  assert.equal(getCommentsForSource(agentId, null, "stream-source").length, 0);
+  assert.equal(getCommentsForSource(agentId, "message-final", "unused").length, 1);
+  unsubscribeStreaming();
+  unsubscribeCompleted();
 });

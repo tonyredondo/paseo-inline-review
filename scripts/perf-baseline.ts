@@ -17,6 +17,8 @@ import {
   mountTurnFinalFragment,
   subscribeTurnFinalFragments,
 } from "../client/turn-final-store.ts";
+import { addComment, subscribeCommentsForSource } from "../client/review-store.ts";
+import { lowestCommonAncestor } from "../client/wide-frame-mutations.ts";
 
 type Measurement = Record<string, unknown>;
 
@@ -288,12 +290,90 @@ function measureTurnFragmentNotifications(rowCount: number): Measurement {
   };
 }
 
+function measureCommentNotificationFanout(rowCount: number): Measurement {
+  const agentId = `perf-comments-${rowCount}`;
+  let notifications = 0;
+  const unsubscribers = Array.from({ length: rowCount }, (_, index) =>
+    subscribeCommentsForSource(agentId, `message-${index}`, `source-${index}`, () => {
+      notifications += 1;
+    }),
+  );
+  const target = Math.floor(rowCount / 2);
+  const started = performance.now();
+  addComment({
+    agentId,
+    messageId: `message-${target}`,
+    sourceKey: `source-${target}`,
+    paragraphIndex: 0,
+    paragraphText: "target paragraph",
+    text: "benchmark comment",
+  });
+  const elapsedMs = performance.now() - started;
+  unsubscribers.forEach((unsubscribe) => unsubscribe());
+  return {
+    rows: rowCount,
+    commentMutations: 1,
+    subscriberNotifications: notifications,
+    notificationReductionVsGlobal: 1 - notifications / rowCount,
+    elapsedMs,
+  };
+}
+
+type ObserverNode = {
+  parentElement: ObserverNode | null;
+  children: ObserverNode[];
+};
+
+function observerNode(parentElement: ObserverNode | null = null): ObserverNode {
+  const node = { parentElement, children: [] as ObserverNode[] };
+  parentElement?.children.push(node);
+  return node;
+}
+
+function descendantCount(node: ObserverNode): number {
+  let count = 0;
+  const pending = [...node.children];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    count += 1;
+    pending.push(...current.children);
+  }
+  return count;
+}
+
+function measureWideFrameObserverScope(): Measurement {
+  // Mirrors the live desktop sample used for the optimization: 6,037 body
+  // descendants, 441 timeline descendants and 34 widened rows.
+  const body = observerNode();
+  const unrelated = observerNode(body);
+  for (let index = 0; index < 5_594; index += 1) observerNode(unrelated);
+  const timeline = observerNode(body);
+  const timelineNodes = Array.from({ length: 441 }, () => observerNode(timeline));
+  const widenedRows = timelineNodes.slice(0, 34);
+  const started = performance.now();
+  const observerRoot = lowestCommonAncestor(widenedRows);
+  const selectionMs = performance.now() - started;
+  if (observerRoot !== timeline) throw new Error("observer benchmark selected the wrong root");
+  const bodyDescendants = descendantCount(body);
+  const observedDescendants = descendantCount(observerRoot);
+  return {
+    widenedRows: widenedRows.length,
+    bodyDescendants,
+    observedDescendants,
+    subtreeReduction: 1 - observedDescendants / bodyDescendants,
+    bodyToTimelineRatio: bodyDescendants / observedDescendants,
+    shallowReplacementSentinels: 1,
+    selectionMs,
+  };
+}
+
 const commentSync = await Promise.all([1, 9, 100].map(measureCommentSync));
 const thumbnailStore = await measureThumbnailStore();
 const report = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   scenarios: {
     commentSync,
+    commentNotifications: measureCommentNotificationFanout(300),
     turnHistory: {
       initialTailRequests: 1,
       initialHistoricalRequests: 0,
@@ -302,6 +382,7 @@ const report = {
       historicalPageEntries: 200,
     },
     turnFragments: measureTurnFragmentNotifications(300),
+    wideFrameObserverScope: measureWideFrameObserverScope(),
     markdown: {
       completed: [10_000, 100_000, 500_000].map(measureMarkdown),
       streamingReferences: measureStreamingReferences(2_000),

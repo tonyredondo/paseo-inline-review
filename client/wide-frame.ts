@@ -12,7 +12,11 @@
 import { Platform } from "react-native";
 import { wideFrameSettings } from "../shared/wide-frame-settings";
 import { createAdaptiveSweep } from "./adaptive-sweep";
-import { classifyWideFrameMutations, type WideFrameMutation } from "./wide-frame-mutations";
+import {
+  classifyWideFrameMutations,
+  lowestCommonAncestor,
+  type WideFrameMutation,
+} from "./wide-frame-mutations";
 
 export { wideFrameSettings };
 
@@ -467,6 +471,7 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   let fullSweep = false;
   let stylePassPending = false;
   let disposed = false;
+  let rebindObserverRoot = (): void => {};
   const markerSelector = '[data-testid="inline-review-root"], [data-testid="user-message"], [data-testid="tool-call-group"]';
   const requestRun = (): void => {
     if (raf) return;
@@ -570,6 +575,7 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     const styleRoot = scope ?? doc;
     styleUserMessages(styleRoot, g, doc);
     tightenToolCallRows(styleRoot);
+    rebindObserverRoot();
   };
 
   refreshInstalled = (nextColors?: WideFrameColors): void => {
@@ -609,7 +615,7 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   // "old width" flash while items mount.
   const Observer = g.MutationObserver;
   if (Observer && doc.body) {
-    const observerRoot = doc.body;
+    const body = doc.body;
     const adaptiveSweep = createAdaptiveSweep({
       run: () => {
         const paneWidth = paneWidthCache;
@@ -647,19 +653,56 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
       if (work.repairWidenedStyles) applyStylesOnly();
       if (work.scopes.length === 1) {
         applyWidths(work.scopes[0]);
+        rebindObserverRoot();
         schedule(work.scopes[0]);
       } else if (work.scopes.length > 1) {
         applyWidths();
+        rebindObserverRoot();
         schedule();
       }
       if (work.repairWidenedStyles || work.scopes.length > 0) adaptiveSweep.wake();
     });
-    observer.observe(observerRoot, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["style"],
-    });
+    let observedRoot: WNode | null = null;
+    let observedParent: WNode | null = null;
+    const isUnderBody = (node: WNode): boolean => {
+      for (let current: WNode | null = node; current; current = current.parentElement) {
+        if (current === body) return true;
+      }
+      return false;
+    };
+    const observerRootForTimeline = (): WNode => {
+      const connected = [...widened].filter(isUnderBody);
+      const common = lowestCommonAncestor(connected);
+      if (!common || common === body) return body;
+      // With only one row mounted, observe its parent so the next sibling is
+      // still delivered without falling back to the document-wide subtree.
+      return common.dataset.inlineReviewWide === "1"
+        ? common.parentElement ?? common
+        : common;
+    };
+    rebindObserverRoot = (): void => {
+      const nextRoot = observerRootForTimeline();
+      const nextParent = nextRoot.parentElement;
+      if (nextRoot === observedRoot && nextParent === observedParent) return;
+      if (observedRoot) observer.disconnect();
+      observedRoot = nextRoot;
+      observedParent = nextParent;
+      observer.observe(nextRoot, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["style", "data-testid"],
+      });
+      // A shallow sentinel notices replacement of the complete timeline root
+      // without subscribing to style or descendant churn elsewhere in Paseo.
+      if (nextParent) {
+        observer.observe(nextParent, {
+          childList: true,
+          subtree: false,
+        });
+      }
+    };
+    rebindObserverRoot();
     observerCbs.push(() => observer.disconnect());
   }
   const onResize = (): void => schedule();

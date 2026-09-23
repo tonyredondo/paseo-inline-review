@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { classifyWideFrameMutations } from "../client/wide-frame-mutations.ts";
+import {
+  classifyWideFrameMutations,
+  lowestCommonAncestor,
+} from "../client/wide-frame-mutations.ts";
 
 type FakeNode = {
   parentElement: FakeNode | null;
@@ -72,4 +75,29 @@ test("a style rewrite inside a message repairs only that message subtree", () =>
   const result = classify([{ target: child, attributeName: "style", addedNodes: [] }]);
   assert.equal(result.repairWidenedStyles, false);
   assert.deepEqual(result.scopes, [message]);
+});
+
+test("a marker added after insertion schedules its own card subtree", () => {
+  const message = element("none", [], true);
+  const result = classify([{
+    target: message,
+    attributeName: "data-testid",
+    addedNodes: [],
+  }]);
+  assert.deepEqual(result.scopes, [message]);
+});
+
+test("lowestCommonAncestor finds the narrow shared timeline root", () => {
+  const body = element();
+  const timeline = element();
+  const first = element();
+  const second = element();
+  timeline.parentElement = body;
+  first.parentElement = timeline;
+  second.parentElement = timeline;
+
+  assert.equal(lowestCommonAncestor([first, second]), timeline);
+  assert.equal(lowestCommonAncestor([first]), first);
+  assert.equal(lowestCommonAncestor([]), null);
+  assert.equal(lowestCommonAncestor([first, element()]), null);
 });

@@ -263,6 +263,8 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
 });
 
 test("wide-frame styling is idempotent, bounded, and completely reversible", async () => {
+  const body = fakeElement({ width: 1440 });
+  const sidebar = fakeElement({ width: 200 });
   const pane = fakeElement({ width: 1200 });
   const staleCapped = fakeElement({ width: 1040, maxWidth: "1240px" });
   const staleToolCall = fakeElement({ attributes: { "data-testid": "tool-call-group" } });
@@ -281,18 +283,22 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   append(message, bubble);
   append(capped, message);
   append(pane, staleCapped, capped);
+  append(body, sidebar, pane);
 
   const resizeListeners = new Set<() => void>();
   const frames = new Map<number, () => void>();
   let observerConstructions = 0;
   let observerDisconnections = 0;
   let observerCallback: ((mutations: unknown) => void) | null = null;
-  let observedRoot: FakeElement | null = null;
+  const observations: Array<{
+    root: FakeElement;
+    options: { childList: boolean; subtree: boolean; attributes?: boolean; attributeFilter?: string[] };
+  }> = [];
   let nextFrame = 1;
   const document = {
-    body: pane,
+    body,
     createElement: () => fakeElement(),
-    querySelectorAll: (selector: string) => pane.querySelectorAll(selector),
+    querySelectorAll: (selector: string) => body.querySelectorAll(selector),
   };
   const globals = globalThis as unknown as Record<string, unknown>;
   globals.__wideFramePlatform = { OS: "web" };
@@ -316,8 +322,11 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
         observerConstructions += 1;
         observerCallback = callback;
       }
-      observe(root: FakeElement) {
-        observedRoot = root;
+      observe(
+        root: FakeElement,
+        options: { childList: boolean; subtree: boolean; attributes?: boolean; attributeFilter?: string[] },
+      ) {
+        observations.push({ root, options });
       }
       disconnect() {
         observerDisconnections += 1;
@@ -338,8 +347,20 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     .replace(/import \{ createAdaptiveSweep \}[^;]+;/, `
       const createAdaptiveSweep = () => ({ start() {}, stop() {}, wake() {} });
     `)
-    .replace(/import \{ classifyWideFrameMutations[^;]+;/, `
+    .replace(/import \{[\s\S]*?classifyWideFrameMutations[\s\S]*?\} from "\.\/wide-frame-mutations";/, `
       const classifyWideFrameMutations = globalThis.__wideFrameClassify;
+      const lowestCommonAncestor = (nodes) => {
+        if (nodes.length === 0) return null;
+        for (let candidate = nodes[0]; candidate; candidate = candidate.parentElement) {
+          if (nodes.every((node) => {
+            for (let current = node; current; current = current.parentElement) {
+              if (current === candidate) return true;
+            }
+            return false;
+          })) return candidate;
+        }
+        return null;
+      };
     `)
     .replace(
       "const g = globalThis as unknown as WWin & { document?: WDoc };",
@@ -354,7 +375,16 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
 
   module.ensureWideFrame({ accent: "#58a6ff", raised: "#242636", border: "#30363d" });
   assert.equal(observerConstructions, 1);
-  assert.equal(observedRoot, pane);
+  assert.equal(observations[0].root, pane, "the subtree observer must be scoped to the timeline root");
+  assert.equal(observations[0].options.subtree, true);
+  assert.deepEqual(observations[0].options.attributeFilter, ["style", "data-testid"]);
+  assert.equal(
+    observations[1].root,
+    body,
+    "a shallow parent sentinel may observe replacement of the timeline root",
+  );
+  assert.equal(observations[1].options.subtree, false);
+  assert.equal(observations[1].options.attributes, undefined);
   assert.equal(
     staleCapped.style.maxWidth,
     "1040px",
@@ -468,9 +498,65 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
   assert.equal(resizeListeners.size, 1);
 
+  // Paseo can replace the complete timeline subtree during navigation or
+  // re-entry. The shallow parent sentinel must discover the replacement and
+  // move the detailed observer without falling back to a body-wide subtree.
+  pane.remove();
+  const replacementPane = fakeElement({ width: 1200 });
+  const replacementCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const replacementMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
+  const replacementBubble = fakeElement({ backgroundColor: "rgb(36, 38, 54)" });
+  append(replacementMessage, replacementBubble);
+  append(replacementCapped, replacementMessage);
+  append(replacementPane, replacementCapped);
+  append(body, replacementPane);
+  deliverMutations([{
+    target: body,
+    addedNodes: [replacementPane],
+  }]);
+  assert.equal(replacementCapped.style.maxWidth, "1040px");
+  assert.equal(observerDisconnections, 1, "root replacement rebinds the detailed observer once");
+  assert.equal(observations.at(-2)?.root, replacementPane);
+  assert.equal(observations.at(-2)?.options.subtree, true);
+  assert.equal(observations.at(-1)?.root, body);
+  assert.equal(observations.at(-1)?.options.subtree, false);
+
+  // React may append the row before assigning its test id. The attribute
+  // transition itself must wake the card pass; otherwise the message keeps
+  // Paseo's default bubble until some unrelated mutation happens later.
+  for (const [frameId, callback] of [...frames]) {
+    frames.delete(frameId);
+    callback();
+  }
+  const lateCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const lateMessage = fakeElement();
+  const lateBubble = fakeElement({ backgroundColor: "rgb(36, 38, 54)" });
+  append(lateMessage, lateBubble);
+  append(lateCapped, lateMessage);
+  append(replacementPane, lateCapped);
+  deliverMutations([{ target: replacementPane, addedNodes: [lateCapped] }]);
+  assert.equal(lateMessage.style.backgroundColor, undefined, "an unmarked row is ignored");
+  lateMessage.setAttribute("data-testid", "user-message");
+  deliverMutations([{
+    target: lateMessage,
+    attributeName: "data-testid",
+    addedNodes: [],
+  }]);
+  assert.equal(lateCapped.style.maxWidth, "1040px");
+  assert.equal(frames.size, 1);
+  const lateCardFrame = [...frames.entries()][0];
+  assert.ok(lateCardFrame);
+  frames.delete(lateCardFrame[0]);
+  lateCardFrame[1]();
+  assert.equal(lateMessage.style.backgroundColor, "#242636");
+
+  // Reattach the detached fixture so cleanup can prove complete reversibility
+  // for both the old and replacement subtrees.
+  append(body, pane);
+
   const staleResize = [...resizeListeners][0];
   module.undoWideFrame();
-  assert.equal(observerDisconnections, 1);
+  assert.equal(observerDisconnections, 2);
   assert.equal(resizeListeners.size, 0);
   assert.equal(capped.style.maxWidth, "");
   assert.equal(capped.dataset.inlineReviewWide, "");

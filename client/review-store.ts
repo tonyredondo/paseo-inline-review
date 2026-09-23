@@ -3,8 +3,9 @@ import { compareReviewCommentVersions, type ReviewComment } from "../shared/revi
 type Listener = () => void;
 
 let comments: ReviewComment[] = [];
-let commentsByAgent = new Map<string, ReviewComment[]>();
+let commentsBySource = new Map<string, ReviewComment[]>();
 const listeners = new Set<Listener>();
+const sourceListeners = new Map<string, Set<Listener>>();
 const persistenceListeners = new Set<(agentId: string, pending: boolean) => void>();
 /**
  * Comment ids deleted on any device (this one included). They travel with
@@ -19,15 +20,52 @@ function addTombstones(agentId: string, ids: string[]): void {
   tombstones.set(agentId, set);
 }
 
-function emit(): void {
-  const nextByAgent = new Map<string, ReviewComment[]>();
-  for (const comment of comments) {
-    const bucket = nextByAgent.get(comment.agentId) ?? [];
-    bucket.push(comment);
-    nextByAgent.set(comment.agentId, bucket);
+function reviewSourceIndexKey(
+  agentId: string,
+  messageId: string | null,
+  sourceKey: string | null | undefined,
+): string {
+  return JSON.stringify([
+    agentId,
+    messageId === null ? "source" : "message",
+    messageId ?? sourceKey ?? "",
+  ]);
+}
+
+function stableBuckets(
+  previous: Map<string, ReviewComment[]>,
+  next: Map<string, ReviewComment[]>,
+): Map<string, ReviewComment[]> {
+  for (const [key, bucket] of next) {
+    const old = previous.get(key);
+    if (
+      old &&
+      old.length === bucket.length &&
+      old.every((comment, index) => comment === bucket[index])
+    ) {
+      next.set(key, old);
+    }
   }
-  commentsByAgent = nextByAgent;
+  return next;
+}
+
+function emit(): void {
+  const nextBySource = new Map<string, ReviewComment[]>();
+  for (const comment of comments) {
+    if (comment.messageId !== null || comment.sourceKey) {
+      const key = reviewSourceIndexKey(comment.agentId, comment.messageId, comment.sourceKey);
+      const sourceBucket = nextBySource.get(key) ?? [];
+      sourceBucket.push(comment);
+      nextBySource.set(key, sourceBucket);
+    }
+  }
+  const previousBySource = commentsBySource;
+  commentsBySource = stableBuckets(commentsBySource, nextBySource);
   for (const listener of listeners) listener();
+  for (const [key, listenersForSource] of sourceListeners) {
+    if (previousBySource.get(key) === commentsBySource.get(key)) continue;
+    for (const listener of listenersForSource) listener();
+  }
 }
 
 function touchComment(comment: ReviewComment, patch: Partial<ReviewComment>): ReviewComment {
@@ -62,9 +100,30 @@ export function getComments(): ReviewComment[] {
   return comments;
 }
 
-/** Stable per-agent snapshots prevent every mounted message filtering globally. */
-export function getCommentsForAgent(agentId: string): ReviewComment[] {
-  return commentsByAgent.get(agentId) ?? EMPTY_COMMENTS;
+/** Stable message/source snapshot used by one mounted timeline row. */
+export function getCommentsForSource(
+  agentId: string,
+  messageId: string | null,
+  sourceKey: string,
+): ReviewComment[] {
+  return commentsBySource.get(reviewSourceIndexKey(agentId, messageId, sourceKey)) ?? EMPTY_COMMENTS;
+}
+
+/** Notifies only the mounted row whose comment snapshot actually changed. */
+export function subscribeCommentsForSource(
+  agentId: string,
+  messageId: string | null,
+  sourceKey: string,
+  listener: Listener,
+): () => void {
+  const key = reviewSourceIndexKey(agentId, messageId, sourceKey);
+  const bucket = sourceListeners.get(key) ?? new Set<Listener>();
+  bucket.add(listener);
+  sourceListeners.set(key, bucket);
+  return () => {
+    bucket.delete(listener);
+    if (bucket.size === 0) sourceListeners.delete(key);
+  };
 }
 
 const EMPTY_COMMENTS: ReviewComment[] = [];

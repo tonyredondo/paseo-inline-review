@@ -1,6 +1,6 @@
 # Performance hardening implementation plan
 
-Status: implemented locally; automated and Paseo Desktop verification complete; physical iPhone verification pending
+Status: base implementation verified; 2026-09-23 follow-up implemented locally with automated verification complete; runtime reload withheld by request; physical iPhone verification pending
 Baseline revision: `f09ebdb5cb62c2960edff345d1f21284d090c991` (`main`)
 Scope: changes owned by `paseo-inline-review`; no Paseo host changes
 Primary clients: Paseo Desktop/Web and compact native clients, especially iPhone
@@ -54,6 +54,24 @@ The next real-thread profile found two remaining plugin-controlled costs and fix
 - Index retention, agent status, fragment mounting, and topology updates now use layout effects so a warm index can apply the correct card state before the next paint.
 
 Verification for this follow-up: 240 tests, TypeScript, `git diff --check`, 25 repeated focused lifecycle/fan-out runs, 25 repeated pre-paint contract runs, exact plugin reload, clean `Plugin ready`, and Desktop inspection of agent and user cards. The installed bundle is 259,296 raw bytes / 54,972 gzip bytes, an increase of 3,266 raw / 610 gzip bytes over the previously installed build. Physical iPhone verification remains pending.
+
+### Scoped notification and observer follow-up (2026-09-23)
+
+A later profile of a 300-row timeline and the live Desktop DOM found three remaining per-row or document-wide costs. This follow-up keeps all visible contracts unchanged:
+
+- Comment snapshots and subscriptions are now indexed by `agentId` plus message identity. Updating one comment wakes only the row whose snapshot changed; relocating an id-less streaming comment wakes the old and completed sources.
+- The detailed `MutationObserver` now follows the lowest common ancestor of widened timeline rows instead of the complete document body. A shallow parent sentinel detects timeline-root replacement and rebinds the detailed observer. Cleanup still disconnects the observer and restores every owned style.
+- Ordinary assistant rows retain the same stable outer shell but no longer mount the three control states, clipboard timer, or cleanup effect used by final cards. The interactive child exists only when the row is part of a final card, and repeated pointer movement while already hovered is deduplicated.
+- The observer now listens for `data-testid` assignment as well as style changes. This covers the host sequence where a row is inserted first and identified as `user-message` later; previously that sequence could leave the native bubble unstyled until unrelated activity woke the fallback sweep.
+
+Measured and automated evidence:
+
+- A single comment mutation with 300 mounted source subscriptions now emits 1 callback instead of 300: a 99.67% notification reduction.
+- The observer fixture mirrors the captured Desktop shape: 6,037 body descendants, 441 timeline descendants and 34 widened rows. The detailed observed subtree is 13.69 times smaller (92.70% fewer descendants), plus one shallow replacement sentinel.
+- The complete suite passes with 245 tests, including targeted regressions for source relocation, late marker assignment, root replacement, reversible cleanup and passive ordinary rows. The four focused files also pass 25 consecutive iterations. TypeScript and `git diff --check` pass.
+- The client-source proxy changed by +5,009 raw / +1,139 gzip bytes relative to `d335ce2`; it remains free of forbidden server, Node and image-processor imports. An authoritative installed-bundle measurement is intentionally deferred because the user requested no plugin reload.
+
+Before this follow-up was loaded, Paseo Desktop visibly showed a new image-bearing user message with the native bubble while the daemon still reported the plugin as `running`. That state was captured and left untouched. The late-`data-testid` regression reproduces a plugin blind spot consistent with the symptom, but the updated client has deliberately not been reloaded or visually validated yet.
 
 ### Bundle warning analysis
 
