@@ -529,7 +529,14 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     // Discover newly mounted 820-capped host elements (tool calls, user
     // messages, plugin items — everything shares the reading frame).
     for (const el of scanCandidates(scope)) {
-      if (el.dataset.inlineReviewWide === "1") continue;
+      // A client bundle replacement can leave our DOM marker in place after
+      // the module-local Set is gone. Adopt that wrapper into this instance;
+      // otherwise old rows keep the previous target while new rows use the
+      // newly measured width and the timeline splits into two columns.
+      if (el.dataset.inlineReviewWide === "1") {
+        widened.add(el);
+        continue;
+      }
       if (g.getComputedStyle(el).maxWidth === "820px") {
         el.dataset.inlineReviewWide = "1";
         widened.add(el);

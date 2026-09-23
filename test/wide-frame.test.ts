@@ -264,6 +264,11 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
 
 test("wide-frame styling is idempotent, bounded, and completely reversible", async () => {
   const pane = fakeElement({ width: 1200 });
+  const staleCapped = fakeElement({ width: 1040, maxWidth: "1240px" });
+  const staleToolCall = fakeElement({ attributes: { "data-testid": "tool-call-group" } });
+  staleCapped.dataset.inlineReviewWide = "1";
+  staleCapped.style.maxWidth = "1240px";
+  append(staleCapped, staleToolCall);
   const capped = fakeElement({ width: 820, maxWidth: "820px" });
   const message = fakeElement({ attributes: { "data-testid": "user-message" } });
   const bubble = fakeElement({ backgroundColor: "rgb(36, 38, 54)" });
@@ -275,7 +280,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   append(bubble, images, trail);
   append(message, bubble);
   append(capped, message);
-  append(pane, capped);
+  append(pane, staleCapped, capped);
 
   const resizeListeners = new Set<() => void>();
   const frames = new Map<number, () => void>();
@@ -350,6 +355,11 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   module.ensureWideFrame({ accent: "#58a6ff", raised: "#242636", border: "#30363d" });
   assert.equal(observerConstructions, 1);
   assert.equal(observedRoot, pane);
+  assert.equal(
+    staleCapped.style.maxWidth,
+    "1040px",
+    "a new plugin instance must adopt and normalize wrappers marked by the previous instance",
+  );
   assert.equal(capped.style.maxWidth, "1040px");
   assert.equal(message.style.maxWidth, "100%");
   assert.equal(message.style.paddingBottom, "8px");
