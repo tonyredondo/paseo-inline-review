@@ -270,9 +270,20 @@ test("file preview panels render detected images instead of the binary fallback"
 test("streamed final fragments render as slices of one card", () => {
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
   assert.match(timelineSource, /getTurnFinalCardPosition/);
+  assert.match(timelineSource, /getTurnFinalCardText/);
   assert.match(timelineSource, /cardBridge/);
   assert.match(timelineSource, /finalCardPosition === "start"/);
   assert.match(timelineSource, /finalCardPosition === "end"/);
+  assert.match(timelineSource, /accessibilityLabel="Copy agent response"/);
+  assert.match(timelineSource, /copyText\(text\)/);
+  assert.match(timelineSource, /timestampLabel\(timestamp\)/);
+  assert.match(
+    timelineSource,
+    /onPointerMove=\{text !== null && platform === "web" \? \(\) => setHovered\(true\) : undefined\}/,
+    "hover must bubble from markdown descendants across the complete card",
+  );
+  assert.doesNotMatch(timelineSource, /onPointerEnter=.*setHovered\(true\)/);
+  assert.doesNotMatch(timelineSource, /accessibilityLabel="Rewind agent response"/);
 });
 
 test("streaming assistant text preserves completed paragraph renderers", () => {

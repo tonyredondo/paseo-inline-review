@@ -3,6 +3,7 @@ import { after, test } from "node:test";
 import {
   disposeTurnIndexes,
   getTurnFinalCardPosition,
+  getTurnFinalCardText,
   isTurnFinalMessage,
   isTurnFinalText,
   mountTurnFinalFragment,
@@ -165,6 +166,13 @@ test("live fragments sharing the final id form one continuous card", async () =>
   assert.equal(getTurnFinalCardPosition(agentId, "first"), "start");
   assert.equal(getTurnFinalCardPosition(agentId, "divider"), "none");
   assert.equal(getTurnFinalCardPosition(agentId, "last"), "end");
+  assert.equal(
+    getTurnFinalCardText(agentId, "last"),
+    "First paragraph.\n\nLast paragraph.",
+    "the final slice copies the exact consolidated response",
+  );
+  assert.equal(getTurnFinalCardText(agentId, "first"), null);
+  assert.equal(getTurnFinalCardText(agentId, "divider"), null);
 
   releaseLast();
   releaseDivider();
@@ -758,6 +766,7 @@ test("an id-less fragment requests history once after it becomes complete", asyn
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(beforeCalls, 1);
   assert.equal(isTurnFinalText(agentId, "final text"), true);
+  assert.equal(getTurnFinalCardText(agentId, "transitioning-row"), "final text");
 
   fragment.release();
   releaseIndex();
@@ -906,14 +915,25 @@ test("timeline epoch replacement drops stale final classifications", async () =>
     },
   };
   const release = retainTurnIndex(agentId, timeline, 0);
+  const fragment = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "epoch-row",
+    messageId: "old",
+    text: "old",
+    timestamp: 1,
+    phase: "complete",
+  });
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(isTurnFinalMessage(agentId, "old"), true);
+  assert.equal(getTurnFinalCardText(agentId, "epoch-row"), "old");
   epoch = "second";
   (notify as unknown as () => void)();
   await new Promise<void>((resolve) => setTimeout(resolve, 450));
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(isTurnFinalMessage(agentId, "old"), false);
   assert.equal(isTurnFinalMessage(agentId, "new"), true);
+  assert.equal(getTurnFinalCardText(agentId, "epoch-row"), null);
+  fragment.release();
   release();
 });
 

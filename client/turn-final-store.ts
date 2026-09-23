@@ -45,6 +45,12 @@ function sameSet(current: Set<string>, next: Set<string>): boolean {
   return true;
 }
 
+function sameMap(current: Map<string, string>, next: Map<string, string>): boolean {
+  if (current.size !== next.size) return false;
+  for (const [key, value] of next) if (current.get(key) !== value) return false;
+  return true;
+}
+
 async function refetchWithTimeout(
   timeline: TimelineHandle,
   options: Parameters<TimelineHandle["refetch"]>[0],
@@ -73,6 +79,7 @@ interface AgentTurnIndex {
   subscribe(cb: () => void): () => void;
   isFinal(messageId: string | null): boolean;
   isFinalText(text: string | null): boolean;
+  finalText(messageId: string | null, text: string | null): string | null;
   ensureKnown(sourceKey: string, messageId: string | null, text: string | null): void;
   forgetKnown(sourceKey: string): void;
 }
@@ -80,6 +87,7 @@ interface AgentTurnIndex {
 function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   let finalIds = new Set<string>();
   let finalTexts = new Set<string>();
+  let finalTextById = new Map<string, string>();
   const olderEntries = new Map<number, Entry>();
   const tailEntries = new Map<number, Entry>();
   let orderedEntries: Entry[] | null = null;
@@ -225,14 +233,23 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
 
     const nextIds = new Set<string>();
     const nextTexts = new Set<string>();
+    const nextTextById = new Map<string, string>();
     const selection = selectFinalEntries(deduped, effectiveAgentStatus());
     for (const entry of selection) {
       if (entry.text) nextTexts.add(entry.text);
-      if (entry.id && idCounts.get(entry.id) === 1) nextIds.add(entry.id);
+      if (entry.id && entry.text && idCounts.get(entry.id) === 1) {
+        nextIds.add(entry.id);
+        nextTextById.set(entry.id, entry.text);
+      }
     }
-    if (sameSet(finalIds, nextIds) && sameSet(finalTexts, nextTexts)) return;
+    if (
+      sameSet(finalIds, nextIds) &&
+      sameSet(finalTexts, nextTexts) &&
+      sameMap(finalTextById, nextTextById)
+    ) return;
     finalIds = nextIds;
     finalTexts = nextTexts;
+    finalTextById = nextTextById;
     version += 1;
     for (const listener of listeners) listener();
   }
@@ -320,6 +337,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
         olderEntries.clear();
         finalIds = new Set();
         finalTexts = new Set();
+        finalTextById = new Map();
       }
       if (nextEpoch) timelineEpoch = nextEpoch;
       tailEntries.clear();
@@ -443,6 +461,13 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     },
     isFinalText(text: string | null): boolean {
       return text !== null && finalTexts.has(text);
+    },
+    finalText(messageId: string | null, text: string | null): string | null {
+      if (messageId !== null) {
+        const indexedText = finalTextById.get(messageId);
+        if (indexedText !== undefined) return indexedText;
+      }
+      return text !== null && finalTexts.has(text) ? text : null;
     },
     ensureKnown(sourceKey: string, messageId: string | null, text: string | null): void {
       if (stopped || (messageId === null && text === null)) return;
@@ -720,6 +745,16 @@ export function getTurnFinalCardPosition(
   finalFragmentPositionBuilds.set(agentId, (finalFragmentPositionBuilds.get(agentId) ?? 0) + 1);
   finalFragmentPositionCache.set(agentId, { fragmentVersion, indexVersion: index.version, positions });
   return positions.get(sourceKey) ?? "none";
+}
+
+/** Exact completed response owned by the visible end of one final card. */
+export function getTurnFinalCardText(agentId: string, sourceKey: string): string | null {
+  const position = getTurnFinalCardPosition(agentId, sourceKey);
+  if (position !== "single" && position !== "end") return null;
+  const fragment = finalFragments.get(agentId)?.get(sourceKey);
+  const index = stores.get(agentId)?.index;
+  if (!fragment || !index) return null;
+  return index.finalText(fragment.messageId, fragment.text);
 }
 
 const TURN_INDEX_GRACE_MS = 120_000;

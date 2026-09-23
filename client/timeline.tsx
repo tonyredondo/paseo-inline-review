@@ -1,6 +1,7 @@
 import type { PluginClientContext, PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import type { PluginTheme } from "@getpaseo/plugin";
 import {
+  copyText,
   Icon,
   Modal,
   TextInput,
@@ -12,6 +13,7 @@ import { classifyLocalFileLink, type LocalFileTarget } from "../shared/markdown-
 import { openFileTab } from "./preview-store";
 import {
   getTurnFinalCardPosition,
+  getTurnFinalCardText,
   mountTurnFinalFragment,
   retainTurnIndex,
   subscribeTurnIndex,
@@ -22,7 +24,7 @@ import {
 } from "./turn-final-store";
 import { z } from "zod";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Image, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, Platform, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   openLocalFileRpc,
   COMPACT_FILE_TRANSFER_CHUNK_BYTES,
@@ -519,6 +521,90 @@ function timestampLabel(timestamp: Date): string {
   return timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/** Keeps hover state local so showing the controls does not rerender markdown. */
+const FinalCardShell = memo(function FinalCardShell({
+  children,
+  style,
+  timestamp,
+  text,
+  theme,
+  platform,
+}: {
+  children: ReactNode;
+  style: StyleProp<ViewStyle>;
+  timestamp: Date;
+  text: string | null;
+  theme: PluginTheme;
+  platform: string;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+  }, []);
+
+  async function copy(): Promise<void> {
+    if (text === null) return;
+    try {
+      await copyText(text);
+      setCopied(true);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // Clipboard access can be unavailable in restricted clients.
+    }
+  }
+
+  const controlsVisible = text !== null && (
+    platform !== "web" || hovered || focused || copied
+  );
+  return (
+    <View
+      testID="inline-review-root"
+      style={style}
+      onPointerMove={text !== null && platform === "web" ? () => setHovered(true) : undefined}
+      onPointerLeave={text !== null && platform === "web" ? () => setHovered(false) : undefined}
+    >
+      {children}
+      {text !== null ? (
+        <View
+          style={{
+            position: "absolute",
+            right: 12,
+            bottom: 4,
+            zIndex: 3,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+            opacity: controlsVisible ? 1 : 0,
+          }}
+        >
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+            {timestampLabel(timestamp)}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Copy agent response"
+            hitSlop={6}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onPress={() => void copy()}
+            style={{ minWidth: 18, minHeight: 18, alignItems: "center", justifyContent: "center" }}
+          >
+            <Icon
+              name={copied ? "Check" : "Copy"}
+              size={14}
+              color={copied ? theme.colors.accent : theme.colors.foregroundMuted}
+            />
+          </Pressable>
+        </View>
+      ) : null}
+    </View>
+  );
+});
+
 /**
  * Native equivalent of the desktop user-message card. Web keeps Paseo's host
  * row so its image rail and edit/copy controls remain available; iOS and
@@ -666,6 +752,11 @@ function ReviewAssistantMessage({
     void fragmentVersion;
     return getTurnFinalCardPosition(agentId, sourceKey);
   }, [turnVersion, fragmentVersion, agentId, sourceKey]);
+  const finalCardText = useMemo(() => {
+    void turnVersion;
+    void fragmentVersion;
+    return getTurnFinalCardText(agentId, sourceKey);
+  }, [turnVersion, fragmentVersion, agentId, sourceKey]);
   useLayoutEffect(() => {
     try {
       const handle = paseo?.agents?.ref(agentId);
@@ -784,7 +875,7 @@ function ReviewAssistantMessage({
       return {
         root: {
         gap: layout.compact ? 6 : 8,
-        paddingBottom: inFinalCard ? (endsFinalCard ? 20 : 4) : 10,
+        paddingBottom: inFinalCard ? (endsFinalCard ? 28 : 4) : 10,
         // Live merged fragments become adjacent slices of one final card.
         // Every source row keeps its own content and measured height.
         ...(inFinalCard
@@ -1060,7 +1151,13 @@ function ReviewAssistantMessage({
   return (
     <>
       {ownsWideFrameController ? <WideFrameController theme={theme} layout={layout} /> : null}
-      <View testID="inline-review-root" style={styles.root}>
+      <FinalCardShell
+        style={styles.root}
+        timestamp={timestamp}
+        text={finalCardText}
+        theme={theme}
+        platform={layout.platform}
+      >
       {paragraphs.map((paragraph, index) => (
         <ReviewParagraph
           key={index}
@@ -1165,7 +1262,7 @@ function ReviewAssistantMessage({
           </Modal.Content>
         </Modal>
       )}
-      </View>
+      </FinalCardShell>
 </>
   );
 }
