@@ -476,6 +476,114 @@ test("starting a new user turn keeps the previous final card while history catch
   release();
 });
 
+test("a native fragment without an id matches final text after host separators are removed", async () => {
+  const agentId = `native-normalized-final-${Date.now()}`;
+  let notify: ((message: unknown) => void) | null = null;
+  let status = "running";
+  let entries = [
+    {
+      item: {
+        type: "assistant_message",
+        messageId: "previous-final",
+        text: "\n\n---\n\nPrevious final response.",
+      },
+      turnId: "turn-1",
+      seqEnd: 1,
+    },
+    {
+      item: { type: "user_message", messageId: "new-user", text: "follow up" },
+      turnId: "turn-2",
+      seqEnd: 2,
+    },
+    {
+      item: { type: "assistant_message", text: "Current progress." },
+      turnId: "turn-2",
+      seqEnd: 3,
+    },
+    {
+      item: { type: "tool_call", status: "running" },
+      turnId: "turn-2",
+      seqEnd: 4,
+    },
+  ];
+  const timeline = {
+    subscribe(handler: (message: unknown) => void): () => void {
+      notify = handler;
+      return () => {};
+    },
+    async refetch() {
+      return {
+        entries,
+        agent: { status },
+        hasOlder: false,
+      };
+    },
+  };
+
+  const releaseIndex = retainTurnIndex(agentId, timeline, 0);
+  const previous = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "previous-visible-row",
+    messageId: null,
+    text: "Previous final response.",
+    timestamp: 1,
+    phase: "complete",
+  });
+  const current = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "current-streaming-row",
+    messageId: null,
+    text: "Current progress.",
+    timestamp: 2,
+    phase: "streaming",
+  });
+  const internalRule = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "internal-rule-row",
+    messageId: null,
+    text: "Previous final response.\n\n---\n\nDifferent content.",
+    timestamp: 3,
+    phase: "complete",
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(getTurnFinalCardPosition(agentId, "previous-visible-row"), "single");
+  assert.equal(getTurnFinalCardText(agentId, "previous-visible-row"), "\n\n---\n\nPrevious final response.");
+  assert.equal(getTurnFinalCardPosition(agentId, "current-streaming-row"), "none");
+  assert.equal(getTurnFinalCardPosition(agentId, "internal-rule-row"), "none");
+
+  status = "idle";
+  entries = [
+    ...entries.slice(0, 4),
+    {
+      item: {
+        type: "assistant_message",
+        messageId: "current-final",
+        text: "\n\n---\n\nCurrent final response.",
+      },
+      turnId: "turn-2",
+      seqEnd: 5,
+    },
+  ];
+  current.update({
+    messageId: null,
+    text: "Current final response.",
+    timestamp: 2,
+    phase: "complete",
+  });
+  (notify as unknown as (message: unknown) => void)(undefined);
+  await new Promise<void>((resolve) => setTimeout(resolve, 450));
+
+  assert.equal(getTurnFinalCardPosition(agentId, "previous-visible-row"), "single");
+  assert.equal(getTurnFinalCardPosition(agentId, "current-streaming-row"), "single");
+  assert.equal(getTurnFinalCardText(agentId, "current-streaming-row"), "\n\n---\n\nCurrent final response.");
+
+  internalRule.release();
+  current.release();
+  previous.release();
+  releaseIndex();
+});
+
 test("a live idle snapshot wins over an older timeline response", async () => {
   const agentId = `status-race-${Date.now()}`;
   type StatusPage = {

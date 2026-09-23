@@ -51,6 +51,27 @@ function sameMap(current: Map<string, string>, next: Map<string, string>): boole
   return true;
 }
 
+const ASSISTANT_EDGE_SEPARATOR = /^(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
+
+/**
+ * Older/native clients can expose the visible assistant row without the
+ * formatting-only rule that remains in the daemon's merged timeline text.
+ * Ignore only blank lines and horizontal rules at the two edges; internal
+ * Markdown and whitespace stay significant.
+ */
+function canonicalAssistantText(text: string): string {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  let start = 0;
+  let end = lines.length;
+  const discardEdge = (line: string): boolean => {
+    const trimmed = line.trim();
+    return trimmed.length === 0 || ASSISTANT_EDGE_SEPARATOR.test(trimmed);
+  };
+  while (start < end && discardEdge(lines[start])) start += 1;
+  while (end > start && discardEdge(lines[end - 1])) end -= 1;
+  return lines.slice(start, end).join("\n");
+}
+
 async function refetchWithTimeout(
   timeline: TimelineHandle,
   options: Parameters<TimelineHandle["refetch"]>[0],
@@ -88,6 +109,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   let finalIds = new Set<string>();
   let finalTexts = new Set<string>();
   let finalTextById = new Map<string, string>();
+  let finalTextByCanonicalText = new Map<string, string>();
   const olderEntries = new Map<number, Entry>();
   const tailEntries = new Map<number, Entry>();
   let orderedEntries: Entry[] | null = null;
@@ -234,9 +256,14 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     const nextIds = new Set<string>();
     const nextTexts = new Set<string>();
     const nextTextById = new Map<string, string>();
+    const nextTextByCanonicalText = new Map<string, string>();
     const selection = selectFinalEntries(deduped, effectiveAgentStatus());
     for (const entry of selection) {
-      if (entry.text) nextTexts.add(entry.text);
+      if (entry.text) {
+        nextTexts.add(entry.text);
+        const canonical = canonicalAssistantText(entry.text);
+        if (canonical.length > 0) nextTextByCanonicalText.set(canonical, entry.text);
+      }
       if (entry.id && entry.text && idCounts.get(entry.id) === 1) {
         nextIds.add(entry.id);
         nextTextById.set(entry.id, entry.text);
@@ -245,11 +272,13 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     if (
       sameSet(finalIds, nextIds) &&
       sameSet(finalTexts, nextTexts) &&
-      sameMap(finalTextById, nextTextById)
+      sameMap(finalTextById, nextTextById) &&
+      sameMap(finalTextByCanonicalText, nextTextByCanonicalText)
     ) return;
     finalIds = nextIds;
     finalTexts = nextTexts;
     finalTextById = nextTextById;
+    finalTextByCanonicalText = nextTextByCanonicalText;
     version += 1;
     for (const listener of listeners) listener();
   }
@@ -338,6 +367,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
         finalIds = new Set();
         finalTexts = new Set();
         finalTextById = new Map();
+        finalTextByCanonicalText = new Map();
       }
       if (nextEpoch) timelineEpoch = nextEpoch;
       tailEntries.clear();
@@ -460,14 +490,18 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       return messageId !== null && finalIds.has(messageId);
     },
     isFinalText(text: string | null): boolean {
-      return text !== null && finalTexts.has(text);
+      return text !== null && (
+        finalTexts.has(text) || finalTextByCanonicalText.has(canonicalAssistantText(text))
+      );
     },
     finalText(messageId: string | null, text: string | null): string | null {
       if (messageId !== null) {
         const indexedText = finalTextById.get(messageId);
         if (indexedText !== undefined) return indexedText;
       }
-      return text !== null && finalTexts.has(text) ? text : null;
+      if (text === null) return null;
+      if (finalTexts.has(text)) return text;
+      return finalTextByCanonicalText.get(canonicalAssistantText(text)) ?? null;
     },
     ensureKnown(sourceKey: string, messageId: string | null, text: string | null): void {
       if (stopped || (messageId === null && text === null)) return;
