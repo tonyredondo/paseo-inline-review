@@ -472,7 +472,8 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   let stylePassPending = false;
   let disposed = false;
   let rebindObserverRoot = (): void => {};
-  const markerSelector = '[data-testid="inline-review-root"], [data-testid="user-message"], [data-testid="tool-call-group"]';
+  const markerSelector =
+    '[data-testid="inline-review-root"], [data-testid="inline-review-sent"], [data-testid="user-message"], [data-testid="tool-call-group"]';
   const requestRun = (): void => {
     if (raf) return;
     raf = g.requestAnimationFrame(() => {

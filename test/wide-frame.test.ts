@@ -282,7 +282,10 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   append(bubble, images, trail);
   append(message, bubble);
   append(capped, message);
-  append(pane, staleCapped, capped);
+  const reviewCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const sentReview = fakeElement({ attributes: { "data-testid": "inline-review-sent" } });
+  append(reviewCapped, sentReview);
+  append(pane, staleCapped, capped, reviewCapped);
   append(body, sidebar, pane);
 
   const resizeListeners = new Set<() => void>();
@@ -391,6 +394,11 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     "a new plugin instance must adopt and normalize wrappers marked by the previous instance",
   );
   assert.equal(capped.style.maxWidth, "1040px");
+  assert.equal(
+    reviewCapped.style.maxWidth,
+    "1040px",
+    "the compact sent-review widget must share the widened timeline frame",
+  );
   assert.equal(message.style.maxWidth, "100%");
   assert.equal(message.style.paddingBottom, "8px");
   assert.equal(bubble.style.paddingTop, "5px");
@@ -483,6 +491,20 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(liveCapped.style.maxWidth, "1040px");
   assert.equal(frames.size, 1, "new content is widened before its deferred decoration frame");
 
+  const liveReviewCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const liveSentReview = fakeElement({ attributes: { "data-testid": "inline-review-sent" } });
+  append(liveReviewCapped, liveSentReview);
+  append(pane, liveReviewCapped);
+  deliverMutations([{
+    target: pane,
+    addedNodes: [liveReviewCapped],
+  }]);
+  assert.equal(
+    liveReviewCapped.style.maxWidth,
+    "1040px",
+    "a sent-review widget mounted after startup must widen before paint",
+  );
+
   const reenteredCapped = fakeElement({ width: 820, maxWidth: "820px" });
   const reenteredMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
   const reenteredBubble = fakeElement({ backgroundColor: "rgb(36, 38, 54)" });
@@ -560,6 +582,8 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(resizeListeners.size, 0);
   assert.equal(capped.style.maxWidth, "");
   assert.equal(capped.dataset.inlineReviewWide, "");
+  assert.equal(reviewCapped.style.maxWidth, "");
+  assert.equal(liveReviewCapped.style.maxWidth, "");
   assert.equal(message.style.paddingBottom, "");
   assert.equal(bubble.style.paddingTop, "");
   assert.equal(images.style.overflowX, "");
