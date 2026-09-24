@@ -176,6 +176,12 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   let timelineAgentStatus: string | undefined;
   let snapshotAgentStatus: string | undefined;
   let eventAgentStatus: string | undefined;
+  let statusRevision = 0;
+  let terminalReconciliationRevision: number | null = null;
+  const reconciledCompletedCandidates = new Map<
+    string,
+    { id: string | null; text: string | null }
+  >();
   let backfillInFlight: Promise<void> | null = null;
   let backfillBlockedByRpc: Promise<void> | null = null;
   const liveCandidates = new Map<string, { id: string | null; text: string | null }>();
@@ -494,12 +500,14 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     if (stopped || !active || refreshBlockedByRpc) return;
     try {
       let payload: TimelinePage | null = null;
+      let payloadStatusRevision = statusRevision;
       const attempts = [
         { direction: "tail", limit: INITIAL_TAIL_ENTRIES },
         undefined,
         { limit: INITIAL_TAIL_ENTRIES },
       ] as const;
       for (const attempt of attempts) {
+        const requestStatusRevision = statusRevision;
         const outcome = await refetchWithTimeout(timeline, attempt, 4000);
         if (outcome.kind === "timed-out") {
           let blocker: Promise<void>;
@@ -515,6 +523,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
         }
         if (outcome.kind === "rejected") continue;
         payload = outcome.page;
+        payloadStatusRevision = requestStatusRevision;
         break;
       }
       if (!payload || stopped) return;
@@ -543,6 +552,15 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       const payloadStatus = payload.agent?.status;
       const payloadClosed = payloadStatus !== undefined &&
         payloadStatus !== "running" && payloadStatus !== "initializing";
+      const reconcilesTerminalCandidate = terminalReconciliationRevision !== null &&
+        payloadStatusRevision >= terminalReconciliationRevision &&
+        payloadStatusRevision === statusRevision;
+      if (reconcilesTerminalCandidate) {
+        terminalReconciliationRevision = null;
+        // A refetch started after the completed renderer was observed is newer
+        // than a turn_started event whose running snapshot React never saw.
+        if (payloadClosed) eventAgentStatus = undefined;
+      }
       const coveredByPayload = (seq: number): boolean => payload.entries.some(
         (entry) => (entry.seqStart ?? entry.seqEnd) <= seq && seq <= entry.seqEnd,
       );
@@ -650,6 +668,9 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     timelineEpoch = epoch;
     timelineAgentStatus = undefined;
     eventAgentStatus = undefined;
+    statusRevision += 1;
+    terminalReconciliationRevision = null;
+    reconciledCompletedCandidates.clear();
     lastObservedSeq = null;
     invalidateEntries();
     publishFinals();
@@ -747,16 +768,19 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       eventAgentStatus = snapshotAgentStatus === "running" || snapshotAgentStatus === "initializing"
         ? undefined
         : "running";
+      statusRevision += 1;
       return;
     }
     if (event.type === "turn_completed" || event.type === "turn_canceled") {
       eventAgentStatus = snapshotAgentStatus === "idle" ? undefined : "idle";
+      statusRevision += 1;
       if (!flushIncrementalPublication()) publishFinals();
       reconcileUnknownLiveCandidates();
       return;
     }
     if (event.type === "turn_failed") {
       eventAgentStatus = snapshotAgentStatus === "error" ? undefined : "error";
+      statusRevision += 1;
       if (!flushIncrementalPublication()) publishFinals();
       reconcileUnknownLiveCandidates();
     }
@@ -833,6 +857,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     setAgentStatus(status: string | undefined): void {
       if (snapshotAgentStatus === status) return;
       snapshotAgentStatus = status;
+      statusRevision += 1;
       if (eventAgentStatus === status) eventAgentStatus = undefined;
       const flushedIncremental = flushIncrementalPublication();
       // Paseo can publish `running` before the new user row reaches the
@@ -868,6 +893,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     trackLiveCandidate(sourceKey: string, messageId: string | null, text: string | null): void {
       if (stopped || (messageId === null && text === null)) return;
       requestedMessages.delete(sourceKey);
+      reconciledCompletedCandidates.delete(sourceKey);
       liveCandidates.set(sourceKey, { id: messageId, text });
       reconcileUnknownLiveCandidates();
     },
@@ -876,6 +902,20 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       liveCandidates.delete(sourceKey);
       flushIncrementalPublication();
       const request = { id: messageId, text };
+      const previousReconciliation = reconciledCompletedCandidates.get(sourceKey);
+      const needsTerminalReconciliation =
+        !isSelectedFinal(request) &&
+        (effectiveAgentStatus() === "running" || effectiveAgentStatus() === "initializing") &&
+        (
+          !previousReconciliation ||
+          previousReconciliation.id !== request.id ||
+          previousReconciliation.text !== request.text
+        );
+      if (needsTerminalReconciliation) {
+        reconciledCompletedCandidates.set(sourceKey, request);
+        terminalReconciliationRevision = statusRevision;
+        scheduleRefresh(0);
+      }
       if (isKnown(request)) {
         requestedMessages.delete(sourceKey);
         return;
@@ -888,6 +928,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     forgetKnown(sourceKey: string): void {
       liveCandidates.delete(sourceKey);
       requestedMessages.delete(sourceKey);
+      reconciledCompletedCandidates.delete(sourceKey);
     },
     diagnostics(): { tailEntries: number; liveEntries: number } {
       return { tailEntries: tailEntries.size, liveEntries: liveEntries.size };

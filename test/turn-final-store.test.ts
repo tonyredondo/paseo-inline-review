@@ -1583,6 +1583,182 @@ test("turn_started keeps an incrementally streamed tail provisional until comple
   release();
 });
 
+test("a completed renderer reconciles a missed running-to-idle snapshot transition", async () => {
+  const agentId = `missed-status-transition-${Date.now()}`;
+  let notify: ((message: unknown) => void) | null = null;
+  let calls = 0;
+  const initialEntries = [
+    {
+      item: { type: "user_message", messageId: "user-1", text: "commit and push" },
+      turnId: "turn-1",
+      seqStart: 1,
+      seqEnd: 1,
+    },
+    {
+      item: { type: "assistant_message", messageId: "progress-1", text: "Checking the diff." },
+      turnId: "turn-1",
+      seqStart: 2,
+      seqEnd: 4,
+    },
+    {
+      item: { type: "tool_call", status: "completed" },
+      turnId: "turn-1",
+      seqStart: 5,
+      seqEnd: 6,
+    },
+    {
+      item: { type: "assistant_message", messageId: "progress-2", text: "Publishing now." },
+      turnId: "turn-1",
+      seqStart: 7,
+      seqEnd: 9,
+    },
+    {
+      item: { type: "tool_call", status: "completed" },
+      turnId: "turn-1",
+      seqStart: 10,
+      seqEnd: 11,
+    },
+  ];
+  const finalEntry = {
+    item: {
+      type: "assistant_message",
+      messageId: "assistant-1",
+      text: "\n\n---\n\nCommit and push completed.",
+    },
+    turnId: "turn-1",
+    seqStart: 12,
+    seqEnd: 20,
+  };
+  const timeline = {
+    subscribe(handler: (message: unknown) => void): () => void {
+      notify = handler;
+      return () => {};
+    },
+    async refetch() {
+      calls += 1;
+      return {
+        entries: calls === 1 ? initialEntries : [...initialEntries, finalEntry],
+        // React can observe idle both before and after a short turn without
+        // ever publishing the intermediate running snapshot to this renderer.
+        agent: { status: "idle" },
+        hasOlder: false,
+        startCursor: { epoch: "epoch-1", seq: 1 },
+      };
+    },
+  };
+  const emit = (message: unknown) =>
+    (notify as unknown as (message: unknown) => void)(message);
+
+  const release = retainTurnIndex(agentId, timeline, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  emit({ agentId, event: { type: "turn_started", provider: "codex", turnId: "turn-1" } });
+  emit({
+    agentId,
+    epoch: "epoch-1",
+    seq: 12,
+    event: {
+      type: "timeline",
+      provider: "codex",
+      turnId: "turn-1",
+      item: finalEntry.item,
+    },
+  });
+  const fragment = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "rendered-final",
+    messageId: "assistant-1",
+    text: "Commit and push completed.",
+    timestamp: 1,
+    phase: "complete",
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(calls, 2);
+  assert.equal(getTurnFinalCardPosition(agentId, "rendered-final"), "single");
+  assert.equal(getTurnFinalCardText(agentId, "rendered-final"), "\n\n---\n\nCommit and push completed.");
+  fragment.release();
+  release();
+});
+
+test("a closed response started before turn_started cannot finalize the active turn", async () => {
+  const agentId = `stale-closed-status-${Date.now()}`;
+  let notify: ((message: unknown) => void) | null = null;
+  let calls = 0;
+  let resolveBootstrap: ((page: {
+    entries: Array<{
+      item: { type: string; messageId: string; text: string };
+      turnId: string;
+      seqStart: number;
+      seqEnd: number;
+    }>;
+    agent: { status: string };
+    hasOlder: false;
+    startCursor: { epoch: string; seq: number };
+  }) => void) | null = null;
+  const finalEntry = {
+    item: { type: "assistant_message", messageId: "assistant-1", text: "Still running." },
+    turnId: "turn-1",
+    seqStart: 1,
+    seqEnd: 1,
+  };
+  const timeline = {
+    subscribe(handler: (message: unknown) => void): () => void {
+      notify = handler;
+      return () => {};
+    },
+    refetch() {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise<{
+          entries: Array<typeof finalEntry>;
+          agent: { status: string };
+          hasOlder: false;
+          startCursor: { epoch: string; seq: number };
+        }>((resolve) => { resolveBootstrap = resolve; });
+      }
+      return Promise.resolve({
+        entries: [finalEntry],
+        agent: { status: "running" },
+        hasOlder: false as const,
+        startCursor: { epoch: "epoch-1", seq: 1 },
+      });
+    },
+  };
+  const emit = (message: unknown) =>
+    (notify as unknown as (message: unknown) => void)(message);
+
+  const release = retainTurnIndex(agentId, timeline, 0);
+  emit({ agentId, event: { type: "turn_started", provider: "codex", turnId: "turn-1" } });
+  emit({
+    agentId,
+    epoch: "epoch-1",
+    seq: 1,
+    event: { type: "timeline", provider: "codex", turnId: "turn-1", item: finalEntry.item },
+  });
+  const fragment = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "rendered-final",
+    messageId: "assistant-1",
+    text: "Still running.",
+    timestamp: 1,
+    phase: "complete",
+  });
+  (resolveBootstrap as unknown as (page: unknown) => void)({
+    entries: [finalEntry],
+    agent: { status: "idle" },
+    hasOlder: false,
+    startCursor: { epoch: "epoch-1", seq: 1 },
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(calls, 2);
+  assert.equal(getTurnFinalCardPosition(agentId, "rendered-final"), "none");
+  emit({ agentId, event: { type: "turn_completed", provider: "codex", turnId: "turn-1" } });
+  assert.equal(getTurnFinalCardPosition(agentId, "rendered-final"), "single");
+  fragment.release();
+  release();
+});
+
 test("fragmented assistant timeline events form the completed final card", async () => {
   const agentId = `incremental-fragmented-assistant-${Date.now()}`;
   let notify: ((message: unknown) => void) | null = null;
