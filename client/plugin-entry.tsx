@@ -40,7 +40,7 @@ function registerContributions(
   // Timeline replacement is the only startup-critical contribution. Register
   // it before panels and background synchronization to shorten the native-to-
   // plugin render gap owned by this bundle.
-  const removeTimeline = registerTimeline(client);
+  const removeTimeline = registerTimeline(client, wideFrameLease);
   // The panel tab title is read live from the plugin registry, so panels
   // can be re-registered with a new title and open tabs update at once.
   let panelRegistration: PluginCleanup | null = null;
@@ -60,7 +60,9 @@ function registerContributions(
     id: "wide-frame",
     title: "Feature flags",
     icon: "ToggleRight",
-    Component: WideFrameSettingsScreen,
+    Component: (props) => (
+      <WideFrameSettingsScreen {...props} wideFrameLease={wideFrameLease} />
+    ),
   });
 
   // --- File preview tabs -------------------------------------------------

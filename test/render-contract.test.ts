@@ -255,12 +255,18 @@ test("image user messages contain their controls and shrink within the timeline"
 test("timeline rows use scoped agent state and one elected wide-frame controller", () => {
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
   const controllerSource = String(readFileSync(path.resolve("client/wide-frame-controller.tsx")));
+  const settingsSource = String(readFileSync(path.resolve("client/wide-frame-settings.tsx")));
   const entrySource = String(readFileSync(path.resolve("client/plugin-entry.tsx")));
   assert.ok(!timelineSource.includes("useSettings("));
   assert.ok(!timelineSource.includes("(agent) => agent)"));
-  assert.match(timelineSource, /subscribeTurnIndex\(agentId, listener\)/);
+  assert.match(timelineSource, /turnFinalScopeKey\(host\.id, agentId\)/);
+  assert.match(timelineSource, /subscribeTurnIndex\(turnScopeId, listener\)/);
   assert.match(timelineSource, /useWideFrameControllerOwner\(\)/);
-  assert.doesNotMatch(controllerSource, /return \(\) => undoWideFrame\(\)/);
+  assert.match(controllerSource, /configureWideFrameLease\([\s\S]{0,160}host\.id/);
+  assert.match(controllerSource, /\n\s+anchorRef,\n/);
+  assert.match(timelineSource, /rootRef=\{wideFrameAnchorRef\}/);
+  assert.match(settingsSource, /configureWideFrameLease\([\s\S]{0,100}host\.id/);
+  assert.doesNotMatch(settingsSource, /configureWideFrameLease\([\s\S]{0,100}\bnull,/);
   assert.match(controllerSource, /enabled === null/);
   assert.match(entrySource, /const wideFrameLease = retainWideFrameLease\(\)/);
   assert.match(entrySource, /return async \(\) => \{[\s\S]{0,240}releaseWideFrameLease\(wideFrameLease\)/);

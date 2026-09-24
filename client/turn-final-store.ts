@@ -70,6 +70,25 @@ function sameMap(current: Map<string, string>, next: Map<string, string>): boole
 }
 
 const ASSISTANT_EDGE_SEPARATOR = /^(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
+const MEMORY_CITATION_START = "<oai-mem-citation>";
+const MEMORY_CITATION_END = "</oai-mem-citation>";
+
+/** Mirrors Paseo hiding from the first memory marker through a valid trailing close. */
+function stripTrailingHiddenAssistantMetadata(text: string): string {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const closing = normalized.lastIndexOf(MEMORY_CITATION_END);
+  if (closing < 0 || normalized.slice(closing + MEMORY_CITATION_END.length).trim().length > 0) {
+    return text;
+  }
+  const opening = normalized.indexOf(MEMORY_CITATION_START);
+  if (opening < 0 || opening > closing) return text;
+
+  const visibleLines = normalized.slice(0, opening).split("\n");
+  while (visibleLines.length > 0 && visibleLines[visibleLines.length - 1].trim().length === 0) {
+    visibleLines.pop();
+  }
+  return visibleLines.join("\n");
+}
 
 /**
  * Older/native clients can expose the visible assistant row without the
@@ -78,7 +97,7 @@ const ASSISTANT_EDGE_SEPARATOR = /^(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/
  * Markdown and whitespace stay significant.
  */
 function canonicalAssistantText(text: string): string {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const lines = stripTrailingHiddenAssistantMetadata(text).replace(/\r\n/g, "\n").split("\n");
   let start = 0;
   let end = lines.length;
   const discardEdge = (line: string): boolean => {
@@ -367,11 +386,13 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       if (entry.text) {
         nextTexts.add(entry.text);
         const canonical = canonicalAssistantText(entry.text);
-        if (canonical.length > 0) nextTextByCanonicalText.set(canonical, entry.text);
+        if (canonical.length > 0) {
+          nextTextByCanonicalText.set(canonical, stripTrailingHiddenAssistantMetadata(entry.text));
+        }
       }
       if (entry.id && entry.idSafe && entry.text && idCounts.get(entry.id) === 1) {
         nextIds.add(entry.id);
-        nextTextById.set(entry.id, entry.text);
+        nextTextById.set(entry.id, stripTrailingHiddenAssistantMetadata(entry.text));
       }
     }
     const changed = !(
@@ -519,8 +540,21 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       discardIncrementalPublication();
       tailEntries.clear();
       for (const entry of parseEntries(payload)) tailEntries.set(entry.seq, entry);
+      const payloadStatus = payload.agent?.status;
+      const payloadClosed = payloadStatus !== undefined &&
+        payloadStatus !== "running" && payloadStatus !== "initializing";
+      const coveredByPayload = (seq: number): boolean => payload.entries.some(
+        (entry) => (entry.seqStart ?? entry.seqEnd) <= seq && seq <= entry.seqEnd,
+      );
       const overlay = [...liveEntries].sort(([left], [right]) => left - right);
       for (const [seq, entry] of overlay) {
+        // Once Paseo publishes a closed canonical snapshot, its accumulated
+        // row supersedes partial live fragments from the same sequence range.
+        // Keep later events, and keep live overlays while the turn is running.
+        if (payloadClosed && coveredByPayload(seq)) {
+          liveEntries.delete(seq);
+          continue;
+        }
         if (!entry) {
           tailEntries.delete(seq);
           continue;
@@ -828,7 +862,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
         if (indexedText !== undefined) return indexedText;
       }
       if (text === null) return null;
-      if (finalTexts.has(text)) return text;
+      if (finalTexts.has(text)) return stripTrailingHiddenAssistantMetadata(text);
       return finalTextByCanonicalText.get(canonicalAssistantText(text)) ?? null;
     },
     trackLiveCandidate(sourceKey: string, messageId: string | null, text: string | null): void {
@@ -870,6 +904,11 @@ type StoredIndex = {
 
 const stores = new Map<string, StoredIndex>();
 const listeners = new Map<string, Set<() => void>>();
+
+/** Distinguishes identical agent IDs exposed by different connected hosts. */
+export function turnFinalScopeKey(hostId: string, agentId: string): string {
+  return `${hostId.length}:${hostId}${agentId}`;
+}
 
 export type TurnFinalCardPosition = "none" | "single" | "start" | "middle" | "end";
 

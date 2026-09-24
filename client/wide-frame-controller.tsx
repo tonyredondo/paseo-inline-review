@@ -1,7 +1,11 @@
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { useSettings } from "@getpaseo/plugin/client";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ensureWideFrame, undoWideFrame } from "./wide-frame";
+import {
+  configureWideFrameLease,
+  type WideFrameAnchorRef,
+  type WideFrameLease,
+} from "./wide-frame";
 import { wideFrameSettings } from "../shared/wide-frame-settings";
 
 type Owner = { id: number; setActive(active: boolean): void };
@@ -35,8 +39,17 @@ export function useWideFrameControllerOwner(): boolean {
   return active;
 }
 
-/** Single settings subscription and wide-frame effect for the whole client. */
-export function WideFrameController({ theme, layout }: Pick<PluginHostProps, "theme" | "layout">) {
+/** Single settings subscription and wide-frame effect for one plugin instance. */
+export function WideFrameController({
+  theme,
+  layout,
+  host,
+  wideFrameLease,
+  anchorRef,
+}: Pick<PluginHostProps, "theme" | "layout" | "host"> & {
+  wideFrameLease: WideFrameLease;
+  anchorRef?: WideFrameAnchorRef;
+}) {
   const settings = useSettings(wideFrameSettings);
   const retried = useRef(false);
   const enabled = settings.status === "ready" ? settings.values.wideFrame : null;
@@ -49,27 +62,33 @@ export function WideFrameController({ theme, layout }: Pick<PluginHostProps, "th
   }, [settings]);
 
   useLayoutEffect(() => {
-    // The controller is elected from virtualized timeline rows, but the DOM
-    // policy is host-wide. Row unmounts and transient settings states must not
-    // tear it down; an explicit disabled value or plugin cleanup owns that.
+    // The controller is elected from virtualized timeline rows. The setting is
+    // host-scoped, while the DOM policy follows the elected timeline anchor.
+    // Row unmounts and transient settings states must not tear it down; an
+    // explicit disabled value or plugin cleanup owns that.
     // A layout effect applies the current DOM policy before the browser paints.
     if (layout.platform !== "web" || enabled === null) return;
-    if (enabled) {
-      ensureWideFrame({
+    configureWideFrameLease(
+      wideFrameLease,
+      host.id,
+      enabled,
+      {
         accent: theme.colors.accent ?? theme.colors.foreground,
         raised: theme.colors.surface2,
         border: theme.colors.border,
-      });
-    } else {
-      undoWideFrame();
-    }
+      },
+      anchorRef,
+    );
   }, [
     enabled,
+    host.id,
     layout.platform,
     theme.colors.accent,
     theme.colors.foreground,
     theme.colors.surface2,
     theme.colors.border,
+    wideFrameLease,
+    anchorRef,
   ]);
 
   return null;

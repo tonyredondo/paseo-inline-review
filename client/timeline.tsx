@@ -18,12 +18,13 @@ import {
   retainTurnIndex,
   subscribeTurnIndex,
   subscribeTurnFinalFragments,
+  turnFinalScopeKey,
   turnFinalFragmentVersion,
   turnIndexVersion,
   updateTurnAgentStatus,
 } from "./turn-final-store";
 import { z } from "zod";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type Ref } from "react";
 import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   openLocalFileRpc,
@@ -62,6 +63,7 @@ import { createStableParagraphs } from "./paragraph-stream";
 import { createStreamingTextCoalescer } from "./stream-text";
 import { DownloadCancelledError } from "./web";
 import { WideFrameController, useWideFrameControllerOwner } from "./wide-frame-controller";
+import type { WideFrameLease } from "./wide-frame";
 import { finalCardHoverStore } from "./final-card-hover";
 
 /** Data for the dotted compaction divider replacing the host's hairline. */
@@ -657,6 +659,7 @@ function timestampLabel(timestamp: Date): string {
 /** Keeps hover subscriptions inside the controls so markdown never rerenders. */
 const FinalCardShell = memo(function FinalCardShell({
   children,
+  rootRef,
   style,
   timestamp,
   text,
@@ -665,6 +668,7 @@ const FinalCardShell = memo(function FinalCardShell({
   hoverKey,
 }: {
   children: ReactNode;
+  rootRef: Ref<View>;
   style: StyleProp<ViewStyle>;
   timestamp: Date;
   text: string | null;
@@ -674,6 +678,7 @@ const FinalCardShell = memo(function FinalCardShell({
 }) {
   return (
     <View
+      ref={rootRef}
       testID="inline-review-root"
       style={style}
       onPointerMove={hoverKey !== null && platform === "web"
@@ -959,12 +964,15 @@ function SentReviewCard({
 
 function ReviewAssistantMessage({
   agentId,
+  host,
   item,
   timestamp,
   theme,
   layout,
-}: PluginTimelineItemProps<ReviewItemData>) {
+  wideFrameLease,
+}: PluginTimelineItemProps<ReviewItemData> & { wideFrameLease: WideFrameLease }) {
   const data = item.data;
+  const turnScopeId = turnFinalScopeKey(host.id, agentId);
   const sourceKeyRef = useRef<string | null>(null);
   if (sourceKeyRef.current === null) sourceKeyRef.current = `stream-${nextMessageSourceKey++}`;
   const sourceKey = sourceKeyRef.current;
@@ -973,8 +981,8 @@ function ReviewAssistantMessage({
   const toast = useToast();
   const paseo = usePaseo();
   const subscribeToTurnIndex = useCallback(
-    (listener: () => void) => subscribeTurnIndex(agentId, listener),
-    [agentId],
+    (listener: () => void) => subscribeTurnIndex(turnScopeId, listener),
+    [turnScopeId],
   );
   // Turn-final card: derive finality from ordered timeline data on every
   // platform. Merged history rows intentionally cannot identify their still-
@@ -982,43 +990,44 @@ function ReviewAssistantMessage({
   // Paseo supplies the consolidated final text.
   const turnVersion = useSyncExternalStore(
     subscribeToTurnIndex,
-    () => turnIndexVersion(agentId),
-    () => turnIndexVersion(agentId),
+    () => turnIndexVersion(turnScopeId),
+    () => turnIndexVersion(turnScopeId),
   );
   const subscribeToFinalFragments = useCallback(
-    (listener: () => void) => subscribeTurnFinalFragments(agentId, sourceKey, listener),
-    [agentId, sourceKey],
+    (listener: () => void) => subscribeTurnFinalFragments(turnScopeId, sourceKey, listener),
+    [turnScopeId, sourceKey],
   );
   const fragmentVersion = useSyncExternalStore(
     subscribeToFinalFragments,
-    () => turnFinalFragmentVersion(agentId, sourceKey),
-    () => turnFinalFragmentVersion(agentId, sourceKey),
+    () => turnFinalFragmentVersion(turnScopeId, sourceKey),
+    () => turnFinalFragmentVersion(turnScopeId, sourceKey),
   );
   const timestampValue = timestamp.getTime();
   const finalCardPosition = useMemo(() => {
     // These versions are the external-store snapshots that invalidate the lookup.
     void turnVersion;
     void fragmentVersion;
-    return getTurnFinalCardPosition(agentId, sourceKey);
-  }, [turnVersion, fragmentVersion, agentId, sourceKey]);
+    return getTurnFinalCardPosition(turnScopeId, sourceKey);
+  }, [turnVersion, fragmentVersion, turnScopeId, sourceKey]);
   const finalCardText = useMemo(() => {
     void turnVersion;
     void fragmentVersion;
-    return getTurnFinalCardText(agentId, sourceKey);
-  }, [turnVersion, fragmentVersion, agentId, sourceKey]);
+    return getTurnFinalCardText(turnScopeId, sourceKey);
+  }, [turnVersion, fragmentVersion, turnScopeId, sourceKey]);
   const finalCardHoverKey = finalCardPosition === "none"
     ? null
-    : `${agentId}:${data.messageId ?? sourceKey}`;
+    : `${turnScopeId}:${data.messageId ?? sourceKey}`;
   useLayoutEffect(() => {
     try {
       const handle = paseo?.agents?.ref(agentId);
       if (!handle?.timeline) return;
-      return retainTurnIndex(agentId, handle.timeline);
+      return retainTurnIndex(turnScopeId, handle.timeline);
     } catch {
       return;
     }
-  }, [paseo, agentId]);
+  }, [paseo, agentId, turnScopeId]);
   const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
+  const wideFrameAnchorRef = useRef<View | null>(null);
   const ownsWideFrameController = useWideFrameControllerOwner();
   // Host-maintained state updates when the agent snapshot arrives or its cwd changes.
   const agentSnapshot = useAgent(agentId, (agent) => agent
@@ -1029,8 +1038,8 @@ function ReviewAssistantMessage({
   // resolve against it.
   const workspaceRoot = agentSnapshot?.cwd ?? null;
   useLayoutEffect(() => {
-    updateTurnAgentStatus(agentId, agentSnapshot?.status);
-  }, [agentId, agentSnapshot?.status]);
+    updateTurnAgentStatus(turnScopeId, agentSnapshot?.status);
+  }, [turnScopeId, agentSnapshot?.status]);
   const revealedRaw = useRevealedText(data.text, data.phase);
   const revealed = useCoalescedStreamingText(revealedRaw, data.phase);
   const referenceDefinitions = useRef<ReturnType<typeof createStableReferenceDefinitions> | null>(null);
@@ -1046,7 +1055,7 @@ function ReviewAssistantMessage({
   const finalFragmentHandle = useRef<ReturnType<typeof mountTurnFinalFragment> | null>(null);
   useLayoutEffect(() => {
     const handle = mountTurnFinalFragment({
-      agentId,
+      agentId: turnScopeId,
       sourceKey,
       messageId: data.messageId,
       text: revealed,
@@ -1058,7 +1067,7 @@ function ReviewAssistantMessage({
       if (finalFragmentHandle.current === handle) finalFragmentHandle.current = null;
       handle.release();
     };
-  }, [agentId, sourceKey]);
+  }, [turnScopeId, sourceKey]);
   useLayoutEffect(() => {
     finalFragmentHandle.current?.update({
       messageId: data.messageId,
@@ -1412,8 +1421,17 @@ function ReviewAssistantMessage({
 
   return (
     <>
-      {ownsWideFrameController ? <WideFrameController theme={theme} layout={layout} /> : null}
+      {ownsWideFrameController ? (
+        <WideFrameController
+          theme={theme}
+          layout={layout}
+          host={host}
+          wideFrameLease={wideFrameLease}
+          anchorRef={wideFrameAnchorRef}
+        />
+      ) : null}
       <FinalCardShell
+        rootRef={wideFrameAnchorRef}
         style={styles.root}
         timestamp={timestamp}
         text={finalCardText}
@@ -1538,7 +1556,10 @@ function ReviewAssistantMessage({
  * available space and stays aligned. Re-applied on a timer to catch new
  * items.
  */
-export function registerTimeline(client: PluginClientContext): () => void {
+export function registerTimeline(
+  client: PluginClientContext,
+  wideFrameLease: WideFrameLease,
+): () => void {
   const cleanups: Array<() => void> = [];
   // Make every renderer available before a transformer can replace a native
   // row. Hosts that publish registrations incrementally never observe a plugin
@@ -1547,7 +1568,9 @@ export function registerTimeline(client: PluginClientContext): () => void {
     kind: "inline-review",
     version: 1,
     schema: reviewItemSchema,
-    Component: ReviewAssistantMessage,
+    Component: (props) => (
+      <ReviewAssistantMessage {...props} wideFrameLease={wideFrameLease} />
+    ),
   }));
   cleanups.push(client.addTimelineRenderer({
     kind: "inline-review-sent",

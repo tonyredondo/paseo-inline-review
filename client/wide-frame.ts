@@ -3,9 +3,9 @@
  * uses the available window width (tool calls, user messages, plugin items)
  * with breathing room, instead of the fixed 820px column.
  *
- * Desktop (web) only: re-caps every host element with max-width 820px
- * inline to the pane width; a MutationObserver keeps freshly mounted
- * elements covered in the same frame. Native platforms (iPad) keep the
+ * Desktop (web) only: re-caps every matching element in the active timeline
+ * to the pane width; a MutationObserver keeps freshly mounted elements
+ * covered in the same frame. Native platforms (iPad) keep the
  * host's 820px column — the DOM pass is unreachable there.
  * The user flag lives in plugin settings (host scope) as wideFrame.
  */
@@ -23,17 +23,23 @@ import {
   acquireWideFrameLease,
   cancelPendingWideFrameCleanup,
   releaseWideFrameCleanupLease,
+  updateWideFrameLease,
   WIDE_FRAME_CLEANUP_GRACE_MS,
   type WideFrameLease,
 } from "./wide-frame-lease";
 
 export { wideFrameSettings };
 export { WIDE_FRAME_CLEANUP_GRACE_MS };
+export type { WideFrameLease };
 
 export interface WideFrameColors {
   accent?: string;
   raised?: string;
   border?: string;
+}
+
+export interface WideFrameAnchorRef {
+  readonly current: unknown;
 }
 
 type WNode = {
@@ -653,10 +659,35 @@ function unstyleUserMessages(doc: WDoc): void {
   }
 }
 
-let stopInstalledRuntime: (() => void) | null = null;
-let restoreInstalledDom: (() => void) | null = null;
-let installedDocument: WDoc | null = null;
-let refreshInstalled: ((colors?: WideFrameColors) => void) | null = null;
+type WideFrameRuntimeState = {
+  stop: (() => void) | null;
+  restore: (() => void) | null;
+  document: WDoc | null;
+  refresh: ((colors?: WideFrameColors) => void) | null;
+  owner: WideFrameLease | symbol | null;
+  hostId: string | null;
+  scope: WNode | WDoc | null;
+};
+type RuntimeHost = typeof globalThis & { [key: symbol]: unknown };
+
+const RUNTIME_STATE = Symbol.for("paseo.inline-review.wide-frame-runtime.v1");
+const UNLEASED_RUNTIME_OWNER = Symbol("inline-review-unleased-runtime");
+
+function runtimeState(host = globalThis as RuntimeHost): WideFrameRuntimeState {
+  const existing = host[RUNTIME_STATE] as WideFrameRuntimeState | undefined;
+  if (existing) return existing;
+  const created: WideFrameRuntimeState = {
+    stop: null,
+    restore: null,
+    document: null,
+    refresh: null,
+    owner: null,
+    hostId: null,
+    scope: null,
+  };
+  host[RUNTIME_STATE] = created;
+  return created;
+}
 
 function applyUserCardColors(colors?: WideFrameColors): void {
   if (!colors) return;
@@ -665,20 +696,97 @@ function applyUserCardColors(colors?: WideFrameColors): void {
   if (colors.border) userCardBorder = colors.border;
 }
 
-/** Installs the web widening pass (idempotent). Colors refresh card styling. */
-export function ensureWideFrame(colors?: WideFrameColors): void {
-  cancelPendingWideFrameCleanup();
-  if (Platform.OS !== "web") return;
+function timelineScopeFor(
+  anchor: unknown,
+  g: WWin,
+  doc: WDoc,
+): WNode | null {
+  if (!anchor || typeof anchor !== "object") return null;
+  let node: WNode | null = anchor as WNode;
+  let cappedFallback: WNode | null = null;
+  while (node && node !== doc.body) {
+    // Paseo virtualizes timeline items as sibling rows. The first 820px
+    // wrapper belongs only to the anchored row, while agent-chat-scroll is
+    // the common root that also receives later user and assistant rows.
+    if (node.matches?.('[data-testid="agent-chat-scroll"]')) return node;
+    if (
+      !cappedFallback &&
+      (
+        node.dataset?.inlineReviewWide === "1" ||
+        g.getComputedStyle(node).maxWidth === "820px"
+      )
+    ) {
+      cappedFallback = node.parentElement ?? node;
+    }
+    node = node.parentElement;
+  }
+  return cappedFallback;
+}
+
+function isWithin(node: WNode, ancestor: WNode | WDoc): boolean {
+  if (ancestor === (node as unknown as WDoc)) return true;
+  for (let current: WNode | null = node; current; current = current.parentElement) {
+    if (current === ancestor) return true;
+  }
+  return false;
+}
+
+function isConnectedTo(node: WNode, root: WNode): boolean {
+  return isWithin(node, root);
+}
+
+/** Installs one generation of the web widening pass. */
+function ensureWideFrameRuntime(
+  owner: WideFrameLease | symbol,
+  hostId: string | null,
+  colors: WideFrameColors | undefined,
+  anchorRef: WideFrameAnchorRef | undefined,
+  allowDocumentFallback: boolean,
+): boolean {
+  if (Platform.OS !== "web") return false;
   const g = globalThis as unknown as WWin & { document?: WDoc };
   const doc = g.document;
-  if (!doc || typeof g.getComputedStyle !== "function") return;
-  if (stopInstalledRuntime && installedDocument === doc && refreshInstalled) {
-    refreshInstalled(colors);
-    return;
+  if (!doc || typeof g.getComputedStyle !== "function") return false;
+  const runtime = runtimeState();
+  const requestedScope = timelineScopeFor(anchorRef?.current, g, doc);
+  const scope: WNode | WDoc | null = requestedScope ?? (allowDocumentFallback ? doc : null);
+  if (!scope) {
+    if (
+      runtime.stop &&
+      runtime.owner === owner &&
+      runtime.hostId === hostId &&
+      runtime.refresh
+    ) {
+      runtime.refresh(colors);
+      return true;
+    }
+    return false;
   }
-  if (stopInstalledRuntime) undoWideFrame();
-  installedDocument = doc;
+  if (
+    runtime.stop &&
+    runtime.owner === owner &&
+    runtime.document === doc &&
+    runtime.scope === scope &&
+    runtime.refresh
+  ) {
+    runtime.refresh(colors);
+    return true;
+  }
+  if (runtime.stop) {
+    const preserveDom =
+      runtime.document === doc &&
+      runtime.hostId === hostId &&
+      runtime.scope === scope;
+    const restore = stopWideFrameRuntime();
+    if (!preserveDom) restore?.();
+  }
+  runtime.document = doc;
+  runtime.owner = owner;
+  runtime.hostId = hostId;
+  runtime.scope = scope;
   applyUserCardColors(colors);
+
+  let timelineRoot = scope;
 
   const widened = new Set<WNode>();
   let paneWidthCache = 0;
@@ -727,7 +835,7 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
       raf = 0;
       if (disposed) return;
       const shouldScan = fullSweep || scanScope !== null;
-      const scope = fullSweep ? null : scanScope;
+      const scope = fullSweep ? timelineRoot : scanScope;
       const shouldStyle = stylePassPending;
       scanScope = null;
       fullSweep = false;
@@ -756,16 +864,19 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   };
 
   const scanCandidates = (root: WNode | WDoc | null): Set<WNode> => {
-    const scope = root ?? doc;
+    const scope = root ?? timelineRoot;
     const candidates = new Set<WNode>();
     if (root && root !== (doc as unknown as WNode)) candidates.add(root as WNode);
+    const boundary = timelineRoot === (doc as unknown as WDoc)
+      ? doc.body
+      : timelineRoot as WNode;
     for (const marker of queryWithin(scope, markerSelector)) {
       for (let current: WNode | null = marker; current; current = current.parentElement) {
         candidates.add(current);
         // A marker may be inserted after its capped wrapper. Climb to the
-        // stable body boundary so that wrapper is discovered without reading
-        // layout for every unrelated mutation observed elsewhere in the app.
-        if (current === doc.body) break;
+        // active timeline boundary so that wrapper is discovered without
+        // reading layout for unrelated mutations elsewhere in the app.
+        if (current === boundary || current === doc.body) break;
       }
     }
     return candidates;
@@ -824,20 +935,22 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   };
 
   const apply = (scope: WNode | WDoc | null = null): void => {
-    if (!applyWidths(scope)) return;
+    // Widening is intentionally disabled in narrow panes, but card styling is
+    // not: compact layouts still need user messages to match review cards.
+    applyWidths(scope);
     // User messages: review-card look (re-applied; host re-renders wipe it).
-    const styleRoot = scope ?? doc;
+    const styleRoot = scope ?? timelineRoot;
     styleUserMessages(styleRoot, g, doc);
     tightenToolCallRows(styleRoot);
     rebindObserverRoot();
   };
 
-  refreshInstalled = (nextColors?: WideFrameColors): void => {
+  runtime.refresh = (nextColors?: WideFrameColors): void => {
     applyUserCardColors(nextColors);
-    apply();
+    apply(timelineRoot);
   };
   const observerCbs: Array<() => void> = [];
-  apply();
+  apply(timelineRoot);
   // Zoom hook: browser/app zoom changes devicePixelRatio (the layout width
   // in CSS px stays constant). Watch the resolution media query; when it
   // flips, re-measure and re-apply with the new ratio, then re-arm with it.
@@ -883,7 +996,7 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
             }
           }
         }
-        const markers = doc.querySelectorAll(markerSelector);
+        const markers = queryWithin(timelineRoot, markerSelector);
         for (let index = 0; index < markers.length; index += 1) {
           const marker = markers[index];
           if (markerNeedsRepair(marker)) schedule(marker);
@@ -905,7 +1018,20 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
         mutations,
         markerSelector,
       });
-      if (!work.repairWidenedStyles && work.scopes.length === 0) return;
+      const timelineConnected =
+        timelineRoot === (doc as unknown as WDoc) ||
+        (doc.body ? isConnectedTo(timelineRoot as WNode, doc.body) : false);
+      let replacementRoot: WNode | null = null;
+      if (!timelineConnected && timelineRoot !== (doc as unknown as WDoc)) {
+        const anchoredRoot = timelineScopeFor(anchorRef?.current, g, doc);
+        if (!anchoredRoot || !doc.body || !isConnectedTo(anchoredRoot, doc.body)) return;
+        replacementRoot = anchoredRoot;
+      }
+      const trustedRoot = replacementRoot ?? timelineRoot;
+      const scopes = trustedRoot === (doc as unknown as WDoc)
+        ? work.scopes
+        : work.scopes.filter((candidate) => isWithin(candidate, trustedRoot));
+      if (!replacementRoot && !work.repairWidenedStyles && scopes.length === 0) return;
 
       // Mutation callbacks run before paint. Pause observation while applying
       // the complete scoped repair so our own CSSOM writes cannot enqueue a
@@ -916,10 +1042,14 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
       observerPaused = true;
       try {
         if (work.repairWidenedStyles) applyStylesOnly();
-        if (work.scopes.length === 1) {
-          apply(work.scopes[0]);
-        } else if (work.scopes.length > 1) {
-          apply(lowestCommonAncestor(work.scopes));
+        if (replacementRoot) {
+          timelineRoot = replacementRoot;
+          runtime.scope = replacementRoot;
+        }
+        if (scopes.length === 1) {
+          apply(scopes[0]);
+        } else if (scopes.length > 1) {
+          apply(lowestCommonAncestor(scopes));
         }
       } finally {
         observerPaused = false;
@@ -929,7 +1059,10 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     const observerRootForTimeline = (): WNode => {
       pruneWidened();
       const common = lowestCommonAncestor([...widened]);
-      if (!common || common === body) return body;
+      const fallback = timelineRoot === (doc as unknown as WDoc)
+        ? body
+        : timelineRoot as WNode;
+      if (!common || common === body) return fallback;
       // With only one row mounted, observe its parent so the next sibling is
       // still delivered without falling back to the document-wide subtree.
       return common.dataset.inlineReviewWide === "1"
@@ -966,7 +1099,7 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
   g.addEventListener("resize", onResize);
   observerCbs.push(() => g.removeEventListener("resize", onResize));
 
-  stopInstalledRuntime = () => {
+  runtime.stop = () => {
     if (disposed) return;
     disposed = true;
     if (raf) g.cancelAnimationFrame?.(raf);
@@ -977,7 +1110,13 @@ export function ensureWideFrame(colors?: WideFrameColors): void {
     scanScope = null;
     paneWidthCache = 0;
   };
-  restoreInstalledDom = () => restoreWideFrameDom(doc);
+  runtime.restore = () => restoreWideFrameDom(doc);
+  return true;
+}
+
+/** Legacy/test entrypoint: intentionally owns the whole document. */
+export function ensureWideFrame(colors?: WideFrameColors): void {
+  ensureWideFrameRuntime(UNLEASED_RUNTIME_OWNER, null, colors, undefined, true);
 }
 
 function restoreWideFrameDom(doc: WDoc): void {
@@ -990,12 +1129,16 @@ function restoreWideFrameDom(doc: WDoc): void {
 }
 
 function stopWideFrameRuntime(): (() => void) | null {
-  const stop = stopInstalledRuntime;
-  const restore = restoreInstalledDom;
-  stopInstalledRuntime = null;
-  restoreInstalledDom = null;
-  installedDocument = null;
-  refreshInstalled = null;
+  const runtime = runtimeState();
+  const stop = runtime.stop;
+  const restore = runtime.restore;
+  runtime.stop = null;
+  runtime.restore = null;
+  runtime.document = null;
+  runtime.refresh = null;
+  runtime.owner = null;
+  runtime.hostId = null;
+  runtime.scope = null;
   stop?.();
   return restore;
 }
@@ -1021,11 +1164,32 @@ export function retainWideFrameLease(): WideFrameLease {
   return acquireWideFrameLease();
 }
 
+export function configureWideFrameLease(
+  lease: WideFrameLease,
+  hostId: string,
+  enabled: boolean,
+  colors?: WideFrameColors,
+  anchorRef?: WideFrameAnchorRef,
+): void {
+  updateWideFrameLease(lease, {
+    hostId,
+    enabled,
+    activate: () => ensureWideFrameRuntime(lease, hostId, colors, anchorRef, false),
+    deactivate: undoWideFrame,
+  });
+}
+
 /**
  * Plugin disposal gets a grace period so reload/re-entry can transfer DOM
  * ownership without flashing Paseo's default 820px frame between bundles.
  */
 export function releaseWideFrameLease(lease: WideFrameLease): void {
-  const restore = stopWideFrameRuntime() ?? restoreCurrentWideFrameDom;
-  releaseWideFrameCleanupLease(lease, restore);
+  let restore = restoreCurrentWideFrameDom;
+  releaseWideFrameCleanupLease(lease, () => restore(), {
+    prepareCleanup: () => {
+      if (runtimeState().owner !== lease) return false;
+      restore = stopWideFrameRuntime() ?? restoreCurrentWideFrameDom;
+      return true;
+    },
+  });
 }

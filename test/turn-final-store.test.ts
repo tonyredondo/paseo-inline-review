@@ -12,6 +12,7 @@ import {
   subscribeTurnFinalFragments,
   subscribeTurnIndex,
   turnFinalFragmentDiagnostics,
+  turnFinalScopeKey,
   turnIndexDiagnostics,
   updateTurnAgentStatus,
 } from "../client/turn-final-store.ts";
@@ -51,6 +52,37 @@ test("turn indexes are shared and release their timeline subscription", async ()
   assert.equal(cleanups, 0);
   releaseSecond();
   assert.equal(cleanups, 1);
+});
+
+test("identical agent ids on different hosts keep independent turn indexes", async () => {
+  const agentId = `shared-agent-${Date.now()}`;
+  const firstScope = turnFinalScopeKey("M5", agentId);
+  const secondScope = turnFinalScopeKey("M4", agentId);
+  assert.notEqual(firstScope, secondScope);
+  const timeline = (messageId: string) => ({
+    subscribe(): () => void { return () => {}; },
+    async refetch() {
+      return {
+        entries: [{
+          item: { type: "assistant_message", messageId, text: messageId },
+          turnId: "turn",
+          seqEnd: 1,
+        }],
+        agent: { status: "idle" },
+        hasOlder: false,
+      };
+    },
+  });
+  const releaseFirst = retainTurnIndex(firstScope, timeline("first"), 0);
+  const releaseSecond = retainTurnIndex(secondScope, timeline("second"), 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(isTurnFinalMessage(firstScope, "first"), true);
+  assert.equal(isTurnFinalMessage(firstScope, "second"), false);
+  assert.equal(isTurnFinalMessage(secondScope, "second"), true);
+  assert.equal(isTurnFinalMessage(secondScope, "first"), false);
+  releaseSecond();
+  releaseFirst();
 });
 
 test("reused message ids do not mark every streamed segment final", async () => {
@@ -655,6 +687,81 @@ test("a native fragment without an id matches final text after host separators a
   releaseIndex();
 });
 
+test("a native fragment without an id matches a final hidden memory citation", async () => {
+  const agentId = `native-hidden-memory-citation-${Date.now()}`;
+  const visibleText = "Completed response.\n\n- `npm test`: passes.";
+  const timelineText = `${visibleText}\n\n<oai-mem-citation>\n<citation_entries>\nMEMORY.md:43-43|note=[runtime lifecycle context]\n</citation_entries>\n<rollout_ids>\n01a0c817-5288-7160-af97-a566a2ad2e56\n</rollout_ids>\n</oai-mem-citation>`;
+  const timeline = {
+    subscribe(): () => void { return () => {}; },
+    async refetch() {
+      return {
+        entries: [{
+          item: { type: "assistant_message", text: timelineText },
+          turnId: "turn-1",
+          seqEnd: 1,
+        }],
+        agent: { status: "idle" },
+        hasOlder: false,
+      };
+    },
+  };
+
+  const releaseIndex = retainTurnIndex(agentId, timeline, 0);
+  const fragment = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "visible-final-row",
+    messageId: null,
+    text: visibleText,
+    timestamp: 1,
+    // Codex can finish the turn without republishing the renderer row as complete.
+    phase: "streaming",
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(getTurnFinalCardPosition(agentId, "visible-final-row"), "single");
+  assert.equal(getTurnFinalCardText(agentId, "visible-final-row"), visibleText);
+
+  fragment.release();
+  releaseIndex();
+});
+
+test("a native fragment matches when an inline memory marker hides the remaining response", async () => {
+  const agentId = `native-inline-memory-marker-${Date.now()}`;
+  const visibleText = "Fixed. The timeline keeps the hidden block `";
+  const timelineText = `${visibleText}<oai-mem-citation>\`.\n\nLater visible explanation.\n\n<oai-mem-citation>\n<citation_entries>\nMEMORY.md:43-43|note=[runtime lifecycle context]\n</citation_entries>\n<rollout_ids>\n01a0c817-5288-7160-af97-a566a2ad2e56\n</rollout_ids>\n</oai-mem-citation>`;
+  const timeline = {
+    subscribe(): () => void { return () => {}; },
+    async refetch() {
+      return {
+        entries: [{
+          item: { type: "assistant_message", text: timelineText },
+          turnId: "turn-1",
+          seqEnd: 1,
+        }],
+        agent: { status: "idle" },
+        hasOlder: false,
+      };
+    },
+  };
+
+  const releaseIndex = retainTurnIndex(agentId, timeline, 0);
+  const fragment = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "truncated-visible-final-row",
+    messageId: null,
+    text: visibleText,
+    timestamp: 1,
+    phase: "streaming",
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(getTurnFinalCardPosition(agentId, "truncated-visible-final-row"), "single");
+  assert.equal(getTurnFinalCardText(agentId, "truncated-visible-final-row"), visibleText);
+
+  fragment.release();
+  releaseIndex();
+});
+
 test("a live idle snapshot wins over an older timeline response", async () => {
   const agentId = `status-race-${Date.now()}`;
   type StatusPage = {
@@ -1060,6 +1167,86 @@ test("a stale bootstrap response cannot overwrite a newer timeline event", async
   assert.equal(calls, 1, "the preserved event sequence must prevent a redundant gap refetch");
   assert.equal(isTurnFinalText(agentId, "new event"), true);
   assert.equal(isTurnFinalText(agentId, "stale page"), false);
+  release();
+});
+
+test("a closed canonical snapshot replaces an incomplete live overlay for the final card", async () => {
+  const agentId = `closed-snapshot-live-overlay-${Date.now()}`;
+  let notify: ((message: unknown) => void) | null = null;
+  let resolvePage: ((page: {
+    entries: Array<{
+      item: { type: string; messageId: string; text: string };
+      turnId: string;
+      seqStart: number;
+      seqEnd: number;
+    }>;
+    agent: { status: string };
+    hasOlder: false;
+    startCursor: { epoch: string; seq: number };
+  }) => void) | null = null;
+  const timeline = {
+    subscribe(handler: (message: unknown) => void): () => void {
+      notify = handler;
+      return () => {};
+    },
+    refetch() {
+      return new Promise<{
+        entries: Array<{
+          item: { type: string; messageId: string; text: string };
+          turnId: string;
+          seqStart: number;
+          seqEnd: number;
+        }>;
+        agent: { status: string };
+        hasOlder: false;
+        startCursor: { epoch: string; seq: number };
+      }>((resolve) => { resolvePage = resolve; });
+    },
+  };
+
+  const release = retainTurnIndex(agentId, timeline, 0);
+  const fragment = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "rendered-final",
+    messageId: "final-message",
+    text: "Complete final response.",
+    timestamp: 1,
+    phase: "complete",
+  });
+  const emit = (seq: number, text: string) =>
+    (notify as unknown as (message: unknown) => void)({
+      agentId,
+      epoch: "epoch-1",
+      seq,
+      event: {
+        type: "timeline",
+        provider: "codex",
+        turnId: "turn-1",
+        item: { type: "assistant_message", messageId: "final-message", text },
+      },
+    });
+  emit(1, "Complete ");
+  emit(2, "final");
+  (resolvePage as unknown as (page: unknown) => void)({
+    entries: [{
+      item: {
+        type: "assistant_message",
+        messageId: "final-message",
+        text: "Complete final response.",
+      },
+      turnId: "turn-1",
+      seqStart: 1,
+      seqEnd: 2,
+    }],
+    agent: { status: "idle" },
+    hasOlder: false,
+    startCursor: { epoch: "epoch-1", seq: 1 },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(getTurnFinalCardPosition(agentId, "rendered-final"), "single");
+  assert.equal(getTurnFinalCardText(agentId, "rendered-final"), "Complete final response.");
+  fragment.release();
   release();
 });
 

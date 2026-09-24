@@ -174,9 +174,10 @@ test("the wide-frame controller installs during the pre-paint layout phase", asy
       const useRef = (value: unknown) => ({ current: value });
       const useState = (value: unknown) => [value, () => {}];
     `)
-    .replace(/import \{ ensureWideFrame, undoWideFrame \}[^;]+;/, `
-      const ensureWideFrame = () => { globalThis.__wideFrameEnsureCalls += 1; };
-      const undoWideFrame = () => {};
+    .replace(/import \{\s*configureWideFrameLease,[^;]+;/, `
+      const configureWideFrameLease = (_lease, _hostId, enabled) => {
+        if (enabled) globalThis.__wideFrameEnsureCalls += 1;
+      };
     `)
     .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};");
   const output = transpileModule(source, {
@@ -189,6 +190,8 @@ test("the wide-frame controller installs during the pre-paint layout phase", asy
   controller.WideFrameController({
     theme: { colors: { accent: "#123456", foreground: "#ffffff", surface2: "#222222", border: "#333333" } },
     layout: { platform: "web", compact: false },
+    host: { id: "M5", label: "M5" },
+    wideFrameLease: Symbol("test"),
   });
   assert.equal(globals.__wideFrameEnsureCalls, 0);
   for (const effect of layoutEffects) effect();
@@ -226,9 +229,11 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
       const useRef = (value: unknown) => ({ current: value });
       const useState = (value: unknown) => [value, () => {}];
     `)
-    .replace(/import \{ ensureWideFrame, undoWideFrame \}[^;]+;/, `
-      const ensureWideFrame = () => { globalThis.__wideFrameEnsureCalls += 1; };
-      const undoWideFrame = () => { globalThis.__wideFrameUndoCalls += 1; };
+    .replace(/import \{\s*configureWideFrameLease,[^;]+;/, `
+      const configureWideFrameLease = (_lease, _hostId, enabled) => {
+        if (enabled) globalThis.__wideFrameEnsureCalls += 1;
+        else globalThis.__wideFrameUndoCalls += 1;
+      };
     `)
     .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};");
   const output = transpileModule(source, {
@@ -242,6 +247,8 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
   controller.WideFrameController({
     theme: { colors: { accent: "#123456", foreground: "#ffffff", surface2: "#222222", border: "#333333" } },
     layout: { platform: "web", compact: false },
+    host: { id: "M5", label: "M5" },
+    wideFrameLease: Symbol("test"),
   });
   assert.equal(globals.__wideFrameEnsureCalls, 1);
 
@@ -258,6 +265,8 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
   controller.WideFrameController({
     theme: { colors: { accent: "#123456", foreground: "#ffffff", surface2: "#222222", border: "#333333" } },
     layout: { platform: "web", compact: false },
+    host: { id: "M5", label: "M5" },
+    wideFrameLease: Symbol("test"),
   });
   assert.equal(globals.__wideFrameEnsureCalls, 0);
   assert.equal(globals.__wideFrameUndoCalls, 0);
@@ -275,6 +284,8 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
   controller.WideFrameController({
     theme: { colors: { accent: "#123456", foreground: "#ffffff", surface2: "#222222", border: "#333333" } },
     layout: { platform: "web", compact: false },
+    host: { id: "M5", label: "M5" },
+    wideFrameLease: Symbol("test"),
   });
   assert.equal(globals.__wideFrameEnsureCalls, 0);
   assert.equal(globals.__wideFrameUndoCalls, 1);
@@ -290,7 +301,10 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
 test("wide-frame styling is idempotent, bounded, and completely reversible", async () => {
   const body = fakeElement({ width: 1440 });
   const sidebar = fakeElement({ width: 200 });
-  const pane = fakeElement({ width: 1200 });
+  const pane = fakeElement({
+    width: 1200,
+    attributes: { "data-testid": "agent-chat-scroll" },
+  });
   const staleCapped = fakeElement({ width: 1040, maxWidth: "1240px" });
   const staleToolCall = fakeElement({ attributes: { "data-testid": "tool-call-group" } });
   staleCapped.dataset.inlineReviewWide = "1";
@@ -316,8 +330,18 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   const compactionCapped = fakeElement({ width: 820, maxWidth: "820px" });
   const compactionDivider = fakeElement({ attributes: { "data-testid": "inline-review-root" } });
   append(compactionCapped, compactionDivider);
-  append(pane, staleCapped, capped, reviewCapped, compactionCapped);
-  append(body, sidebar, pane);
+  // Production virtualizes each timeline item inside its own row. The anchor
+  // therefore sits one level below the common chat root; selecting its first
+  // 820px wrapper would scope the runtime to this row and miss every sibling.
+  const anchorRow = fakeElement();
+  append(anchorRow, compactionCapped);
+  append(pane, staleCapped, capped, reviewCapped, anchorRow);
+  const foreignPane = fakeElement({ width: 1200 });
+  const foreignCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const foreignMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
+  append(foreignCapped, foreignMessage);
+  append(foreignPane, foreignCapped);
+  append(body, sidebar, pane, foreignPane);
 
   const resizeListeners = new Set<() => void>();
   const frames = new Map<number, () => void>();
@@ -391,7 +415,13 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
       const WIDE_FRAME_CLEANUP_GRACE_MS = 5000;
       const acquireWideFrameLease = () => Symbol("test-wide-frame-lease");
       const cancelPendingWideFrameCleanup = () => {};
-      const releaseWideFrameCleanupLease = (_lease, cleanup) => {
+      const updateWideFrameLease = (_lease, options) => {
+        if (options.enabled) return options.activate();
+        options.deactivate();
+        return true;
+      };
+      const releaseWideFrameCleanupLease = (_lease, cleanup, options) => {
+        options?.prepareCleanup?.();
         globalThis.__wideFrameScheduledRestore = cleanup;
         return true;
       };
@@ -429,8 +459,51 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     `data:text/javascript;base64,${Buffer.from(output).toString("base64")}#wide-frame-dom-${Date.now()}`
   );
 
-  module.ensureWideFrame({ accent: "#58a6ff", raised: "#242636", border: "#30363d" });
+  const anchorRef = { current: compactionDivider };
+  const lease = module.retainWideFrameLease();
+  module.configureWideFrameLease(
+    lease,
+    "M5",
+    true,
+    { accent: "#58a6ff", raised: "#242636", border: "#30363d" },
+    anchorRef,
+  );
   assert.equal(observerConstructions, 1);
+  assert.equal(foreignCapped.style.maxWidth, undefined, "another workspace stays untouched");
+  compactionDivider.clientWidth = 1040;
+  const disconnectionsBeforeHandoff = observerDisconnections;
+  const secondModule = await import(
+    `data:text/javascript;base64,${Buffer.from(output).toString("base64")}#wide-frame-dom-peer-${Date.now()}`
+  );
+  const replacementLease = secondModule.retainWideFrameLease();
+  secondModule.configureWideFrameLease(
+    replacementLease,
+    "M5",
+    true,
+    { accent: "#58a6ff", raised: "#242636", border: "#30363d" },
+  );
+  assert.equal(
+    observerConstructions,
+    1,
+    "a bundle without a mounted timeline cannot replace the active runtime",
+  );
+  assert.equal(observerDisconnections, disconnectionsBeforeHandoff);
+  secondModule.configureWideFrameLease(
+    replacementLease,
+    "M5",
+    true,
+    { accent: "#58a6ff", raised: "#242636", border: "#30363d" },
+    anchorRef,
+  );
+  assert.equal(
+    observerConstructions,
+    2,
+    "a replacement bundle installs its own observer implementation",
+  );
+  assert.ok(
+    observerDisconnections > disconnectionsBeforeHandoff,
+    "the replacement bundle stops the previous observer",
+  );
   assert.equal(observations[0].root, pane, "the subtree observer must be scoped to the timeline root");
   assert.equal(observations[0].options.subtree, true);
   assert.deepEqual(observations[0].options.attributeFilter, ["style", "data-testid"]);
@@ -597,8 +670,8 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   append(pane, reenteredCapped);
 
   const disconnectionsBeforeRefresh = observerDisconnections;
-  module.ensureWideFrame();
-  assert.equal(observerConstructions, 1, "same-document refresh reuses the observer");
+  secondModule.configureWideFrameLease(replacementLease, "M5", true, undefined, anchorRef);
+  assert.equal(observerConstructions, 2, "same-generation refresh reuses the observer");
   assert.equal(observerDisconnections, disconnectionsBeforeRefresh);
   assert.equal(reenteredCapped.style.maxWidth, "1040px");
   assert.equal(reenteredMessage.style.backgroundColor, "#242636");
@@ -608,7 +681,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     0,
   );
   const parseCallsAfterPlainMessage = parseInlineCalls;
-  module.ensureWideFrame();
+  secondModule.configureWideFrameLease(replacementLease, "M5", true, undefined, anchorRef);
   assert.equal(
     parseInlineCalls,
     parseCallsAfterPlainMessage,
@@ -621,23 +694,73 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   // re-entry. The shallow parent sentinel must discover the replacement and
   // move the detailed observer without falling back to a body-wide subtree.
   pane.remove();
+  const unrelatedPane = fakeElement({ width: 1200 });
+  const unrelatedCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const unrelatedMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
+  append(unrelatedCapped, unrelatedMessage);
+  append(unrelatedPane, unrelatedCapped);
+  append(body, unrelatedPane);
+  deliverMutations([{
+    target: body,
+    addedNodes: [unrelatedPane],
+  }]);
+  assert.equal(
+    unrelatedCapped.style.maxWidth,
+    undefined,
+    "a disconnected timeline cannot adopt another workspace without its live anchor",
+  );
+
   const replacementPane = fakeElement({ width: 1200 });
   const replacementCapped = fakeElement({ width: 820, maxWidth: "820px" });
-  const replacementMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
+  const replacementMessage = fakeElement();
   const replacementBubble = fakeElement({ backgroundColor: "rgb(36, 38, 54)" });
   append(replacementMessage, replacementBubble);
   append(replacementCapped, replacementMessage);
   append(replacementPane, replacementCapped);
+  const concurrentPane = fakeElement({ width: 1200 });
+  const concurrentCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const concurrentMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
+  append(concurrentCapped, concurrentMessage);
+  append(concurrentPane, concurrentCapped);
+  anchorRef.current = replacementMessage;
+  append(body, concurrentPane);
   append(body, replacementPane);
   deliverMutations([{
     target: body,
-    addedNodes: [replacementPane],
+    addedNodes: [concurrentPane, replacementPane],
   }]);
-  assert.equal(replacementCapped.style.maxWidth, "1040px");
+  assert.equal(
+    replacementCapped.style.maxWidth,
+    undefined,
+    "a markerless replacement is adopted without styling unrelated wrappers",
+  );
+  assert.equal(
+    concurrentCapped.style.maxWidth,
+    undefined,
+    "a replacement batch cannot widen a sibling workspace or fall back to body",
+  );
   assert.equal(observations.at(-2)?.root, replacementPane);
   assert.equal(observations.at(-2)?.options.subtree, true);
   assert.equal(observations.at(-1)?.root, body);
   assert.equal(observations.at(-1)?.options.subtree, false);
+
+  replacementMessage.setAttribute("data-testid", "user-message");
+  deliverMutations([{
+    target: replacementMessage,
+    attributeName: "data-testid",
+    addedNodes: [],
+  }]);
+  assert.equal(
+    replacementCapped.style.maxWidth,
+    "1040px",
+    "a marker added after root replacement is observed and widened",
+  );
+  assert.equal(replacementMessage.style.backgroundColor, "#242636");
+  assert.equal(
+    concurrentCapped.style.maxWidth,
+    undefined,
+    "late marker handling remains scoped to the adopted timeline",
+  );
 
   capped.style.maxWidth = "820px";
   deliverMutations([{
@@ -676,14 +799,39 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   assert.equal(lateMessage.style.backgroundColor, "#242636");
   assert.equal(frames.size, 0, "a late marker cannot expose an unstyled card for one frame");
 
+  // A narrow pane intentionally keeps Paseo's native frame width, but user
+  // messages must still receive the review-card skin. Previously the width
+  // guard returned before the card pass and left newly mounted rows as gray
+  // host bubbles.
+  replacementPane.clientWidth = 880;
+  (globals.__wideFrameWindow as { innerWidth: number }).innerWidth = 880;
+  for (const listener of resizeListeners) listener();
+  for (const [frameId, callback] of [...frames]) {
+    frames.delete(frameId);
+    callback();
+  }
+  const narrowCapped = fakeElement({ width: 820, maxWidth: "820px" });
+  const narrowMessage = fakeElement({ attributes: { "data-testid": "user-message" } });
+  const narrowBubble = fakeElement({ backgroundColor: "rgb(36, 38, 54)" });
+  append(narrowMessage, narrowBubble);
+  append(narrowCapped, narrowMessage);
+  append(replacementPane, narrowCapped);
+  deliverMutations([{ target: replacementPane, addedNodes: [narrowCapped] }]);
+  assert.equal(narrowCapped.style.maxWidth, undefined, "narrow panes retain the host frame width");
+  assert.equal(
+    narrowMessage.style.backgroundColor,
+    "#242636",
+    "a narrow-pane user message still receives the review-card skin",
+  );
+  assert.equal(narrowMessage.style.borderLeftWidth, "5px");
+
   // Reattach the detached fixture so cleanup can prove complete reversibility
   // for both the old and replacement subtrees.
   append(body, pane);
 
   const staleResize = [...resizeListeners][0];
-  const lease = module.retainWideFrameLease();
   const disconnectionsBeforeRelease = observerDisconnections;
-  module.releaseWideFrameLease(lease);
+  secondModule.releaseWideFrameLease(replacementLease);
   assert.equal(
     observerDisconnections,
     disconnectionsBeforeRelease + 1,

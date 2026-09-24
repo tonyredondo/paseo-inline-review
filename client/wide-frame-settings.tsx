@@ -2,10 +2,19 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { useSettings } from "@getpaseo/plugin/client";
 import { Switch, Text, View } from "react-native";
-import { ensureWideFrame, undoWideFrame, wideFrameSettings } from "./wide-frame";
+import {
+  configureWideFrameLease,
+  wideFrameSettings,
+  type WideFrameLease,
+} from "./wide-frame";
 
 /** Settings screen: enables/disables the wide reading-frame experiment. */
-export function WideFrameSettingsScreen({ theme, layout }: PluginSurfaceProps) {
+export function WideFrameSettingsScreen({
+  theme,
+  layout,
+  host,
+  wideFrameLease,
+}: PluginSurfaceProps & { wideFrameLease: WideFrameLease }) {
   const settings = useSettings(wideFrameSettings);
   const values = settings.status === "ready" ? settings.values : null;
   const enabled = values?.wideFrame ?? false;
@@ -34,15 +43,16 @@ export function WideFrameSettingsScreen({ theme, layout }: PluginSurfaceProps) {
       settings.revision,
     );
     if (!saved || layout.platform !== "web") return;
-    if (nextEnabled) {
-      ensureWideFrame({
+    configureWideFrameLease(
+      wideFrameLease,
+      host.id,
+      nextEnabled,
+      {
         accent: theme.colors.accent ?? theme.colors.foreground,
         raised: theme.colors.surface2,
         border: theme.colors.border,
-      });
-    } else {
-      undoWideFrame();
-    }
+      },
+    );
   }
 
   return (

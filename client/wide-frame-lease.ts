@@ -7,10 +7,17 @@ type Scheduler = {
   setTimeout(callback: () => void, delayMs: number): TimerHandle;
   clearTimeout(handle: TimerHandle): void;
 };
-type PendingCleanup = { cancel(): void };
+type PendingCleanup = {
+  cancel(): void;
+  defer(): void;
+};
+type LeaseOwner = {
+  hostId: string | null;
+};
 type LeaseState = {
-  owner: WideFrameLease | null;
+  owners: Map<WideFrameLease, LeaseOwner>;
   pending: PendingCleanup | null;
+  deferredCleanup: (() => void) | null;
 };
 type LeaseHost = typeof globalThis & {
   [key: symbol]: unknown;
@@ -24,8 +31,19 @@ const defaultScheduler: Scheduler = {
 
 function leaseState(host: LeaseHost): LeaseState {
   const existing = host[LEASE_STATE] as LeaseState | undefined;
-  if (existing) return existing;
-  const created: LeaseState = { owner: null, pending: null };
+  if (existing?.owners instanceof Map) {
+    existing.deferredCleanup ??= null;
+    return existing;
+  }
+  // The first reload from the former single-owner implementation sees its
+  // state under this same Symbol.for key. Cancel its pending rollback, then
+  // replace the incompatible shape; its stale cleanup will no longer match.
+  (existing as unknown as { pending?: PendingCleanup } | undefined)?.pending?.cancel();
+  const created: LeaseState = {
+    owners: new Map(),
+    pending: null,
+    deferredCleanup: null,
+  };
   host[LEASE_STATE] = created;
   return created;
 }
@@ -36,61 +54,143 @@ export function cancelPendingWideFrameCleanup(
   const state = leaseState(host);
   state.pending?.cancel();
   state.pending = null;
+  state.deferredCleanup = null;
 }
 
-/**
- * Claims the host-wide DOM styling for one plugin instance. The state lives
- * on globalThis so a newly evaluated client bundle can cancel the previous
- * bundle's delayed cleanup before the browser paints the default timeline.
- */
+/** Claims a provisional share while a bundle waits to become authoritative. */
 export function acquireWideFrameLease(
   host = globalThis as LeaseHost,
 ): WideFrameLease {
   const state = leaseState(host);
-  cancelPendingWideFrameCleanup(host);
+  // Acquisition alone does not identify Paseo's selected host. Give a real
+  // replacement a fresh grace period without letting an idle peer suppress
+  // visual cleanup forever.
+  state.pending?.defer();
   const lease = Symbol("inline-review-wide-frame-owner");
-  state.owner = lease;
+  state.owners.set(lease, {
+    hostId: null,
+  });
   return lease;
 }
 
 /**
- * Releases only the matching plugin instance. This also covers the inverse
- * reload ordering: cleanup from an old bundle cannot schedule a rollback
- * after the replacement bundle has already acquired ownership.
+ * Makes the latest configured bundle authoritative. Paseo renders one
+ * selected host's contribution, so an older host or bundle must not keep a
+ * document-wide policy alive after selection changes.
+ */
+export function updateWideFrameLease(
+  lease: WideFrameLease,
+  {
+    hostId,
+    enabled,
+    activate,
+    deactivate,
+    host = globalThis as LeaseHost,
+  }: {
+    hostId: string;
+    enabled: boolean;
+    activate(): boolean;
+    deactivate(): void;
+    host?: LeaseHost;
+  },
+): boolean {
+  const state = leaseState(host);
+  const owner = state.owners.get(lease);
+  if (!owner) return false;
+
+  const applied = enabled ? activate() : (deactivate(), true);
+  if (!applied) return false;
+  cancelPendingWideFrameCleanup(host);
+
+  // Preserve only unconfigured leases: they may be a replacement that has
+  // acquired ownership but has not loaded settings yet. Every configured
+  // predecessor is stale once the selected host publishes its policy. Commit
+  // the authority transfer only after the new policy applied successfully.
+  for (const [candidateLease, candidate] of state.owners) {
+    if (candidateLease !== lease && candidate.hostId !== null) {
+      state.owners.delete(candidateLease);
+    }
+  }
+  owner.hostId = hostId;
+  return true;
+}
+
+function hasConfiguredOwner(state: LeaseState): boolean {
+  for (const owner of state.owners.values()) {
+    if (owner.hostId !== null) return true;
+  }
+  return false;
+}
+
+function scheduleWideFrameCleanup(
+  state: LeaseState,
+  cleanup: () => void,
+  delayMs: number,
+  scheduler: Scheduler,
+): void {
+  state.pending?.cancel();
+  state.deferredCleanup = cleanup;
+  let active = true;
+  let timer: TimerHandle | null = null;
+  const run = (): void => {
+    if (!active) return;
+    timer = scheduler.setTimeout(() => {
+      if (!active || state.pending !== pending) return;
+      active = false;
+      state.pending = null;
+      const finalCleanup = state.deferredCleanup;
+      state.deferredCleanup = null;
+      if (!hasConfiguredOwner(state)) finalCleanup?.();
+    }, delayMs);
+  };
+  const pending: PendingCleanup = {
+    cancel(): void {
+      if (!active) return;
+      active = false;
+      if (timer !== null) scheduler.clearTimeout(timer);
+    },
+    defer(): void {
+      if (!active) return;
+      if (timer !== null) scheduler.clearTimeout(timer);
+      run();
+    },
+  };
+  state.pending = pending;
+  run();
+}
+
+/**
+ * Releases only a live plugin instance. Its runtime work stops immediately;
+ * visual restoration may transfer to a replacement that is still loading.
  */
 export function releaseWideFrameCleanupLease(
   lease: WideFrameLease,
   cleanup: () => void,
   {
+    prepareCleanup,
     delayMs = WIDE_FRAME_CLEANUP_GRACE_MS,
     host = globalThis as LeaseHost,
     scheduler = defaultScheduler,
   }: {
+    prepareCleanup?: () => boolean;
     delayMs?: number;
     host?: LeaseHost;
     scheduler?: Scheduler;
   } = {},
 ): boolean {
   const state = leaseState(host);
-  if (state.owner !== lease) return false;
-  state.owner = null;
-  cancelPendingWideFrameCleanup(host);
+  if (!state.owners.delete(lease)) return false;
 
-  let active = true;
-  let timer: TimerHandle | null = null;
-  const pending: PendingCleanup = {
-    cancel() {
-      if (!active) return;
-      active = false;
-      if (timer !== null) scheduler.clearTimeout(timer);
-    },
-  };
-  timer = scheduler.setTimeout(() => {
-    if (!active) return;
-    active = false;
-    if (state.pending === pending) state.pending = null;
-    cleanup();
-  }, delayMs);
-  state.pending = pending;
+  // Runtime work belongs to the released lease and must stop immediately.
+  // Visual restoration stays bounded even when another daemon's bundle was
+  // acquired but never selected and therefore never configures its lease.
+  const prepared = prepareCleanup?.() === true;
+  if (prepared) {
+    scheduleWideFrameCleanup(state, cleanup, delayMs, scheduler);
+  } else if (!state.pending && state.deferredCleanup) {
+    scheduleWideFrameCleanup(state, state.deferredCleanup, delayMs, scheduler);
+  } else if (!state.pending && state.owners.size === 0) {
+    scheduleWideFrameCleanup(state, cleanup, delayMs, scheduler);
+  }
   return true;
 }
