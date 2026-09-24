@@ -54,7 +54,7 @@ export function WideFrameController({
 
   useLayoutEffect(() => {
     const root = timelineRootFor(anchorRef?.current);
-    const owner = registerWideFrameOwner(root, (active) => {
+    const owner = registerWideFrameOwner(root, host.id, (active) => {
       if (!active) return;
       const value = current.current;
       if (value.layout.platform !== "web" || value.settings.status !== "ready") return;

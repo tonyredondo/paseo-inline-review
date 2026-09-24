@@ -162,6 +162,20 @@ test("wide-frame ownership follows the visible timeline across hosts", () => {
   assert.equal(selectVisibleWideFrameOwner(owners, 2), 1);
 });
 
+test("wide-frame ownership prefers the visible route's host on a shared timeline", () => {
+  const sharedRoot = fakeElement({ width: 1200, height: 800 });
+  const owners = [
+    { id: 1, root: sharedRoot, hostId: "srv_maclinux" },
+    { id: 2, root: sharedRoot, hostId: "srv_m5" },
+  ];
+
+  assert.equal(
+    selectVisibleWideFrameOwner(owners, 2, "srv_maclinux"),
+    1,
+    "bundle mount order must not override the host selected by the Paseo route",
+  );
+});
+
 test("wide-frame ownership and visibility tracking are shared by independent bundles", async () => {
   const sourcePath = resolve(testDirectory, "../client/wide-frame-owner.ts");
   const source = readFileSync(sourcePath, "utf8");
@@ -196,11 +210,13 @@ test("wide-frame ownership and visibility tracking are shared by independent bun
 
   const remote = firstBundle.registerWideFrameOwner(
     hiddenRemote,
+    "srv_remote",
     (active: boolean) => remoteStates.push(active),
     sharedWindow,
   );
   const local = secondBundle.registerWideFrameOwner(
     visibleLocal,
+    "srv_local",
     (active: boolean) => localStates.push(active),
     sharedWindow,
   );
@@ -226,6 +242,7 @@ test("wide-frame ownership and visibility tracking are shared by independent bun
   const secondSharedStates: boolean[] = [];
   const firstOnSharedRoot = firstBundle.registerWideFrameOwner(
     sharedRoot,
+    "srv_first",
     (active: boolean) => firstSharedStates.push(active),
     sharedWindow,
   );
@@ -237,6 +254,7 @@ test("wide-frame ownership and visibility tracking are shared by independent bun
   );
   const secondOnSharedRoot = secondBundle.registerWideFrameOwner(
     sharedRoot,
+    "srv_second",
     (active: boolean) => secondSharedStates.push(active),
     sharedWindow,
   );
@@ -251,6 +269,34 @@ test("wide-frame ownership and visibility tracking are shared by independent bun
   assert.equal(observerDisconnections, 2, "a peer still owns the shared root watch");
   secondOnSharedRoot.release();
   assert.equal(observerDisconnections, 3, "the final owner releases the global root watch");
+
+  const routedRoot = fakeElement({ width: 1200, height: 800 });
+  const routedWindow = {
+    location: { href: "paseo://app/h/srv_maclinux/workspace/wks_test" },
+  };
+  const macLinuxStates: boolean[] = [];
+  const m5States: boolean[] = [];
+  const macLinux = firstBundle.registerWideFrameOwner(
+    routedRoot,
+    "srv_maclinux",
+    (active: boolean) => macLinuxStates.push(active),
+    routedWindow,
+  );
+  const m5 = secondBundle.registerWideFrameOwner(
+    routedRoot,
+    "srv_m5",
+    (active: boolean) => m5States.push(active),
+    routedWindow,
+  );
+  assert.deepEqual(macLinuxStates, [true]);
+  assert.deepEqual(m5States, [], "a later foreign bundle cannot steal the routed host's timeline");
+
+  routedWindow.location.href = "paseo://app/h/srv_m5/workspace/wks_other";
+  m5.reconcile();
+  assert.deepEqual(macLinuxStates, [true, false]);
+  assert.deepEqual(m5States, [true], "route changes transfer ownership to the selected host");
+  macLinux.release();
+  m5.release();
 });
 
 test("the wide-frame controller installs during the pre-paint layout phase", async () => {
@@ -286,7 +332,7 @@ test("the wide-frame controller installs during the pre-paint layout phase", asy
       };
     `)
     .replace(/import \{\s*registerWideFrameOwner,[\s\S]*?\} from "\.\/wide-frame-owner";/, `
-      const registerWideFrameOwner = (_root, setActive) => {
+      const registerWideFrameOwner = (_root, _hostId, setActive) => {
         setActive(true);
         return ({
         id: Symbol("test-owner"),
@@ -351,7 +397,7 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
       };
     `)
     .replace(/import \{\s*registerWideFrameOwner,[\s\S]*?\} from "\.\/wide-frame-owner";/, `
-      const registerWideFrameOwner = (_root, setActive) => {
+      const registerWideFrameOwner = (_root, _hostId, setActive) => {
         setActive(true);
         return ({
         id: Symbol("test-owner"),

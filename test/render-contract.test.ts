@@ -267,7 +267,7 @@ test("timeline rows use scoped agent state and an imperatively elected wide-fram
     timelineSource.indexOf("<FinalCardShell") < timelineSource.indexOf("<WideFrameController"),
     "the anchor-bearing card mounts before its imperative controller",
   );
-  assert.match(controllerSource, /registerWideFrameOwner\(root, \(active\) =>/);
+  assert.match(controllerSource, /registerWideFrameOwner\(root, host\.id, \(active\) =>/);
   assert.match(controllerSource, /configureWideFrameLease\([\s\S]{0,180}value\.host\.id/);
   assert.match(controllerSource, /\n\s+anchorRef,\n/);
   assert.match(timelineSource, /rootRef=\{wideFrameAnchorRef\}/);

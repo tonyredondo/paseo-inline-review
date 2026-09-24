@@ -1,6 +1,7 @@
 export type WideFrameOwnerCandidate = {
   id: number | symbol;
   root: { clientWidth: number; clientHeight: number } | null;
+  hostId?: string | null;
 };
 
 type RegisteredWideFrameOwner = WideFrameOwnerCandidate & {
@@ -21,6 +22,7 @@ type WideFrameOwnerRegistry = {
 
 type WideFrameOwnerHost = {
   [key: symbol]: unknown;
+  location?: { href?: string };
   ResizeObserver?: new (callback: () => void) => {
     observe(target: object): void;
     disconnect(): void;
@@ -54,7 +56,21 @@ function ownerRegistry(host: WideFrameOwnerHost): WideFrameOwnerRegistry {
 export function selectVisibleWideFrameOwner(
   owners: readonly WideFrameOwnerCandidate[],
   _currentOwnerId: number | symbol | null,
+  selectedHostId?: string | null,
 ): number | symbol | null {
+  if (selectedHostId) {
+    for (let index = owners.length - 1; index >= 0; index -= 1) {
+      const owner = owners[index];
+      if (
+        owner.hostId === selectedHostId
+        && owner.root
+        && owner.root.clientWidth > 0
+        && owner.root.clientHeight > 0
+      ) {
+        return owner.id;
+      }
+    }
+  }
   for (let index = owners.length - 1; index >= 0; index -= 1) {
     const owner = owners[index];
     if (owner.root && owner.root.clientWidth > 0 && owner.root.clientHeight > 0) {
@@ -64,11 +80,21 @@ export function selectVisibleWideFrameOwner(
   return null;
 }
 
+function selectedHostId(host: WideFrameOwnerHost): string | null {
+  const match = host.location?.href?.match(/\/h\/([^/]+)(?:\/|$)/);
+  return match?.[1] ?? null;
+}
+
 function reconcileWideFrameOwners(
   state: WideFrameOwnerRegistry,
+  host: WideFrameOwnerHost,
   reapplyCurrent = false,
 ): void {
-  const nextOwnerId = selectVisibleWideFrameOwner(state.owners, state.activeOwnerId);
+  const nextOwnerId = selectVisibleWideFrameOwner(
+    state.owners,
+    state.activeOwnerId,
+    selectedHostId(host),
+  );
   if (nextOwnerId === state.activeOwnerId) {
     if (reapplyCurrent) {
       state.owners.find((owner) => owner.id === nextOwnerId)?.setActive(true);
@@ -90,7 +116,7 @@ function retainRootWatch(
   let watch = state.rootWatches.get(root);
   if (!watch) {
     const observer = host.ResizeObserver
-      ? new host.ResizeObserver(() => reconcileWideFrameOwners(ownerRegistry(host)))
+      ? new host.ResizeObserver(() => reconcileWideFrameOwners(ownerRegistry(host), host))
       : null;
     observer?.observe(root);
     watch = { owners: new Set(), observer };
@@ -115,6 +141,7 @@ function retainRootWatch(
  */
 export function registerWideFrameOwner(
   root: WideFrameOwnerCandidate["root"],
+  hostId: string,
   setActive: (active: boolean) => void,
   host = globalThis as unknown as WideFrameOwnerHost,
 ): {
@@ -126,15 +153,16 @@ export function registerWideFrameOwner(
   const owner: RegisteredWideFrameOwner = {
     id: Symbol("inline-review-wide-frame-candidate"),
     root,
+    hostId,
     setActive,
   };
   state.owners.push(owner);
   const releaseRootWatch = retainRootWatch(state, host, owner);
-  reconcileWideFrameOwners(state);
+  reconcileWideFrameOwners(state, host);
   let live = true;
   return {
     id: owner.id as symbol,
-    reconcile: () => reconcileWideFrameOwners(ownerRegistry(host), true),
+    reconcile: () => reconcileWideFrameOwners(ownerRegistry(host), host, true),
     release: () => {
       if (!live) return;
       live = false;
@@ -143,7 +171,7 @@ export function registerWideFrameOwner(
       const index = current.owners.findIndex((candidate) => candidate.id === owner.id);
       if (index >= 0) current.owners.splice(index, 1);
       if (current.activeOwnerId === owner.id) current.activeOwnerId = null;
-      reconcileWideFrameOwners(current);
+      reconcileWideFrameOwners(current, host);
     },
   };
 }
