@@ -19,7 +19,9 @@ import { FILE_TRANSFER_CHUNK_BYTES } from "../shared/review.ts";
 import {
   disposeTurnIndexes,
   mountTurnFinalFragment,
+  retainTurnIndex,
   subscribeTurnFinalFragments,
+  subscribeTurnIndex,
 } from "../client/turn-final-store.ts";
 import { addComment, subscribeCommentsForSource } from "../client/review-store.ts";
 import {
@@ -322,6 +324,97 @@ function measureTurnFragmentNotifications(rowCount: number): Measurement {
   };
 }
 
+function measureGrowingTurnFragment(finalCharacters: number, updates: number): Measurement {
+  const agentId = `perf-growing-fragment-${finalCharacters}`;
+  const source = "streaming response ".repeat(Math.ceil(finalCharacters / 19)).slice(0, finalCharacters);
+  const fragment = mountTurnFinalFragment({
+    agentId,
+    sourceKey: "stream",
+    messageId: "message",
+    text: "",
+    timestamp: 1,
+    phase: "streaming",
+  });
+  let naiveFullScanCharacters = 0;
+  const started = performance.now();
+  for (let update = 1; update <= updates; update += 1) {
+    const end = Math.floor(source.length * update / updates);
+    const text = source.slice(0, end);
+    naiveFullScanCharacters += text.length;
+    fragment.update({ messageId: "message", text, timestamp: 1, phase: "streaming" });
+  }
+  const elapsedMs = performance.now() - started;
+  fragment.release();
+  disposeTurnIndexes();
+  return {
+    updates,
+    finalInputCharacters: source.length,
+    naiveFullScanCharacters,
+    appendOnlyCharacters: source.length,
+    scanReduction: 1 - source.length / naiveFullScanCharacters,
+    elapsedMs,
+  };
+}
+
+async function measureIncrementalTimelineBurst(
+  events: number,
+  mode: "replacement" | "fragment" = "replacement",
+): Promise<Measurement> {
+  const agentId = `perf-incremental-timeline-${mode}-${events}`;
+  let handler: ((message: unknown) => void) | null = null;
+  let refetches = 0;
+  const timeline = {
+    subscribe(next: (message: unknown) => void): () => void {
+      handler = next;
+      return () => { handler = null; };
+    },
+    async refetch() {
+      refetches += 1;
+      return {
+        entries: [{
+          item: { type: "user_message", messageId: "user", text: "start" },
+          turnId: "turn-1",
+          seqEnd: 1,
+        }],
+        agent: { status: "running" },
+        hasOlder: false,
+        startCursor: { epoch: "epoch-1", seq: 1 },
+      };
+    },
+  };
+  const release = retainTurnIndex(agentId, timeline, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  let publications = 0;
+  const unsubscribe = subscribeTurnIndex(agentId, () => { publications += 1; });
+  const started = performance.now();
+  for (let index = 0; index < events; index += 1) {
+    (handler as unknown as (message: unknown) => void)({
+      agentId,
+      epoch: "epoch-1",
+      seq: mode === "fragment" ? index + 2 : 2,
+      event: {
+        type: "timeline",
+        provider: "codex",
+        turnId: "turn-1",
+        item: {
+          type: "assistant_message",
+          messageId: "tail",
+          text: mode === "fragment" ? "x" : `stream ${index}`,
+        },
+      },
+    });
+  }
+  (handler as unknown as (message: unknown) => void)({
+    agentId,
+    event: { type: "turn_completed", provider: "codex", turnId: "turn-1" },
+  });
+  const elapsedMs = performance.now() - started;
+  unsubscribe();
+  release();
+  disposeTurnIndexes();
+  return { mode, events, refetches, publications, elapsedMs };
+}
+
 function measureCommentNotificationFanout(rowCount: number): Measurement {
   const agentId = `perf-comments-${rowCount}`;
   let notifications = 0;
@@ -450,8 +543,10 @@ function measureWideFrameMutationRouting(updates: number): Measurement {
 
 const commentSync = await Promise.all([1, 9, 100].map(measureCommentSync));
 const thumbnailStore = await measureThumbnailStore();
+const incrementalTimeline = await measureIncrementalTimelineBurst(10_000);
+const fragmentedTimeline = await measureIncrementalTimelineBurst(10_000, "fragment");
 const report = {
-  schemaVersion: 8,
+  schemaVersion: 9,
   scenarios: {
     commentSync,
     commentNotifications: measureCommentNotificationFanout(300),
@@ -461,8 +556,14 @@ const report = {
       initialEntriesRequested: 100,
       maximumDemandDrivenHistoricalPages: 12,
       historicalPageEntries: 200,
+      incrementalTimeline,
+      fragmentedTimeline,
     },
-    turnFragments: measureTurnFragmentNotifications(300),
+    turnFragments: {
+      mounts: measureTurnFragmentNotifications(300),
+      growingText: [10_000, 100_000, 500_000]
+        .map((size) => measureGrowingTurnFragment(size, 200)),
+    },
     wideFrameObserverScope: measureWideFrameObserverScope(),
     wideFrameRetention: measureWideFrameRetention(10_000, 34),
     wideFrameMutationRouting: measureWideFrameMutationRouting(10_000),

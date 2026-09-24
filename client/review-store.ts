@@ -309,7 +309,16 @@ type PersistFn = (input: {
  */
 let persistFn: PersistFn | null = null;
 
-export function registerPersist(fn: PersistFn): () => Promise<void> {
+const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
+
+type PersistRegistrationOptions = {
+  cleanupTimeoutMs?: number;
+};
+
+export function registerPersist(
+  fn: PersistFn,
+  options: PersistRegistrationOptions = {},
+): () => Promise<void> {
   persistFn = fn;
   for (const agentId of dirtyAgents) scheduleSave(agentId, 0);
   return async () => {
@@ -324,7 +333,10 @@ export function registerPersist(fn: PersistFn): () => Promise<void> {
       clearTimeout(timer);
       saveTimers.delete(agentId);
     }
-    await Promise.all([...agents].map((agentId) => flushAgentOnCleanup(agentId, fn)));
+    const cleanupTimeoutMs = Math.max(0, options.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS);
+    await Promise.all(
+      [...agents].map((agentId) => flushAgentOnCleanup(agentId, fn, cleanupTimeoutMs)),
+    );
   };
 }
 
@@ -349,24 +361,62 @@ const RETRY_BASE_MS = 500;
 const RETRY_MAX_MS = 30_000;
 const FINAL_SAVE_ATTEMPTS = 3;
 
-async function flushAgentOnCleanup(agentId: string, save: PersistFn): Promise<void> {
+type Settlement = { kind: "fulfilled" } | { kind: "rejected"; error: unknown } | { kind: "timed-out" };
+
+async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<Settlement> {
+  if (timeoutMs <= 0) return { kind: "timed-out" };
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise.then(
+        (): Settlement => ({ kind: "fulfilled" }),
+        (error): Settlement => ({ kind: "rejected", error }),
+      ),
+      new Promise<Settlement>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "timed-out" }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function flushAgentOnCleanup(
+  agentId: string,
+  save: PersistFn,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  const remaining = (): number => Math.max(0, deadline - Date.now());
   // Let any already-issued RPC settle first. Its completion may have cleared
   // the dirty bit, avoiding a duplicate final write.
-  await (saveChains.get(agentId) ?? Promise.resolve()).catch(() => {});
+  const existing = saveChains.get(agentId);
+  if (existing) {
+    const settlement = await settleWithin(existing, remaining());
+    if (settlement.kind === "timed-out") {
+      console.error("inline-review: final comment save timed out");
+      return;
+    }
+  }
   let lastError: unknown;
   for (let attempt = 0; attempt < FINAL_SAVE_ATTEMPTS && dirtyAgents.has(agentId); attempt += 1) {
-    const snapshot = saveSnapshot(agentId);
-    try {
-      await save(snapshot.payload);
-      retryAttempts.delete(agentId);
-      if ((localVersions.get(agentId) ?? 0) === snapshot.version) {
-        dirtyAgents.delete(agentId);
-      }
-    } catch (error) {
-      lastError = error;
-      dirtyAgents.add(agentId);
-      if (attempt + 1 < FINAL_SAVE_ATTEMPTS) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+    const remainingMs = remaining();
+    if (remainingMs <= 0) {
+      console.error("inline-review: final comment save timed out");
+      return;
+    }
+    const operation = queueSave(agentId, save, false);
+    const settlement = await settleWithin(operation, remainingMs);
+    if (settlement.kind === "timed-out") {
+      console.error("inline-review: final comment save timed out");
+      return;
+    }
+    if (settlement.kind === "rejected") {
+      lastError = settlement.error;
+      if (attempt + 1 < FINAL_SAVE_ATTEMPTS && remaining() > 0) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, Math.min(100 * 2 ** attempt, remaining())),
+        );
       }
     }
   }

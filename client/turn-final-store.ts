@@ -7,10 +7,13 @@ interface TimelineCursor {
   seq: number;
 }
 
+type TimelineItem = { type: string; text?: string; messageId?: string; status?: string };
+
 interface TimelinePage {
   entries: Array<{
-    item: { type: string; text?: string; messageId?: string; status?: string };
+    item: TimelineItem;
     turnId?: string;
+    seqStart?: number;
     seqEnd: number;
     collapsed?: string[];
   }>;
@@ -18,6 +21,18 @@ interface TimelinePage {
   hasOlder?: boolean;
   startCursor?: TimelineCursor | null;
 }
+
+type TimelineSubscriptionEvent = {
+  agentId?: string;
+  epoch?: string;
+  seq?: number;
+  event?: {
+    type?: string;
+    item?: TimelineItem;
+    turnId?: string;
+    epoch?: string;
+  };
+};
 
 interface TimelineHandle {
   subscribe(handler: (message: unknown) => void): unknown;
@@ -30,11 +45,14 @@ interface TimelineHandle {
 
 const INITIAL_TAIL_ENTRIES = 100;
 const HISTORICAL_PAGE_ENTRIES = 200;
+const INCREMENTAL_PUBLISH_MS = 50;
 
 type Entry = {
   kind: "user" | "assistant" | "tool";
   id: string | null;
+  idSafe: boolean;
   turnId: string | null;
+  seqStart: number;
   seq: number;
   text: string | null;
 };
@@ -72,17 +90,32 @@ function canonicalAssistantText(text: string): string {
   return lines.slice(start, end).join("\n");
 }
 
+type RefetchOutcome =
+  | { kind: "fulfilled"; page: TimelinePage }
+  | { kind: "rejected"; error: unknown }
+  | { kind: "timed-out"; pending: Promise<void> };
+
 async function refetchWithTimeout(
   timeline: TimelineHandle,
   options: Parameters<TimelineHandle["refetch"]>[0],
   timeoutMs: number,
-): Promise<TimelinePage | null> {
+): Promise<RefetchOutcome> {
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const request = timeline.refetch(options);
+  const settled: Promise<RefetchOutcome> = request.then(
+    (page): RefetchOutcome => ({ kind: "fulfilled", page }),
+    (error): RefetchOutcome => ({ kind: "rejected", error }),
+  );
   try {
     return await Promise.race([
-      timeline.refetch(options),
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), timeoutMs);
+      settled,
+      new Promise<RefetchOutcome>((resolve) => {
+        timer = setTimeout(() => resolve({
+          kind: "timed-out",
+          // Keep ownership of the uncancellable SDK request. Callers must not
+          // issue a replacement RPC until this one has actually settled.
+          pending: settled.then(() => {}),
+        }), timeoutMs);
       }),
     ]);
   } finally {
@@ -101,8 +134,10 @@ interface AgentTurnIndex {
   isFinal(messageId: string | null): boolean;
   isFinalText(text: string | null): boolean;
   finalText(messageId: string | null, text: string | null): string | null;
+  trackLiveCandidate(sourceKey: string, messageId: string | null, text: string | null): void;
   ensureKnown(sourceKey: string, messageId: string | null, text: string | null): void;
   forgetKnown(sourceKey: string): void;
+  diagnostics(): { tailEntries: number; liveEntries: number };
 }
 
 function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
@@ -112,6 +147,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   let finalTextByCanonicalText = new Map<string, string>();
   const olderEntries = new Map<number, Entry>();
   const tailEntries = new Map<number, Entry>();
+  const liveEntries = new Map<number, Entry | null>();
   let orderedEntries: Entry[] | null = null;
   let knownAssistantIds = new Set<string>();
   let knownAssistantTexts = new Set<string>();
@@ -120,13 +156,20 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   let timelineEpoch: string | null = null;
   let timelineAgentStatus: string | undefined;
   let snapshotAgentStatus: string | undefined;
+  let eventAgentStatus: string | undefined;
   let backfillInFlight: Promise<void> | null = null;
+  let backfillBlockedByRpc: Promise<void> | null = null;
+  const liveCandidates = new Map<string, { id: string | null; text: string | null }>();
   const requestedMessages = new Map<string, { id: string | null; text: string | null }>();
   let version = 0;
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let incrementalTimer: ReturnType<typeof setTimeout> | null = null;
+  let incrementalDirty = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let timelineUnsubscribe: (() => void) | null = null;
   let refreshInFlight: Promise<void> | null = null;
+  let liveReconciliationInFlight: Promise<void> | null = null;
+  let refreshBlockedByRpc: Promise<void> | null = null;
   let refreshQueued = false;
   let started = false;
   let active = false;
@@ -134,23 +177,73 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   let stopped = false;
   const listeners = new Set<() => void>();
 
+  let lastObservedSeq: number | null = null;
+
+  function parseEntry(
+    item: TimelineItem,
+    turnId: string | undefined,
+    seq: number,
+    existing?: Entry,
+    allowEmptyAssistant = false,
+  ): Entry | null {
+    const type = item.type;
+    if (type !== "assistant_message" && type !== "user_message" && type !== "tool_call") return null;
+    if (!allowEmptyAssistant && type === "assistant_message" && item.text?.trim() === "") return null;
+    const entry = existing ?? {
+      kind: "tool",
+      id: null,
+      idSafe: true,
+      turnId: null,
+      seqStart: seq,
+      seq,
+      text: null,
+    };
+    const nextId = item.messageId ?? null;
+    if (existing && existing.id !== nextId) entry.idSafe = true;
+    entry.kind = type === "assistant_message"
+      ? "assistant"
+      : type === "user_message"
+        ? "user"
+        : "tool";
+    entry.id = nextId;
+    entry.turnId = turnId ?? null;
+    entry.seq = seq;
+    entry.text = item.text ?? null;
+    return entry;
+  }
+
+  function mergeAssistantEntries(
+    previous: Entry | undefined,
+    next: Entry | null,
+  ): Entry | null {
+    if (
+      !previous || !next || previous.kind !== "assistant" || next.kind !== "assistant" ||
+      previous.seq + 1 !== next.seqStart || previous.turnId !== next.turnId
+    ) return null;
+    if (previous.id !== null && next.id !== null && previous.id !== next.id) return null;
+    const previousText = previous.text ?? "";
+    const fragment = next.text ?? "";
+    return {
+      kind: "assistant",
+      id: next.id ?? previous.id,
+      // Several raw rows may reuse one provider ID. The concatenated text is
+      // exact, but that ID is not safe for selecting every rendered sibling.
+      idSafe: false,
+      turnId: previous.turnId,
+      seqStart: previous.seqStart,
+      seq: next.seq,
+      // Newer hosts stream deltas. Older/compatibility paths may repeat the
+      // accumulated text, which must replace rather than duplicate the prefix.
+      text: fragment.startsWith(previousText) ? fragment : previousText + fragment,
+    };
+  }
+
   function parseEntries(page: TimelinePage): Entry[] {
     const entries: Entry[] = [];
     for (const entry of page.entries) {
-      const type = entry.item.type;
-      if (type !== "assistant_message" && type !== "user_message" && type !== "tool_call") continue;
-      if (type === "assistant_message" && entry.item.text?.trim() === "") continue;
-      entries.push({
-        kind: type === "assistant_message"
-          ? "assistant"
-          : type === "user_message"
-            ? "user"
-            : "tool",
-        id: entry.item.messageId ?? null,
-        turnId: entry.turnId ?? null,
-        seq: entry.seqEnd,
-        text: entry.item.text ?? null,
-      });
+      const parsed = parseEntry(entry.item, entry.turnId, entry.seqEnd);
+      if (parsed) parsed.seqStart = entry.seqStart ?? entry.seqEnd;
+      if (parsed) entries.push(parsed);
     }
     return entries;
   }
@@ -243,14 +336,24 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   }
 
   function effectiveAgentStatus(): string | undefined {
-    return snapshotAgentStatus ?? timelineAgentStatus;
+    return eventAgentStatus ?? snapshotAgentStatus ?? timelineAgentStatus;
+  }
+
+  function isSelectedFinal(request: { id: string | null; text: string | null }): boolean {
+    return (
+      (request.id !== null && finalIds.has(request.id)) ||
+      (request.text !== null && (
+        finalTexts.has(request.text) ||
+        finalTextByCanonicalText.has(canonicalAssistantText(request.text))
+      ))
+    );
   }
 
   function publishFinals(): void {
     const deduped = allEntries();
     const idCounts = new Map<string, number>();
     for (const entry of deduped) {
-      if (entry.kind === "assistant" && entry.id) {
+      if (entry.kind === "assistant" && entry.id && entry.idSafe) {
         idCounts.set(entry.id, (idCounts.get(entry.id) ?? 0) + 1);
       }
     }
@@ -266,17 +369,18 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
         const canonical = canonicalAssistantText(entry.text);
         if (canonical.length > 0) nextTextByCanonicalText.set(canonical, entry.text);
       }
-      if (entry.id && entry.text && idCounts.get(entry.id) === 1) {
+      if (entry.id && entry.idSafe && entry.text && idCounts.get(entry.id) === 1) {
         nextIds.add(entry.id);
         nextTextById.set(entry.id, entry.text);
       }
     }
-    if (
+    const changed = !(
       sameSet(finalIds, nextIds) &&
       sameSet(finalTexts, nextTexts) &&
       sameMap(finalTextById, nextTextById) &&
       sameMap(finalTextByCanonicalText, nextTextByCanonicalText)
-    ) return;
+    );
+    if (!changed) return;
     finalIds = nextIds;
     finalTexts = nextTexts;
     finalTextById = nextTextById;
@@ -293,7 +397,8 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
 
   function startBackfill(): void {
     if (
-      stopped || olderComplete || backfillInFlight || requestedMessages.size === 0 || !olderCursor
+      stopped || olderComplete || backfillInFlight || backfillBlockedByRpc ||
+      requestedMessages.size === 0 || !olderCursor
     ) return;
     const run = async (): Promise<void> => {
       let pages = 0;
@@ -304,12 +409,24 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
             olderComplete = true;
             break;
           }
-          const page = await refetchWithTimeout(
+          const outcome = await refetchWithTimeout(
             timeline,
             { direction: "before", cursor, limit: HISTORICAL_PAGE_ENTRIES },
             8000,
           );
-          if (!page || stopped) return;
+          if (outcome.kind === "timed-out") {
+            let blocker: Promise<void>;
+            blocker = outcome.pending.finally(() => {
+              if (backfillBlockedByRpc !== blocker) return;
+              backfillBlockedByRpc = null;
+              if (!stopped) startBackfill();
+            });
+            backfillBlockedByRpc = blocker;
+            return;
+          }
+          if (outcome.kind === "rejected") throw outcome.error;
+          const page = outcome.page;
+          if (stopped) return;
           if (page.startCursor?.epoch && timelineEpoch && page.startCursor.epoch !== timelineEpoch) {
             olderEntries.clear();
             invalidateEntries();
@@ -342,6 +459,10 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
 
   function scheduleRefresh(delayMs = 400): void {
     if (stopped || !active || refreshTimer) return;
+    if (refreshBlockedByRpc) {
+      refreshQueued = true;
+      return;
+    }
     refreshTimer = setTimeout(() => {
       refreshTimer = null;
       void refresh();
@@ -349,7 +470,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
   }
 
   async function refreshOnce(): Promise<void> {
-    if (stopped || !active) return;
+    if (stopped || !active || refreshBlockedByRpc) return;
     try {
       let payload: TimelinePage | null = null;
       const attempts = [
@@ -358,32 +479,65 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
         { limit: INITIAL_TAIL_ENTRIES },
       ] as const;
       for (const attempt of attempts) {
-        payload = await refetchWithTimeout(timeline, attempt, 4000);
-        if (payload || stopped) break;
+        const outcome = await refetchWithTimeout(timeline, attempt, 4000);
+        if (outcome.kind === "timed-out") {
+          let blocker: Promise<void>;
+          blocker = outcome.pending.finally(() => {
+            if (refreshBlockedByRpc !== blocker) return;
+            refreshBlockedByRpc = null;
+            if (stopped) return;
+            if (!active) refreshWhilePaused = true;
+            else scheduleRefresh(0);
+          });
+          refreshBlockedByRpc = blocker;
+          return;
+        }
+        if (outcome.kind === "rejected") continue;
+        payload = outcome.page;
+        break;
       }
       if (!payload || stopped) return;
 
       const nextEpoch = payload.startCursor?.epoch ?? null;
       if (timelineEpoch && nextEpoch && nextEpoch !== timelineEpoch) {
         olderEntries.clear();
+        liveEntries.clear();
         finalIds = new Set();
         finalTexts = new Set();
         finalTextById = new Map();
         finalTextByCanonicalText = new Map();
       }
       if (nextEpoch) timelineEpoch = nextEpoch;
-      tailEntries.clear();
-      for (const entry of parseEntries(payload)) tailEntries.set(entry.seq, entry);
-      invalidateEntries();
       timelineAgentStatus = payload.agent?.status;
       olderCursor = payload.startCursor ?? null;
       if (payload.hasOlder === false || olderCursor === null) {
         olderEntries.clear();
-        invalidateEntries();
         olderComplete = true;
       } else {
         olderComplete = false;
       }
+      discardIncrementalPublication();
+      tailEntries.clear();
+      for (const entry of parseEntries(payload)) tailEntries.set(entry.seq, entry);
+      const overlay = [...liveEntries].sort(([left], [right]) => left - right);
+      for (const [seq, entry] of overlay) {
+        if (!entry) {
+          tailEntries.delete(seq);
+          continue;
+        }
+        const previous = tailEntries.get(entry.seqStart - 1);
+        const merged = mergeAssistantEntries(previous, entry);
+        if (merged && previous) tailEntries.delete(previous.seq);
+        tailEntries.set(seq, merged ?? entry);
+      }
+      trimIncrementalTail();
+      lastObservedSeq = payload.entries.reduce(
+        (maximum, entry) => Math.max(maximum, entry.seqEnd),
+        Number.NEGATIVE_INFINITY,
+      );
+      for (const seq of liveEntries.keys()) lastObservedSeq = Math.max(lastObservedSeq, seq);
+      if (!Number.isFinite(lastObservedSeq)) lastObservedSeq = null;
+      invalidateEntries();
       removeSatisfiedRequests();
       publishFinals();
       startBackfill();
@@ -412,18 +566,180 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     return operation;
   }
 
+  function reconcileUnknownLiveCandidates(): void {
+    const status = effectiveAgentStatus();
+    if (
+      stopped || !active || status === undefined || status === "running" || status === "initializing" ||
+      liveReconciliationInFlight || ![...liveCandidates.values()].some((candidate) => !isSelectedFinal(candidate))
+    ) return;
+    let operation: Promise<void>;
+    operation = refresh().finally(() => {
+      if (liveReconciliationInFlight === operation) liveReconciliationInFlight = null;
+    });
+    liveReconciliationInFlight = operation;
+  }
+
+  function discardIncrementalPublication(): void {
+    if (incrementalTimer) clearTimeout(incrementalTimer);
+    incrementalTimer = null;
+    incrementalDirty = false;
+  }
+
+  function flushIncrementalPublication(): boolean {
+    if (incrementalTimer) clearTimeout(incrementalTimer);
+    incrementalTimer = null;
+    if (!incrementalDirty) return false;
+    incrementalDirty = false;
+    invalidateEntries();
+    removeSatisfiedRequests();
+    publishFinals();
+    startBackfill();
+    return true;
+  }
+
+  function scheduleIncrementalPublication(): void {
+    incrementalDirty = true;
+    if (incrementalTimer || stopped || !active) return;
+    incrementalTimer = setTimeout(() => {
+      incrementalTimer = null;
+      flushIncrementalPublication();
+    }, INCREMENTAL_PUBLISH_MS);
+  }
+
+  function resetTimeline(epoch: string | null): void {
+    discardIncrementalPublication();
+    olderEntries.clear();
+    tailEntries.clear();
+    liveEntries.clear();
+    olderCursor = null;
+    olderComplete = false;
+    timelineEpoch = epoch;
+    timelineAgentStatus = undefined;
+    eventAgentStatus = undefined;
+    lastObservedSeq = null;
+    invalidateEntries();
+    publishFinals();
+  }
+
+  function trimIncrementalTail(): void {
+    let tailTrimmed = false;
+    let firstRetained: number | undefined;
+    while (tailEntries.size > INITIAL_TAIL_ENTRIES) {
+      let oldest = Number.POSITIVE_INFINITY;
+      for (const seq of tailEntries.keys()) oldest = Math.min(oldest, seq);
+      if (!Number.isFinite(oldest)) break;
+      tailEntries.delete(oldest);
+      tailTrimmed = true;
+    }
+    if (tailTrimmed) {
+      for (const seq of tailEntries.keys()) {
+        firstRetained = firstRetained === undefined ? seq : Math.min(firstRetained, seq);
+      }
+    }
+    while (liveEntries.size > INITIAL_TAIL_ENTRIES) {
+      let oldest = Number.POSITIVE_INFINITY;
+      for (const seq of liveEntries.keys()) oldest = Math.min(oldest, seq);
+      if (!Number.isFinite(oldest)) break;
+      liveEntries.delete(oldest);
+    }
+    if (tailTrimmed && timelineEpoch && firstRetained !== undefined) {
+      olderCursor = { epoch: timelineEpoch, seq: firstRetained };
+      olderComplete = false;
+    }
+  }
+
+  function handleTimelineEvent(message: TimelineSubscriptionEvent): void {
+    const event = message && typeof message === "object" ? message.event : undefined;
+    if (!event || typeof event !== "object" || typeof event.type !== "string") {
+      // Compatibility with older SDKs that only sent an invalidation signal.
+      scheduleRefresh();
+      return;
+    }
+    if (event.type === "replacement") {
+      const replacementEpoch = typeof event.epoch === "string"
+        ? event.epoch
+        : typeof message.epoch === "string"
+          ? message.epoch
+          : null;
+      resetTimeline(replacementEpoch);
+      scheduleRefresh(0);
+      return;
+    }
+    if (event.type === "timeline") {
+      const seq = message.seq;
+      const epoch = message.epoch;
+      if (typeof seq !== "number" || !Number.isFinite(seq) || !event.item) {
+        scheduleRefresh();
+        return;
+      }
+      if (timelineEpoch && epoch && epoch !== timelineEpoch) {
+        resetTimeline(epoch);
+        scheduleRefresh(0);
+        return;
+      }
+      if (!timelineEpoch && epoch) timelineEpoch = epoch;
+      if (lastObservedSeq !== null && seq > lastObservedSeq + 1) {
+        discardIncrementalPublication();
+        scheduleRefresh(0);
+        return;
+      }
+
+      const previousSeq = lastObservedSeq;
+      const previous = previousSeq === null ? undefined : tailEntries.get(previousSeq);
+      const candidate = parseEntry(
+        event.item,
+        event.turnId,
+        seq,
+        liveEntries.get(seq) ?? tailEntries.get(seq),
+        true,
+      );
+      const merged = mergeAssistantEntries(previous, candidate);
+      const parsed = merged ?? candidate;
+      if (merged && previousSeq !== null) {
+        tailEntries.delete(previousSeq);
+        liveEntries.set(previousSeq, null);
+      }
+      liveEntries.set(seq, parsed);
+      if (parsed) tailEntries.set(seq, parsed);
+      else tailEntries.delete(seq);
+      lastObservedSeq = Math.max(lastObservedSeq ?? seq, seq);
+      trimIncrementalTail();
+      scheduleIncrementalPublication();
+      return;
+    }
+    if (event.type === "turn_started") {
+      // The stream event can precede the React agent snapshot. Keep the prior
+      // turn's final card, but classify subsequent timeline rows as running.
+      eventAgentStatus = snapshotAgentStatus === "running" || snapshotAgentStatus === "initializing"
+        ? undefined
+        : "running";
+      return;
+    }
+    if (event.type === "turn_completed" || event.type === "turn_canceled") {
+      eventAgentStatus = snapshotAgentStatus === "idle" ? undefined : "idle";
+      if (!flushIncrementalPublication()) publishFinals();
+      reconcileUnknownLiveCandidates();
+      return;
+    }
+    if (event.type === "turn_failed") {
+      eventAgentStatus = snapshotAgentStatus === "error" ? undefined : "error";
+      if (!flushIncrementalPublication()) publishFinals();
+      reconcileUnknownLiveCandidates();
+    }
+  }
+
   function start(): void {
     if (started) return;
     started = true;
     active = true;
     stopped = false;
     try {
-      const cleanup = timeline.subscribe(() => {
+      const cleanup = timeline.subscribe((message) => {
         if (!active) {
           refreshWhilePaused = true;
           return;
         }
-        scheduleRefresh();
+        handleTimelineEvent(message as TimelineSubscriptionEvent);
       });
       if (typeof cleanup === "function") timelineUnsubscribe = cleanup as () => void;
     } catch {
@@ -436,7 +752,9 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     if (stopped || !active) return;
     active = false;
     if (refreshTimer) clearTimeout(refreshTimer);
+    if (incrementalTimer) clearTimeout(incrementalTimer);
     refreshTimer = null;
+    incrementalTimer = null;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
   }
@@ -451,6 +769,7 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       refreshWhilePaused = false;
       scheduleRefresh(0);
     }
+    if (incrementalDirty) scheduleIncrementalPublication();
   }
 
   function stop(): void {
@@ -458,8 +777,11 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     stopped = true;
     active = false;
     if (refreshTimer) clearTimeout(refreshTimer);
+    if (incrementalTimer) clearTimeout(incrementalTimer);
     if (pollTimer) clearInterval(pollTimer);
     refreshTimer = null;
+    incrementalTimer = null;
+    incrementalDirty = false;
     pollTimer = null;
     timelineUnsubscribe?.();
     timelineUnsubscribe = null;
@@ -477,12 +799,16 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
     setAgentStatus(status: string | undefined): void {
       if (snapshotAgentStatus === status) return;
       snapshotAgentStatus = status;
+      if (eventAgentStatus === status) eventAgentStatus = undefined;
+      const flushedIncremental = flushIncrementalPublication();
       // Paseo can publish `running` before the new user row reaches the
       // timeline. Keep the last proven final classification until timeline
       // data shows the new turn (or continued work in the same turn). Closed
       // statuses may still finalize the current tail immediately.
-      if (status === "running" || status === "initializing") return;
-      publishFinals();
+      const effectiveStatus = effectiveAgentStatus();
+      if (effectiveStatus === "running" || effectiveStatus === "initializing") return;
+      if (!flushedIncremental) publishFinals();
+      reconcileUnknownLiveCandidates();
     },
     subscribe(cb: () => void): () => void {
       listeners.add(cb);
@@ -505,8 +831,16 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       if (finalTexts.has(text)) return text;
       return finalTextByCanonicalText.get(canonicalAssistantText(text)) ?? null;
     },
+    trackLiveCandidate(sourceKey: string, messageId: string | null, text: string | null): void {
+      if (stopped || (messageId === null && text === null)) return;
+      requestedMessages.delete(sourceKey);
+      liveCandidates.set(sourceKey, { id: messageId, text });
+      reconcileUnknownLiveCandidates();
+    },
     ensureKnown(sourceKey: string, messageId: string | null, text: string | null): void {
       if (stopped || (messageId === null && text === null)) return;
+      liveCandidates.delete(sourceKey);
+      flushIncrementalPublication();
       const request = { id: messageId, text };
       if (isKnown(request)) {
         requestedMessages.delete(sourceKey);
@@ -518,7 +852,11 @@ function createAgentTurnIndex(timeline: TimelineHandle): AgentTurnIndex {
       startBackfill();
     },
     forgetKnown(sourceKey: string): void {
+      liveCandidates.delete(sourceKey);
       requestedMessages.delete(sourceKey);
+    },
+    diagnostics(): { tailEntries: number; liveEntries: number } {
+      return { tailEntries: tailEntries.size, liveEntries: liveEntries.size };
     },
   };
 }
@@ -543,6 +881,7 @@ type TurnFinalFragment = {
   phase: "streaming" | "complete";
   order: number;
   visible: boolean;
+  finalTextMatch: boolean;
   token: symbol;
 };
 
@@ -560,11 +899,17 @@ const finalFragmentPositionBuilds = new Map<string, number>();
 let nextFinalFragmentOrder = 1;
 
 function hasRenderableText(text: string): boolean {
-  return text.split(/\r?\n/).some((line) => {
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    const newline = text.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? text.length : newline;
+    const line = text.slice(lineStart, lineEnd);
     const trimmed = line.trim();
-    if (trimmed.length === 0) return false;
-    return !/^(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/.test(trimmed);
-  });
+    if (trimmed.length > 0 && !ASSISTANT_EDGE_SEPARATOR.test(trimmed)) return true;
+    if (newline === -1) break;
+    lineStart = newline + 1;
+  }
+  return false;
 }
 
 function affectedFragmentSources(
@@ -654,9 +999,19 @@ export function mountTurnFinalFragment(input: TurnFinalFragmentInput): {
     const existing = fragments.get(input.sourceKey);
     if (existing && existing.token !== token) return;
     const index = stores.get(input.agentId)?.index;
-    const visible = hasRenderableText(next.text);
-    const oldFinalText = existing ? (index?.isFinalText(existing.text) ?? false) : false;
-    const nextFinalText = index?.isFinalText(next.text) ?? false;
+    const appendOnly = existing !== undefined && next.text.startsWith(existing.text);
+    const visible = existing?.visible && appendOnly
+      ? true
+      : appendOnly
+        ? hasRenderableText(next.text.slice(existing.text.length))
+        : hasRenderableText(next.text);
+    const oldFinalText = existing?.finalTextMatch ?? false;
+    // A running fragment cannot own a completed-turn card. Avoid normalizing
+    // the growing message on every streamed chunk; completion and index
+    // invalidations still rebuild the exact final-card position.
+    const nextFinalText = next.phase === "complete"
+      ? (index?.isFinalText(next.text) ?? false)
+      : false;
     const previousMessageId = existing?.messageId ?? null;
     const topologyChanged = !existing ||
       existing.messageId !== next.messageId ||
@@ -674,10 +1029,11 @@ export function mountTurnFinalFragment(input: TurnFinalFragmentInput): {
       phase: next.phase,
       order: existing?.order ?? nextFinalFragmentOrder++,
       visible,
+      finalTextMatch: nextFinalText,
       token,
     });
     updateFragmentMessageIndex(input.agentId, input.sourceKey, previousMessageId, next.messageId);
-    if (next.phase === "streaming") index?.forgetKnown(input.sourceKey);
+    if (next.phase === "streaming") index?.trackLiveCandidate(input.sourceKey, next.messageId, next.text);
     else index?.ensureKnown(input.sourceKey, next.messageId, next.text);
     if (topologyChanged) {
       notifyFinalFragments(input.agentId, affected!);
@@ -823,6 +1179,8 @@ export function retainTurnIndex(
       for (const fragment of finalFragments.get(agentId)?.values() ?? []) {
         if (fragment.phase === "complete") {
           index.ensureKnown(fragment.sourceKey, fragment.messageId, fragment.text);
+        } else {
+          index.trackLiveCandidate(fragment.sourceKey, fragment.messageId, fragment.text);
         }
       }
     } catch {
@@ -879,6 +1237,10 @@ export function subscribeTurnIndex(agentId: string, cb: () => void): () => void 
 
 export function turnIndexVersion(agentId: string): number {
   return stores.get(agentId)?.index.version ?? 0;
+}
+
+export function turnIndexDiagnostics(agentId: string): { tailEntries: number; liveEntries: number } {
+  return stores.get(agentId)?.index.diagnostics() ?? { tailEntries: 0, liveEntries: 0 };
 }
 
 export function isTurnFinalMessage(agentId: string, messageId: string | null): boolean {

@@ -28,6 +28,7 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
   const pills = new Map<string, PillHandle>();
   const sendPills = new Map<string, PillHandle>();
   const sendingAgents = new Set<string>();
+  let disposed = false;
 
   // Store-owned persistence: every mutation saves through the client context,
   // so sent statuses reach the daemon even when the panel is not open.
@@ -79,7 +80,7 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
   }
 
   function registerFor(agentId: string, workspaceId: string): void {
-    if (pills.has(agentId)) return;
+    if (disposed || pills.has(agentId)) return;
     commentSync.addAgent(agentId);
     pills.set(
       agentId,
@@ -150,6 +151,7 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
   void client.paseo.agents
     .list()
     .then((result) => {
+      if (disposed) return;
       for (const entry of result.entries) {
         const agent = entry.agent;
         if (agent.workspaceId) registerFor(agent.id, agent.workspaceId);
@@ -161,6 +163,7 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
     .catch(() => {});
 
   const unsubscribeAgents = client.paseo.agents.subscribe((update) => {
+    if (disposed) return;
     if (update.kind === "remove") {
       pills.get(update.agentId)?.remove();
       pills.delete(update.agentId);
@@ -180,6 +183,7 @@ export function registerPills(client: PluginClientContext): () => Promise<void> 
   });
 
   return async () => {
+    disposed = true;
     appStateSubscription.remove();
     unsubscribePersistence();
     commentSync.stop();

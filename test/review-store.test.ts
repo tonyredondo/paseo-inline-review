@@ -171,6 +171,35 @@ test("persistence cleanup retries a transient final-save failure", async () => {
   assert.equal(hasPendingSaves(agentId), false);
 });
 
+test("persistence cleanup is bounded when the daemon never answers", async () => {
+  const agentId = `cleanup-timeout-${Date.now()}`;
+  let releaseSave: (() => void) | null = null;
+  const unregister = registerPersist(
+    () => new Promise<void>((resolve) => { releaseSave = resolve; }),
+    { cleanupTimeoutMs: 5 },
+  );
+  addComment({
+    agentId,
+    messageId: "m1",
+    paragraphIndex: 0,
+    paragraphText: "paragraph",
+    text: "comment",
+  });
+
+  try {
+    const result = await Promise.race([
+      unregister().then(() => "finished" as const),
+      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 25)),
+    ]);
+    assert.equal(result, "finished");
+    assert.equal(hasPendingSaves(agentId), true, "the unsaved snapshot must remain dirty");
+  } finally {
+    (releaseSave as unknown as (() => void) | null)?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(hasPendingSaves(agentId), false, "a late successful RPC must still clear dirty state");
+  }
+});
+
 test("newer hydrated edits win and stale copies cannot overwrite them", async () => {
   const agentId = `hydrate-version-${Date.now()}`;
   const unregister = registerPersist(async () => {});
