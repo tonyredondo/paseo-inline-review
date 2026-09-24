@@ -252,7 +252,7 @@ test("image user messages contain their controls and shrink within the timeline"
   assert.doesNotMatch(wideFrameSource, /insertBefore\(imageRow/);
 });
 
-test("timeline rows use scoped agent state and one elected wide-frame controller", () => {
+test("timeline rows use scoped agent state and an imperatively elected wide-frame controller", () => {
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
   const controllerSource = String(readFileSync(path.resolve("client/wide-frame-controller.tsx")));
   const settingsSource = String(readFileSync(path.resolve("client/wide-frame-settings.tsx")));
@@ -261,13 +261,19 @@ test("timeline rows use scoped agent state and one elected wide-frame controller
   assert.ok(!timelineSource.includes("(agent) => agent)"));
   assert.match(timelineSource, /turnFinalScopeKey\(host\.id, agentId\)/);
   assert.match(timelineSource, /subscribeTurnIndex\(turnScopeId, listener\)/);
-  assert.match(timelineSource, /useWideFrameControllerOwner\(wideFrameAnchorRef\)/);
-  assert.match(controllerSource, /configureWideFrameLease\([\s\S]{0,160}host\.id/);
+  assert.doesNotMatch(timelineSource, /useWideFrameControllerOwner/);
+  assert.match(timelineSource, /<WideFrameController[\s\S]{0,180}anchorRef=\{wideFrameAnchorRef\}/);
+  assert.ok(
+    timelineSource.indexOf("<FinalCardShell") < timelineSource.indexOf("<WideFrameController"),
+    "the anchor-bearing card mounts before its imperative controller",
+  );
+  assert.match(controllerSource, /registerWideFrameOwner\(root, \(active\) =>/);
+  assert.match(controllerSource, /configureWideFrameLease\([\s\S]{0,180}value\.host\.id/);
   assert.match(controllerSource, /\n\s+anchorRef,\n/);
   assert.match(timelineSource, /rootRef=\{wideFrameAnchorRef\}/);
   assert.match(settingsSource, /configureWideFrameLease\([\s\S]{0,100}host\.id/);
   assert.doesNotMatch(settingsSource, /configureWideFrameLease\([\s\S]{0,100}\bnull,/);
-  assert.match(controllerSource, /enabled === null/);
+  assert.match(controllerSource, /value\.settings\.status !== "ready"/);
   assert.match(entrySource, /const wideFrameLease = retainWideFrameLease\(\)/);
   assert.match(entrySource, /return async \(\) => \{[\s\S]{0,240}releaseWideFrameLease\(wideFrameLease\)/);
   assert.match(entrySource, /const removeSettingsScreen = client\.addSettingsScreen/);
@@ -286,12 +292,11 @@ test("turn finality subscriptions and fragment mounts run before paint", () => {
 
 test("wide-frame ownership is elected before the browser can paint", () => {
   const controllerSource = String(readFileSync(path.resolve("client/wide-frame-controller.tsx")));
-  const ownerHook = controllerSource.slice(
-    controllerSource.indexOf("export function useWideFrameControllerOwner"),
+  const controller = controllerSource.slice(
     controllerSource.indexOf("export function WideFrameController"),
   );
-  assert.match(ownerHook, /useLayoutEffect\(\(\) => \{/);
-  assert.doesNotMatch(ownerHook, /useEffect\(\(\) => \{/);
+  assert.match(controller, /useLayoutEffect\(\(\) => \{[\s\S]{0,240}registerWideFrameOwner/);
+  assert.doesNotMatch(controller, /useEffect\(\(\) => \{[\s\S]{0,240}registerWideFrameOwner/);
 });
 
 test("assistant renderers never suppress host timeline rows", () => {

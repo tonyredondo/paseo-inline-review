@@ -1,6 +1,6 @@
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { useSettings } from "@getpaseo/plugin/client";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import {
   configureWideFrameLease,
   type WideFrameAnchorRef,
@@ -27,20 +27,7 @@ function timelineRootFor(anchor: unknown): TimelineRoot {
   return null;
 }
 
-/** Elects one visible timeline row to own the global DOM/settings feature. */
-export function useWideFrameControllerOwner(anchorRef: WideFrameAnchorRef): boolean {
-  const [active, setActive] = useState(false);
-  useLayoutEffect(() => {
-    const root = timelineRootFor(anchorRef.current);
-    const registration = registerWideFrameOwner(root, setActive);
-    return () => {
-      registration.release();
-    };
-  }, [anchorRef]);
-  return active;
-}
-
-/** Single settings subscription and wide-frame effect for one plugin instance. */
+/** Registers one row as a candidate; the global registry applies only its elected owner. */
 export function WideFrameController({
   theme,
   layout,
@@ -52,8 +39,11 @@ export function WideFrameController({
   anchorRef?: WideFrameAnchorRef;
 }) {
   const settings = useSettings(wideFrameSettings);
-  const retried = useRef(false);
   const enabled = settings.status === "ready" ? settings.values.wideFrame : null;
+  const retried = useRef(false);
+  const registration = useRef<ReturnType<typeof registerWideFrameOwner> | null>(null);
+  const current = useRef({ settings, theme, layout, host });
+  current.current = { settings, theme, layout, host };
 
   useEffect(() => {
     if (settings.status !== "ready" && settings.status !== "loading" && !retried.current) {
@@ -63,24 +53,36 @@ export function WideFrameController({
   }, [settings]);
 
   useLayoutEffect(() => {
-    // The controller is elected from virtualized timeline rows. The setting is
-    // host-scoped, while the DOM policy follows the elected timeline anchor.
-    // Row unmounts and transient settings states must not tear it down; an
-    // explicit disabled value or plugin cleanup owns that.
-    // A layout effect applies the current DOM policy before the browser paints.
-    if (layout.platform !== "web" || enabled === null) return;
-    configureWideFrameLease(
-      wideFrameLease,
-      host.id,
-      enabled,
-      {
-        accent: theme.colors.accent ?? theme.colors.foreground,
-        raised: theme.colors.surface2,
-        border: theme.colors.border,
-      },
-      anchorRef,
-    );
+    const root = timelineRootFor(anchorRef?.current);
+    const owner = registerWideFrameOwner(root, (active) => {
+      if (!active) return;
+      const value = current.current;
+      if (value.layout.platform !== "web" || value.settings.status !== "ready") return;
+      configureWideFrameLease(
+        wideFrameLease,
+        value.host.id,
+        value.settings.values.wideFrame,
+        {
+          accent: value.theme.colors.accent ?? value.theme.colors.foreground,
+          raised: value.theme.colors.surface2,
+          border: value.theme.colors.border,
+        },
+        anchorRef,
+      );
+    });
+    registration.current = owner;
+    return () => {
+      if (registration.current === owner) registration.current = null;
+      owner.release();
+    };
+  }, [anchorRef, wideFrameLease]);
+
+  // Settings and theme updates do not change the registered candidate. Ask
+  // the registry to reapply the elected owner's latest snapshot instead.
+  useLayoutEffect(() => {
+    registration.current?.reconcile();
   }, [
+    settings.status,
     enabled,
     host.id,
     layout.platform,
@@ -88,8 +90,6 @@ export function WideFrameController({
     theme.colors.foreground,
     theme.colors.surface2,
     theme.colors.border,
-    wideFrameLease,
-    anchorRef,
   ]);
 
   return null;

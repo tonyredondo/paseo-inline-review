@@ -222,16 +222,30 @@ test("wide-frame ownership and visibility tracking are shared by independent bun
   assert.equal(observerDisconnections, 2);
 
   const sharedRoot = fakeElement({ width: 1200, height: 800 });
+  const firstSharedStates: boolean[] = [];
+  const secondSharedStates: boolean[] = [];
   const firstOnSharedRoot = firstBundle.registerWideFrameOwner(
     sharedRoot,
-    () => {},
+    (active: boolean) => firstSharedStates.push(active),
     sharedWindow,
+  );
+  firstOnSharedRoot.reconcile();
+  assert.deepEqual(
+    firstSharedStates,
+    [true, true],
+    "reconciliation reapplies the elected owner after a dropped state transition",
   );
   const secondOnSharedRoot = secondBundle.registerWideFrameOwner(
     sharedRoot,
-    () => {},
+    (active: boolean) => secondSharedStates.push(active),
     sharedWindow,
   );
+  assert.deepEqual(
+    firstSharedStates,
+    [true, true, false],
+    "a newer bundle on the same visible timeline replaces the stale owner",
+  );
+  assert.deepEqual(secondSharedStates, [true]);
   assert.equal(observerConstructions, 3, "one global observer tracks a root across bundles");
   firstOnSharedRoot.release();
   assert.equal(observerDisconnections, 2, "a peer still owns the shared root watch");
@@ -257,7 +271,7 @@ test("the wide-frame controller installs during the pre-paint layout phase", asy
     .replace(/import \{ useSettings \}[^;]+;/, `
       const useSettings = () => globalThis.__wideFrameSettings;
     `)
-    .replace(/import \{[^}]*useEffect[^}]*useRef[^}]*useState[^}]*\}[^;]+;/, `
+    .replace('import { useEffect, useLayoutEffect, useRef } from "react";', `
       const useEffect = (effect: () => void | (() => void)) => {
         globalThis.__wideFramePassiveEffects.push(effect);
       };
@@ -265,7 +279,6 @@ test("the wide-frame controller installs during the pre-paint layout phase", asy
         globalThis.__wideFrameLayoutEffects.push(effect);
       };
       const useRef = (value: unknown) => ({ current: value });
-      const useState = (value: unknown) => [value, () => {}];
     `)
     .replace(/import \{\s*configureWideFrameLease,[^;]+;/, `
       const configureWideFrameLease = (_lease, _hostId, enabled) => {
@@ -273,11 +286,14 @@ test("the wide-frame controller installs during the pre-paint layout phase", asy
       };
     `)
     .replace(/import \{\s*registerWideFrameOwner,[\s\S]*?\} from "\.\/wide-frame-owner";/, `
-      const registerWideFrameOwner = () => ({
+      const registerWideFrameOwner = (_root, setActive) => {
+        setActive(true);
+        return ({
         id: Symbol("test-owner"),
         reconcile() {},
         release() {},
-      });
+        });
+      };
     `)
     .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};");
   const output = transpileModule(source, {
@@ -320,14 +336,13 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
     .replace(/import \{ useSettings \}[^;]+;/, `
       const useSettings = () => globalThis.__wideFrameSettings;
     `)
-    .replace(/import \{[^}]*useEffect[^}]*useRef[^}]*useState[^}]*\}[^;]+;/, `
+    .replace('import { useEffect, useLayoutEffect, useRef } from "react";', `
       const useEffect = (effect: () => void | (() => void)) => {
         const cleanup = effect();
         if (typeof cleanup === "function") globalThis.__wideFrameCleanups.push(cleanup);
       };
       const useLayoutEffect = useEffect;
       const useRef = (value: unknown) => ({ current: value });
-      const useState = (value: unknown) => [value, () => {}];
     `)
     .replace(/import \{\s*configureWideFrameLease,[^;]+;/, `
       const configureWideFrameLease = (_lease, _hostId, enabled) => {
@@ -336,11 +351,14 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
       };
     `)
     .replace(/import \{\s*registerWideFrameOwner,[\s\S]*?\} from "\.\/wide-frame-owner";/, `
-      const registerWideFrameOwner = () => ({
+      const registerWideFrameOwner = (_root, setActive) => {
+        setActive(true);
+        return ({
         id: Symbol("test-owner"),
         reconcile() {},
         release() {},
-      });
+        });
+      };
     `)
     .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};");
   const output = transpileModule(source, {

@@ -62,7 +62,7 @@ import { createStableReferenceDefinitions } from "./markdown-stream";
 import { createStableParagraphs } from "./paragraph-stream";
 import { createStreamingTextCoalescer } from "./stream-text";
 import { DownloadCancelledError } from "./web";
-import { WideFrameController, useWideFrameControllerOwner } from "./wide-frame-controller";
+import { WideFrameController } from "./wide-frame-controller";
 import type { WideFrameLease } from "./wide-frame";
 import { finalCardHoverStore } from "./final-card-hover";
 
@@ -1028,7 +1028,6 @@ function ReviewAssistantMessage({
   }, [paseo, agentId, turnScopeId]);
   const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
   const wideFrameAnchorRef = useRef<View | null>(null);
-  const ownsWideFrameController = useWideFrameControllerOwner(wideFrameAnchorRef);
   // Host-maintained state updates when the agent snapshot arrives or its cwd changes.
   const agentSnapshot = useAgent(agentId, (agent) => agent
     ? { workspaceId: agent.workspaceId, cwd: agent.cwd, status: agent.status }
@@ -1421,15 +1420,6 @@ function ReviewAssistantMessage({
 
   return (
     <>
-      {ownsWideFrameController ? (
-        <WideFrameController
-          theme={theme}
-          layout={layout}
-          host={host}
-          wideFrameLease={wideFrameLease}
-          anchorRef={wideFrameAnchorRef}
-        />
-      ) : null}
       <FinalCardShell
         rootRef={wideFrameAnchorRef}
         style={styles.root}
@@ -1544,6 +1534,13 @@ function ReviewAssistantMessage({
         </Modal>
       )}
       </FinalCardShell>
+      <WideFrameController
+        theme={theme}
+        layout={layout}
+        host={host}
+        wideFrameLease={wideFrameLease}
+        anchorRef={wideFrameAnchorRef}
+      />
 </>
   );
 }

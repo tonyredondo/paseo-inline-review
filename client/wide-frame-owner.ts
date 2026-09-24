@@ -45,18 +45,16 @@ function ownerRegistry(host: WideFrameOwnerHost): WideFrameOwnerRegistry {
 }
 
 /**
- * Keeps the current owner while it is visible, otherwise hands ownership to
- * the newest visible timeline. Hidden workspaces stay mounted in Paseo, so
- * mount order alone cannot identify the timeline the user is looking at.
+ * Hands ownership to the newest candidate on the visible timeline. Paseo can
+ * reuse one timeline root while switching hosts, leaving the previous bundle's
+ * candidate connected and measurable. Keeping that candidate merely because
+ * its shared root is still visible prevents the newly selected host from ever
+ * configuring the runtime.
  */
 export function selectVisibleWideFrameOwner(
   owners: readonly WideFrameOwnerCandidate[],
-  currentOwnerId: number | symbol | null,
+  _currentOwnerId: number | symbol | null,
 ): number | symbol | null {
-  const current = owners.find((owner) => owner.id === currentOwnerId);
-  if (current?.root && current.root.clientWidth > 0 && current.root.clientHeight > 0) {
-    return current.id;
-  }
   for (let index = owners.length - 1; index >= 0; index -= 1) {
     const owner = owners[index];
     if (owner.root && owner.root.clientWidth > 0 && owner.root.clientHeight > 0) {
@@ -66,9 +64,17 @@ export function selectVisibleWideFrameOwner(
   return null;
 }
 
-function reconcileWideFrameOwners(state: WideFrameOwnerRegistry): void {
+function reconcileWideFrameOwners(
+  state: WideFrameOwnerRegistry,
+  reapplyCurrent = false,
+): void {
   const nextOwnerId = selectVisibleWideFrameOwner(state.owners, state.activeOwnerId);
-  if (nextOwnerId === state.activeOwnerId) return;
+  if (nextOwnerId === state.activeOwnerId) {
+    if (reapplyCurrent) {
+      state.owners.find((owner) => owner.id === nextOwnerId)?.setActive(true);
+    }
+    return;
+  }
   state.owners.find((owner) => owner.id === state.activeOwnerId)?.setActive(false);
   state.activeOwnerId = nextOwnerId;
   state.owners.find((owner) => owner.id === state.activeOwnerId)?.setActive(true);
@@ -128,7 +134,7 @@ export function registerWideFrameOwner(
   let live = true;
   return {
     id: owner.id as symbol,
-    reconcile: () => reconcileWideFrameOwners(ownerRegistry(host)),
+    reconcile: () => reconcileWideFrameOwners(ownerRegistry(host), true),
     release: () => {
       if (!live) return;
       live = false;
