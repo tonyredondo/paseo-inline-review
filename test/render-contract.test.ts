@@ -261,7 +261,7 @@ test("timeline rows use scoped agent state and one elected wide-frame controller
   assert.ok(!timelineSource.includes("(agent) => agent)"));
   assert.match(timelineSource, /turnFinalScopeKey\(host\.id, agentId\)/);
   assert.match(timelineSource, /subscribeTurnIndex\(turnScopeId, listener\)/);
-  assert.match(timelineSource, /useWideFrameControllerOwner\(\)/);
+  assert.match(timelineSource, /useWideFrameControllerOwner\(wideFrameAnchorRef\)/);
   assert.match(controllerSource, /configureWideFrameLease\([\s\S]{0,160}host\.id/);
   assert.match(controllerSource, /\n\s+anchorRef,\n/);
   assert.match(timelineSource, /rootRef=\{wideFrameAnchorRef\}/);

@@ -9,6 +9,7 @@ import {
   classifyWideFrameMutations,
   pruneDisconnectedNodes,
 } from "../client/wide-frame-mutations.ts";
+import { selectVisibleWideFrameOwner } from "../client/wide-frame-owner.ts";
 import { parseInline } from "../shared/markdown-parse.ts";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
@@ -146,6 +147,98 @@ function append(parent: FakeElement, ...children: FakeElement[]): void {
   for (const child of children) parent.insertBefore(child, null);
 }
 
+test("wide-frame ownership follows the visible timeline across hosts", () => {
+  const hiddenRemote = fakeElement({ width: 0, height: 0 });
+  const visibleLocal = fakeElement({ width: 431, height: 642 });
+  const owners = [
+    { id: 1, root: hiddenRemote },
+    { id: 2, root: visibleLocal },
+  ];
+
+  assert.equal(selectVisibleWideFrameOwner(owners, 1), 2);
+  visibleLocal.clientWidth = 0;
+  hiddenRemote.clientWidth = 1200;
+  hiddenRemote.clientHeight = 800;
+  assert.equal(selectVisibleWideFrameOwner(owners, 2), 1);
+});
+
+test("wide-frame ownership and visibility tracking are shared by independent bundles", async () => {
+  const sourcePath = resolve(testDirectory, "../client/wide-frame-owner.ts");
+  const source = readFileSync(sourcePath, "utf8");
+  const output = transpileModule(source, {
+    compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
+  }).outputText;
+  const firstBundle = await import(
+    `data:text/javascript;base64,${Buffer.from(output).toString("base64")}#owner-first-${Date.now()}`
+  );
+  const secondBundle = await import(
+    `data:text/javascript;base64,${Buffer.from(output).toString("base64")}#owner-second-${Date.now()}`
+  );
+  let observerConstructions = 0;
+  let observerDisconnections = 0;
+  const observerCallbacks: Array<() => void> = [];
+  const sharedWindow = {
+    ResizeObserver: class {
+      constructor(callback: () => void) {
+        observerConstructions += 1;
+        observerCallbacks.push(callback);
+      }
+      observe(): void {}
+      disconnect(): void {
+        observerDisconnections += 1;
+      }
+    },
+  };
+  const hiddenRemote = fakeElement({ width: 0, height: 0 });
+  const visibleLocal = fakeElement({ width: 431, height: 642 });
+  const remoteStates: boolean[] = [];
+  const localStates: boolean[] = [];
+
+  const remote = firstBundle.registerWideFrameOwner(
+    hiddenRemote,
+    (active: boolean) => remoteStates.push(active),
+    sharedWindow,
+  );
+  const local = secondBundle.registerWideFrameOwner(
+    visibleLocal,
+    (active: boolean) => localStates.push(active),
+    sharedWindow,
+  );
+
+  assert.deepEqual(remoteStates, []);
+  assert.deepEqual(localStates, [true]);
+
+  visibleLocal.clientWidth = 0;
+  visibleLocal.clientHeight = 0;
+  hiddenRemote.clientWidth = 1200;
+  hiddenRemote.clientHeight = 800;
+  observerCallbacks[0]();
+  assert.deepEqual(localStates, [true, false]);
+  assert.deepEqual(remoteStates, [true]);
+
+  remote.release();
+  local.release();
+  assert.equal(observerConstructions, 2);
+  assert.equal(observerDisconnections, 2);
+
+  const sharedRoot = fakeElement({ width: 1200, height: 800 });
+  const firstOnSharedRoot = firstBundle.registerWideFrameOwner(
+    sharedRoot,
+    () => {},
+    sharedWindow,
+  );
+  const secondOnSharedRoot = secondBundle.registerWideFrameOwner(
+    sharedRoot,
+    () => {},
+    sharedWindow,
+  );
+  assert.equal(observerConstructions, 3, "one global observer tracks a root across bundles");
+  firstOnSharedRoot.release();
+  assert.equal(observerDisconnections, 2, "a peer still owns the shared root watch");
+  secondOnSharedRoot.release();
+  assert.equal(observerDisconnections, 3, "the final owner releases the global root watch");
+});
+
 test("the wide-frame controller installs during the pre-paint layout phase", async () => {
   const sourcePath = resolve(testDirectory, "../client/wide-frame-controller.tsx");
   const layoutEffects: Array<() => void | (() => void)> = [];
@@ -178,6 +271,13 @@ test("the wide-frame controller installs during the pre-paint layout phase", asy
       const configureWideFrameLease = (_lease, _hostId, enabled) => {
         if (enabled) globalThis.__wideFrameEnsureCalls += 1;
       };
+    `)
+    .replace(/import \{\s*registerWideFrameOwner,[\s\S]*?\} from "\.\/wide-frame-owner";/, `
+      const registerWideFrameOwner = () => ({
+        id: Symbol("test-owner"),
+        reconcile() {},
+        release() {},
+      });
     `)
     .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};");
   const output = transpileModule(source, {
@@ -234,6 +334,13 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
         if (enabled) globalThis.__wideFrameEnsureCalls += 1;
         else globalThis.__wideFrameUndoCalls += 1;
       };
+    `)
+    .replace(/import \{\s*registerWideFrameOwner,[\s\S]*?\} from "\.\/wide-frame-owner";/, `
+      const registerWideFrameOwner = () => ({
+        id: Symbol("test-owner"),
+        reconcile() {},
+        release() {},
+      });
     `)
     .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};");
   const output = transpileModule(source, {

@@ -6,36 +6,37 @@ import {
   type WideFrameAnchorRef,
   type WideFrameLease,
 } from "./wide-frame";
+import {
+  registerWideFrameOwner,
+  type WideFrameOwnerCandidate,
+} from "./wide-frame-owner";
 import { wideFrameSettings } from "../shared/wide-frame-settings";
 
-type Owner = { id: number; setActive(active: boolean): void };
+type TimelineRoot = (NonNullable<WideFrameOwnerCandidate["root"]> & {
+  parentElement?: TimelineRoot;
+  matches?(selector: string): boolean;
+}) | null;
 
-const owners: Owner[] = [];
-let nextOwnerId = 1;
-let activeOwnerId: number | null = null;
+function timelineRootFor(anchor: unknown): TimelineRoot {
+  if (!anchor || typeof anchor !== "object") return null;
+  let current: TimelineRoot = anchor as NonNullable<TimelineRoot>;
+  while (current) {
+    if (current.matches?.('[data-testid="agent-chat-scroll"]')) return current;
+    current = current.parentElement ?? null;
+  }
+  return null;
+}
 
-/** Elects one mounted timeline row to own the global DOM/settings feature. */
-export function useWideFrameControllerOwner(): boolean {
-  const idRef = useRef<number | null>(null);
-  if (idRef.current === null) idRef.current = nextOwnerId++;
-  const id = idRef.current;
+/** Elects one visible timeline row to own the global DOM/settings feature. */
+export function useWideFrameControllerOwner(anchorRef: WideFrameAnchorRef): boolean {
   const [active, setActive] = useState(false);
   useLayoutEffect(() => {
-    const owner: Owner = { id, setActive };
-    owners.push(owner);
-    if (activeOwnerId === null) {
-      activeOwnerId = id;
-      setActive(true);
-    }
+    const root = timelineRootFor(anchorRef.current);
+    const registration = registerWideFrameOwner(root, setActive);
     return () => {
-      const index = owners.findIndex((candidate) => candidate.id === id);
-      if (index >= 0) owners.splice(index, 1);
-      if (activeOwnerId === id) {
-        activeOwnerId = owners[0]?.id ?? null;
-        owners[0]?.setActive(true);
-      }
+      registration.release();
     };
-  }, [id]);
+  }, [anchorRef]);
   return active;
 }
 

@@ -1028,7 +1028,7 @@ function ReviewAssistantMessage({
   }, [paseo, agentId, turnScopeId]);
   const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
   const wideFrameAnchorRef = useRef<View | null>(null);
-  const ownsWideFrameController = useWideFrameControllerOwner();
+  const ownsWideFrameController = useWideFrameControllerOwner(wideFrameAnchorRef);
   // Host-maintained state updates when the agent snapshot arrives or its cwd changes.
   const agentSnapshot = useAgent(agentId, (agent) => agent
     ? { workspaceId: agent.workspaceId, cwd: agent.cwd, status: agent.status }
