@@ -40,6 +40,7 @@ export interface WideFrameColors {
 
 export interface WideFrameAnchorRef {
   readonly current: unknown;
+  subscribe?(listener: (anchor: unknown) => void): () => void;
 }
 
 type WNode = {

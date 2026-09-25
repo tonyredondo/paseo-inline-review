@@ -146,6 +146,7 @@ export function registerWideFrameOwner(
   host = globalThis as unknown as WideFrameOwnerHost,
 ): {
   id: symbol;
+  setRoot(root: WideFrameOwnerCandidate["root"]): void;
   reconcile(): void;
   release(): void;
 } {
@@ -157,11 +158,22 @@ export function registerWideFrameOwner(
     setActive,
   };
   state.owners.push(owner);
-  const releaseRootWatch = retainRootWatch(state, host, owner);
+  let releaseRootWatch = retainRootWatch(state, host, owner);
   reconcileWideFrameOwners(state, host);
   let live = true;
   return {
     id: owner.id as symbol,
+    setRoot: (root) => {
+      if (!live) return;
+      if (owner.root !== root) {
+        releaseRootWatch();
+        owner.root = root;
+        releaseRootWatch = retainRootWatch(ownerRegistry(host), host, owner);
+      }
+      // A ref can attach after this candidate was registered. Reapply even
+      // when it was already elected so its lease can bind to the new root.
+      reconcileWideFrameOwners(ownerRegistry(host), host, true);
+    },
     reconcile: () => reconcileWideFrameOwners(ownerRegistry(host), host, true),
     release: () => {
       if (!live) return;

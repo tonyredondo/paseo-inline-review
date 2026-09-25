@@ -70,8 +70,12 @@ export function WideFrameController({
         anchorRef,
       );
     });
+    const unsubscribeAnchor = anchorRef?.subscribe?.((anchor) => {
+      owner.setRoot(timelineRootFor(anchor));
+    });
     registration.current = owner;
     return () => {
+      unsubscribeAnchor?.();
       if (registration.current === owner) registration.current = null;
       owner.release();
     };

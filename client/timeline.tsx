@@ -63,7 +63,7 @@ import { createStableParagraphs } from "./paragraph-stream";
 import { createStreamingTextCoalescer } from "./stream-text";
 import { DownloadCancelledError } from "./web";
 import { WideFrameController } from "./wide-frame-controller";
-import type { WideFrameLease } from "./wide-frame";
+import type { WideFrameAnchorRef, WideFrameLease } from "./wide-frame";
 import { finalCardHoverStore } from "./final-card-hover";
 
 /** Data for the dotted compaction divider replacing the host's hairline. */
@@ -161,6 +161,29 @@ function useMessageComments(agentId: string, data: ReviewItemData, sourceKey: st
 }
 
 let nextMessageSourceKey = 1;
+
+type LiveWideFrameAnchorRef = WideFrameAnchorRef & {
+  attach(node: View | null): void;
+};
+
+function createLiveWideFrameAnchorRef(): LiveWideFrameAnchorRef {
+  let current: View | null = null;
+  const listeners = new Set<(anchor: unknown) => void>();
+  return {
+    get current() {
+      return current;
+    },
+    attach(node) {
+      if (current === node) return;
+      current = node;
+      for (const listener of listeners) listener(node);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
 
 /** Bounds streaming reparse frequency while returning the final snapshot synchronously. */
 function useCoalescedStreamingText(text: string, phase: ReviewItemData["phase"]): string {
@@ -1027,7 +1050,11 @@ function ReviewAssistantMessage({
     }
   }, [paseo, agentId, turnScopeId]);
   const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
-  const wideFrameAnchorRef = useRef<View | null>(null);
+  const wideFrameAnchorRef = useRef<LiveWideFrameAnchorRef | null>(null);
+  if (!wideFrameAnchorRef.current) {
+    wideFrameAnchorRef.current = createLiveWideFrameAnchorRef();
+  }
+  const wideFrameAnchor = wideFrameAnchorRef.current;
   // Host-maintained state updates when the agent snapshot arrives or its cwd changes.
   const agentSnapshot = useAgent(agentId, (agent) => agent
     ? { workspaceId: agent.workspaceId, cwd: agent.cwd, status: agent.status }
@@ -1421,7 +1448,7 @@ function ReviewAssistantMessage({
   return (
     <>
       <FinalCardShell
-        rootRef={wideFrameAnchorRef}
+        rootRef={wideFrameAnchor.attach}
         style={styles.root}
         timestamp={timestamp}
         text={finalCardText}
@@ -1539,7 +1566,7 @@ function ReviewAssistantMessage({
         layout={layout}
         host={host}
         wideFrameLease={wideFrameLease}
-        anchorRef={wideFrameAnchorRef}
+        anchorRef={wideFrameAnchor}
       />
 </>
   );

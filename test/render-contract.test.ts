@@ -262,15 +262,20 @@ test("timeline rows use scoped agent state and an imperatively elected wide-fram
   assert.match(timelineSource, /turnFinalScopeKey\(host\.id, agentId\)/);
   assert.match(timelineSource, /subscribeTurnIndex\(turnScopeId, listener\)/);
   assert.doesNotMatch(timelineSource, /useWideFrameControllerOwner/);
-  assert.match(timelineSource, /<WideFrameController[\s\S]{0,180}anchorRef=\{wideFrameAnchorRef\}/);
+  assert.match(timelineSource, /<WideFrameController[\s\S]{0,180}anchorRef=\{wideFrameAnchor\}/);
   assert.ok(
     timelineSource.indexOf("<FinalCardShell") < timelineSource.indexOf("<WideFrameController"),
     "the anchor-bearing card mounts before its imperative controller",
   );
   assert.match(controllerSource, /registerWideFrameOwner\(root, host\.id, \(active\) =>/);
+  assert.match(
+    controllerSource,
+    /anchorRef\?\.subscribe\?\.\(\(anchor\) => \{[\s\S]{0,100}owner\.setRoot\(timelineRootFor\(anchor\)\)/,
+  );
   assert.match(controllerSource, /configureWideFrameLease\([\s\S]{0,180}value\.host\.id/);
   assert.match(controllerSource, /\n\s+anchorRef,\n/);
-  assert.match(timelineSource, /rootRef=\{wideFrameAnchorRef\}/);
+  assert.match(timelineSource, /rootRef=\{wideFrameAnchor\.attach\}/);
+  assert.match(timelineSource, /anchorRef=\{wideFrameAnchor\}/);
   assert.match(settingsSource, /configureWideFrameLease\([\s\S]{0,100}host\.id/);
   assert.doesNotMatch(settingsSource, /configureWideFrameLease\([\s\S]{0,100}\bnull,/);
   assert.match(controllerSource, /value\.settings\.status !== "ready"/);

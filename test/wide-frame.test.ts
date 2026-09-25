@@ -162,6 +162,37 @@ test("wide-frame ownership follows the visible timeline across hosts", () => {
   assert.equal(selectVisibleWideFrameOwner(owners, 2), 1);
 });
 
+test("a new or replaced workspace can attach its timeline after the owner registers", async () => {
+  const sourcePath = resolve(testDirectory, "../client/wide-frame-owner.ts");
+  const source = readFileSync(sourcePath, "utf8");
+  const output = transpileModule(source, {
+    compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
+  }).outputText;
+  const bundle = await import(
+    `data:text/javascript;base64,${Buffer.from(output).toString("base64")}#owner-late-root-${Date.now()}`
+  );
+  const states: boolean[] = [];
+  const visibleRoot = fakeElement({ width: 1200, height: 800 });
+  const owner = bundle.registerWideFrameOwner(
+    null,
+    "srv_m2",
+    (active: boolean) => states.push(active),
+    {},
+  );
+
+  assert.deepEqual(states, [], "an owner without a mounted timeline stays provisional");
+  owner.setRoot(visibleRoot);
+  assert.deepEqual(states, [true], "the late timeline becomes authoritative without remounting the bundle");
+  const replacementRoot = fakeElement({ width: 1200, height: 800 });
+  owner.setRoot(replacementRoot);
+  assert.deepEqual(
+    states,
+    [true, true],
+    "a selected owner reapplies its policy when Paseo replaces the workspace timeline",
+  );
+  owner.release();
+});
+
 test("wide-frame ownership prefers the visible route's host on a shared timeline", () => {
   const sharedRoot = fakeElement({ width: 1200, height: 800 });
   const owners = [
@@ -299,7 +330,7 @@ test("wide-frame ownership and visibility tracking are shared by independent bun
   m5.release();
 });
 
-test("the wide-frame controller installs during the pre-paint layout phase", async () => {
+test("the wide-frame controller installs before paint and follows a late timeline anchor", async () => {
   const sourcePath = resolve(testDirectory, "../client/wide-frame-controller.tsx");
   const layoutEffects: Array<() => void | (() => void)> = [];
   const passiveEffects: Array<() => void | (() => void)> = [];
@@ -307,6 +338,8 @@ test("the wide-frame controller installs during the pre-paint layout phase", asy
   globals.__wideFrameLayoutEffects = layoutEffects;
   globals.__wideFramePassiveEffects = passiveEffects;
   globals.__wideFrameEnsureCalls = 0;
+  globals.__wideFrameRootUpdates = [];
+  globals.__wideFrameAnchorListener = null;
   globals.__wideFrameSettings = {
     status: "ready",
     values: { wideFrame: true },
@@ -332,10 +365,14 @@ test("the wide-frame controller installs during the pre-paint layout phase", asy
       };
     `)
     .replace(/import \{\s*registerWideFrameOwner,[\s\S]*?\} from "\.\/wide-frame-owner";/, `
-      const registerWideFrameOwner = (_root, _hostId, setActive) => {
-        setActive(true);
+      const registerWideFrameOwner = (root, _hostId, setActive) => {
+        if (root) setActive(true);
         return ({
         id: Symbol("test-owner"),
+        setRoot(root) {
+          globalThis.__wideFrameRootUpdates.push(root);
+          if (root) setActive(true);
+        },
         reconcile() {},
         release() {},
         });
@@ -348,20 +385,40 @@ test("the wide-frame controller installs during the pre-paint layout phase", asy
   const controller = await import(
     `data:text/javascript;base64,${Buffer.from(output).toString("base64")}#wide-frame-layout-${Date.now()}`
   );
+  const timelineRoot = fakeElement({ width: 1200, height: 800 });
+  timelineRoot.matches = (selector: string) => selector === '[data-testid="agent-chat-scroll"]';
+  const anchor = fakeElement({ width: 800, height: 400 });
+  anchor.parentElement = timelineRoot;
+  const anchorRef = {
+    current: null,
+    subscribe(listener: (nextAnchor: unknown) => void) {
+      globals.__wideFrameAnchorListener = listener;
+      return () => {
+        globals.__wideFrameAnchorListener = null;
+      };
+    },
+  };
 
   controller.WideFrameController({
     theme: { colors: { accent: "#123456", foreground: "#ffffff", surface2: "#222222", border: "#333333" } },
     layout: { platform: "web", compact: false },
     host: { id: "M5", label: "M5" },
     wideFrameLease: Symbol("test"),
+    anchorRef,
   });
   assert.equal(globals.__wideFrameEnsureCalls, 0);
   for (const effect of layoutEffects) effect();
+  assert.equal(globals.__wideFrameEnsureCalls, 0, "the owner stays provisional while the timeline is absent");
+  assert.equal(typeof globals.__wideFrameAnchorListener, "function");
+  (globals.__wideFrameAnchorListener as (nextAnchor: unknown) => void)(anchor);
   assert.equal(globals.__wideFrameEnsureCalls, 1);
+  assert.deepEqual(globals.__wideFrameRootUpdates, [timelineRoot]);
 
   delete globals.__wideFrameLayoutEffects;
   delete globals.__wideFramePassiveEffects;
   delete globals.__wideFrameEnsureCalls;
+  delete globals.__wideFrameRootUpdates;
+  delete globals.__wideFrameAnchorListener;
   delete globals.__wideFrameSettings;
 });
 
@@ -401,6 +458,7 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
         setActive(true);
         return ({
         id: Symbol("test-owner"),
+        setRoot() {},
         reconcile() {},
         release() {},
         });
