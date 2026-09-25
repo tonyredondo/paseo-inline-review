@@ -68,6 +68,17 @@ test("new known or marker-bearing subtrees schedule only their exact scopes", ()
   assert.deepEqual(classify([{ target: capped, addedNodes: [textNode] }]).scopes, [capped]);
 });
 
+test("a capped turn wrapper is scanned before its timeline marker mounts", () => {
+  const pendingTurn = element("820px");
+  const result = classifyWideFrameMutations<FakeNode>({
+    mutations: [{ target: pendingTurn, addedNodes: [pendingTurn] }],
+    markerSelector,
+    isScanCandidate: (node) => node.maxWidth === "820px",
+  });
+
+  assert.deepEqual(result.scopes, [pendingTurn]);
+});
+
 test("a style rewrite inside a message repairs only that message subtree", () => {
   const message = element("none", [], true);
   message.dataset!.inlineReviewUser = "1";

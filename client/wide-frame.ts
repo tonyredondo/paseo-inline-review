@@ -1018,6 +1018,10 @@ function ensureWideFrameRuntime(
       const work = classifyWideFrameMutations<WNode>({
         mutations,
         markerSelector,
+        // Paseo first mounts an empty 820px turn wrapper and fills it in a
+        // later commit. Claim it immediately so the observer remains on that
+        // row even before a user-message or plugin marker exists.
+        isScanCandidate: (node) => g.getComputedStyle(node).maxWidth === "820px",
       });
       const timelineConnected =
         timelineRoot === (doc as unknown as WDoc) ||

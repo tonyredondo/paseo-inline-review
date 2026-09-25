@@ -59,9 +59,11 @@ export function lowestCommonAncestor<T extends ParentLinked<T>>(nodes: readonly 
 export function classifyWideFrameMutations<T extends MutationNode>({
   mutations,
   markerSelector,
+  isScanCandidate,
 }: {
   mutations: readonly WideFrameMutation[];
   markerSelector: string;
+  isScanCandidate?: (node: T) => boolean;
 }): { repairWidenedStyles: boolean; scopes: T[] } {
   let repairWidenedStyles = false;
   const scopes = new Set<T>();
@@ -99,7 +101,8 @@ export function classifyWideFrameMutations<T extends MutationNode>({
       if (
         typed.dataset!.inlineReviewWide === "1" ||
         typed.matches?.(markerSelector) ||
-        (typed.querySelectorAll?.(markerSelector).length ?? 0) > 0
+        (typed.querySelectorAll?.(markerSelector).length ?? 0) > 0 ||
+        isScanCandidate?.(typed)
       ) {
         scopes.add(typed);
       }
