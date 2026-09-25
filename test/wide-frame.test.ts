@@ -639,6 +639,7 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
   const sourcePath = resolve(testDirectory, "../client/wide-frame.ts");
   const source = readFileSync(sourcePath, "utf8")
     .replace('import { Platform } from "react-native";', "const Platform = globalThis.__wideFramePlatform;")
+    .replace(/import \{ updateUserCardStyles \}[^;]+;/, "const updateUserCardStyles = () => {};")
     .replace(/import \{ wideFrameSettings \}[^;]+;/, "const wideFrameSettings = {};")
     .replace(/import \{ parseInline[^;]+;/, "const parseInline = globalThis.__wideFrameParseInline;")
     .replace(/import \{\s*acquireWideFrameLease,[\s\S]*?\} from "\.\/wide-frame-lease";/, `

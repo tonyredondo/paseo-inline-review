@@ -13,6 +13,7 @@ import { Platform } from "react-native";
 import { parseInline, type InlineToken } from "../shared/markdown-parse";
 import { wideFrameSettings } from "../shared/wide-frame-settings";
 import { createAdaptiveSweep } from "./adaptive-sweep";
+import { updateUserCardStyles } from "./user-card-styles";
 import {
   classifyWideFrameMutations,
   lowestCommonAncestor,
@@ -695,6 +696,7 @@ function applyUserCardColors(colors?: WideFrameColors): void {
   if (colors.accent) userCardAccent = colors.accent;
   if (colors.raised) userCardRaised = colors.raised;
   if (colors.border) userCardBorder = colors.border;
+  updateUserCardStyles(colors);
 }
 
 function timelineScopeFor(

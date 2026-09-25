@@ -16,6 +16,10 @@ import {
   releaseWideFrameLease,
   retainWideFrameLease,
 } from "./wide-frame";
+import {
+  releaseUserCardStyles,
+  retainUserCardStyles,
+} from "./user-card-styles";
 import { WideFrameSettingsScreen } from "./wide-frame-settings";
 
 export default function contribute(client: PluginClientContext) {
@@ -41,6 +45,7 @@ function registerContributions(
   // it before panels and background synchronization to shorten the native-to-
   // plugin render gap owned by this bundle.
   const removeTimeline = registerTimeline(client, wideFrameLease);
+  const userCardStyles = retainUserCardStyles();
   // The panel tab title is read live from the plugin registry, so panels
   // can be re-registered with a new title and open tabs update at once.
   let panelRegistration: PluginCleanup | null = null;
@@ -133,6 +138,7 @@ function registerContributions(
     // Wide-frame is host-scoped rather than owned by a virtualized timeline
     // row, so the plugin entrypoint is its final lifecycle boundary.
     releaseWideFrameLease(wideFrameLease);
+    releaseUserCardStyles(userCardStyles);
     removeTimeline();
     disposeTurnIndexes();
     disposeImagePreviews();
