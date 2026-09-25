@@ -74,7 +74,7 @@ export function WideFrameSettingsScreen({
         <Text style={styles.muted}>{settings.status === "loading" ? "Loading…" : "Settings unavailable."}</Text>
       )}
       <Text style={styles.muted}>
-        {`User messages render as review-style cards on desktop, iPhone and iPad. Web keeps Paseo's native image and action controls; native rows with host-owned attachments remain untouched.`}
+        {`This flag controls only timeline width. User and agent messages always render as review-style cards. Web keeps Paseo's native image and action controls; native rows with host-owned attachments remain untouched.`}
       </Text>
     </View>
   );

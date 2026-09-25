@@ -428,7 +428,7 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
   const globals = globalThis as unknown as Record<string, unknown>;
   globals.__wideFrameCleanups = cleanups;
   globals.__wideFrameEnsureCalls = 0;
-  globals.__wideFrameUndoCalls = 0;
+  globals.__wideFrameDisabledCalls = 0;
   globals.__wideFrameSettings = {
     status: "ready",
     values: { wideFrame: true },
@@ -449,8 +449,8 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
     `)
     .replace(/import \{\s*configureWideFrameLease,[^;]+;/, `
       const configureWideFrameLease = (_lease, _hostId, enabled) => {
-        if (enabled) globalThis.__wideFrameEnsureCalls += 1;
-        else globalThis.__wideFrameUndoCalls += 1;
+        globalThis.__wideFrameEnsureCalls += 1;
+        if (!enabled) globalThis.__wideFrameDisabledCalls += 1;
       };
     `)
     .replace(/import \{\s*registerWideFrameOwner,[\s\S]*?\} from "\.\/wide-frame-owner";/, `
@@ -480,13 +480,14 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
     wideFrameLease: Symbol("test"),
   });
   assert.equal(globals.__wideFrameEnsureCalls, 1);
+  assert.equal(globals.__wideFrameDisabledCalls, 0);
 
   for (const cleanup of cleanups.reverse()) cleanup();
-  assert.equal(globals.__wideFrameUndoCalls, 0);
+  assert.equal(globals.__wideFrameDisabledCalls, 0);
 
   cleanups.length = 0;
   globals.__wideFrameEnsureCalls = 0;
-  globals.__wideFrameUndoCalls = 0;
+  globals.__wideFrameDisabledCalls = 0;
   globals.__wideFrameSettings = {
     status: "loading",
     reload: async () => {},
@@ -498,13 +499,13 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
     wideFrameLease: Symbol("test"),
   });
   assert.equal(globals.__wideFrameEnsureCalls, 0);
-  assert.equal(globals.__wideFrameUndoCalls, 0);
+  assert.equal(globals.__wideFrameDisabledCalls, 0);
   for (const cleanup of cleanups.reverse()) cleanup();
-  assert.equal(globals.__wideFrameUndoCalls, 0);
+  assert.equal(globals.__wideFrameDisabledCalls, 0);
 
   cleanups.length = 0;
   globals.__wideFrameEnsureCalls = 0;
-  globals.__wideFrameUndoCalls = 0;
+  globals.__wideFrameDisabledCalls = 0;
   globals.__wideFrameSettings = {
     status: "ready",
     values: { wideFrame: false },
@@ -516,14 +517,14 @@ test("a virtualized timeline controller unmount cannot tear down the host-wide f
     host: { id: "M5", label: "M5" },
     wideFrameLease: Symbol("test"),
   });
-  assert.equal(globals.__wideFrameEnsureCalls, 0);
-  assert.equal(globals.__wideFrameUndoCalls, 1);
+  assert.equal(globals.__wideFrameEnsureCalls, 1);
+  assert.equal(globals.__wideFrameDisabledCalls, 1);
   for (const cleanup of cleanups.reverse()) cleanup();
-  assert.equal(globals.__wideFrameUndoCalls, 1);
+  assert.equal(globals.__wideFrameDisabledCalls, 1);
 
   delete globals.__wideFrameCleanups;
   delete globals.__wideFrameEnsureCalls;
-  delete globals.__wideFrameUndoCalls;
+  delete globals.__wideFrameDisabledCalls;
   delete globals.__wideFrameSettings;
 });
 
@@ -690,6 +691,20 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
 
   const anchorRef = { current: compactionDivider };
   const lease = module.retainWideFrameLease();
+  module.configureWideFrameLease(
+    lease,
+    "M5",
+    false,
+    { accent: "#58a6ff", raised: "#242636", border: "#30363d" },
+    anchorRef,
+  );
+  assert.equal(observerConstructions, 1, "cards install even when widening starts disabled");
+  assert.equal(capped.style.maxWidth, undefined, "disabled widening keeps the host width");
+  assert.equal(message.dataset.inlineReviewUser, "1", "the user card is always active");
+  assert.equal(message.querySelectorAll('[data-inline-review-user-backdrop="1"]').length, 1);
+  // Clearing the stale inline override exposes Paseo's stylesheet cap.
+  staleCapped.computedMaxWidth = "820px";
+
   module.configureWideFrameLease(
     lease,
     "M5",
@@ -1053,6 +1068,38 @@ test("wide-frame styling is idempotent, bounded, and completely reversible", asy
     "a narrow-pane user message still receives the review-card skin",
   );
   assert.equal(narrowMessage.style.borderLeftWidth, "5px");
+
+  // The feature flag controls only the reading-frame width. User cards are
+  // part of the plugin's baseline presentation and must remain active when
+  // widening is disabled.
+  secondModule.configureWideFrameLease(
+    replacementLease,
+    "M5",
+    false,
+    { accent: "#58a6ff", raised: "#242636", border: "#30363d" },
+    anchorRef,
+  );
+  assert.equal(
+    replacementCapped.style.maxWidth,
+    "",
+    "disabling widening restores the native timeline width",
+  );
+  assert.equal(
+    narrowMessage.style.backgroundColor,
+    "#242636",
+    "disabling widening must not remove the user-card skin",
+  );
+  assert.equal(narrowMessage.style.borderLeftWidth, "5px");
+
+  replacementPane.clientWidth = 1200;
+  (globals.__wideFrameWindow as { innerWidth: number }).innerWidth = 1200;
+  secondModule.configureWideFrameLease(
+    replacementLease,
+    "M5",
+    true,
+    { accent: "#58a6ff", raised: "#242636", border: "#30363d" },
+    anchorRef,
+  );
 
   // Reattach the detached fixture so cleanup can prove complete reversibility
   // for both the old and replacement subtrees.

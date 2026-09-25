@@ -664,7 +664,7 @@ type WideFrameRuntimeState = {
   stop: (() => void) | null;
   restore: (() => void) | null;
   document: WDoc | null;
-  refresh: ((colors?: WideFrameColors) => void) | null;
+  refresh: ((colors: WideFrameColors | undefined, wideningEnabled: boolean) => void) | null;
   owner: WideFrameLease | symbol | null;
   hostId: string | null;
   scope: WNode | WDoc | null;
@@ -740,6 +740,7 @@ function isConnectedTo(node: WNode, root: WNode): boolean {
 function ensureWideFrameRuntime(
   owner: WideFrameLease | symbol,
   hostId: string | null,
+  wideningEnabled: boolean,
   colors: WideFrameColors | undefined,
   anchorRef: WideFrameAnchorRef | undefined,
   allowDocumentFallback: boolean,
@@ -758,7 +759,7 @@ function ensureWideFrameRuntime(
       runtime.hostId === hostId &&
       runtime.refresh
     ) {
-      runtime.refresh(colors);
+      runtime.refresh(colors, wideningEnabled);
       return true;
     }
     return false;
@@ -770,7 +771,7 @@ function ensureWideFrameRuntime(
     runtime.scope === scope &&
     runtime.refresh
   ) {
-    runtime.refresh(colors);
+    runtime.refresh(colors, wideningEnabled);
     return true;
   }
   if (runtime.stop) {
@@ -788,6 +789,8 @@ function ensureWideFrameRuntime(
   applyUserCardColors(colors);
 
   let timelineRoot = scope;
+  let wideningActive = wideningEnabled;
+  let widthsMayNeedRestore = !wideningEnabled;
 
   const widened = new Set<WNode>();
   let paneWidthCache = 0;
@@ -824,6 +827,7 @@ function ensureWideFrameRuntime(
         marker.parentElement?.dataset.inlineReviewTight !== "1"
       );
     }
+    if (!wideningActive) return false;
     for (let current: WNode | null = marker; current; current = current.parentElement) {
       if (current.dataset.inlineReviewWide === "1") return false;
       if (current === doc.body) break;
@@ -864,6 +868,24 @@ function ensureWideFrameRuntime(
     if (doc.body) pruneDisconnectedNodes(widened, doc.body);
   };
 
+  const restoreWidths = (): void => {
+    if (widened.size === 0 && !widthsMayNeedRestore) return;
+    const owned = new Set([
+      ...widened,
+      ...(widthsMayNeedRestore
+        ? queryWithin(timelineRoot, '[data-inline-review-wide="1"]')
+        : []),
+    ]);
+    for (const el of owned) {
+      el.style.maxWidth = "";
+      el.dataset.inlineReviewWide = "";
+    }
+    widened.clear();
+    paneWidthCache = 0;
+    lastInnerWidth = -1;
+    widthsMayNeedRestore = false;
+  };
+
   const scanCandidates = (root: WNode | WDoc | null): Set<WNode> => {
     const scope = root ?? timelineRoot;
     const candidates = new Set<WNode>();
@@ -885,6 +907,10 @@ function ensureWideFrameRuntime(
 
   /** Cheap re-apply of already-computed widening (host re-renders wipe it). */
   const applyStylesOnly = (): void => {
+    if (!wideningActive) {
+      restoreWidths();
+      return;
+    }
     pruneWidened();
     const paneWidth = paneWidthCache;
     if (paneWidth >= 900) {
@@ -896,6 +922,10 @@ function ensureWideFrameRuntime(
   };
 
   const applyWidths = (scope: WNode | WDoc | null = null): boolean => {
+    if (!wideningActive) {
+      restoreWidths();
+      return false;
+    }
     pruneWidened();
     // Discover newly mounted 820-capped host elements (tool calls, user
     // messages, plugin items — everything shares the reading frame).
@@ -946,8 +976,13 @@ function ensureWideFrameRuntime(
     rebindObserverRoot();
   };
 
-  runtime.refresh = (nextColors?: WideFrameColors): void => {
+  runtime.refresh = (
+    nextColors: WideFrameColors | undefined,
+    nextWideningEnabled: boolean,
+  ): void => {
     applyUserCardColors(nextColors);
+    if (wideningActive && !nextWideningEnabled) widthsMayNeedRestore = true;
+    wideningActive = nextWideningEnabled;
     apply(timelineRoot);
   };
   const observerCbs: Array<() => void> = [];
@@ -1021,7 +1056,8 @@ function ensureWideFrameRuntime(
         // Paseo first mounts an empty 820px turn wrapper and fills it in a
         // later commit. Claim it immediately so the observer remains on that
         // row even before a user-message or plugin marker exists.
-        isScanCandidate: (node) => g.getComputedStyle(node).maxWidth === "820px",
+        isScanCandidate: (node) =>
+          wideningActive && g.getComputedStyle(node).maxWidth === "820px",
       });
       const timelineConnected =
         timelineRoot === (doc as unknown as WDoc) ||
@@ -1121,7 +1157,7 @@ function ensureWideFrameRuntime(
 
 /** Legacy/test entrypoint: intentionally owns the whole document. */
 export function ensureWideFrame(colors?: WideFrameColors): void {
-  ensureWideFrameRuntime(UNLEASED_RUNTIME_OWNER, null, colors, undefined, true);
+  ensureWideFrameRuntime(UNLEASED_RUNTIME_OWNER, null, true, colors, undefined, true);
 }
 
 function restoreWideFrameDom(doc: WDoc): void {
@@ -1159,7 +1195,7 @@ function undoWideFrameNow(): void {
   else restoreCurrentWideFrameDom();
 }
 
-/** Immediately restores the host layout, for an explicit disabled setting. */
+/** Immediately restores every plugin-owned DOM change during full teardown. */
 export function undoWideFrame(): void {
   cancelPendingWideFrameCleanup();
   undoWideFrameNow();
@@ -1178,8 +1214,17 @@ export function configureWideFrameLease(
 ): void {
   updateWideFrameLease(lease, {
     hostId,
-    enabled,
-    activate: () => ensureWideFrameRuntime(lease, hostId, colors, anchorRef, false),
+    // The lease owns baseline card styling even when width expansion is off.
+    // `enabled` controls only the max-width pass inside the active runtime.
+    enabled: true,
+    activate: () => ensureWideFrameRuntime(
+      lease,
+      hostId,
+      enabled,
+      colors,
+      anchorRef,
+      false,
+    ),
     deactivate: undoWideFrame,
   });
 }
