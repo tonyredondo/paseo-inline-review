@@ -8,7 +8,7 @@ import {
 } from "react-native";
 import type { InlineToken, LocalFileTarget } from "../shared/markdown-parse";
 import { COMPACT_IMAGE_VIEWER_MAX_BYTES, FILE_TRANSFER_CHUNK_BYTES, localImagePreviewRpc, openLocalFileRpc } from "../shared/review";
-import { retainImagePreview, retryImagePreview, type ThumbnailState } from "./image-preview-store";
+import { retainFullImage, retainImagePreview, retryFullImage, retryImagePreview, type FullImageLoader, type ThumbnailState } from "./image-preview-store";
 import { listenImageViewerKeys } from "./web";
 import { ZoomableImage } from "./image-zoom";
 
@@ -101,38 +101,32 @@ function ImagePreview({ image, target, theme, compact, enabled, thumbnail, onLoa
   );
 }
 
-function FullImage({ image, target, theme, compact, onOpenFile, onNavigate }: {
+function FullImage({ image, target, theme, compact, openFile, onOpenFile, onNavigate }: {
   image: GalleryImage;
   target: LocalFileTarget | null;
   theme: PluginTheme;
   compact: boolean;
+  openFile: FullImageLoader;
   onOpenFile?: () => void;
   onNavigate(direction: -1 | 1): void;
 }) {
-  const openFile = useRpc(openLocalFileRpc);
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<{ uri?: string; error?: string }>({});
   const imageMaxBytes = compact || Platform.OS === "ios" || Platform.OS === "android" ? COMPACT_IMAGE_VIEWER_MAX_BYTES : FILE_TRANSFER_CHUNK_BYTES;
   useEffect(() => {
-    let active = true;
     setState({});
     if (!target) {
       setState({ uri: image.url });
     } else {
-      // Only the open lightbox mounts this component. Keep one full image in
-      // memory and reject replies after navigation, dismissal or unmount.
-      void openFile({ path: target.path, mode: "image", optimizeImage: true, imageMaxBytes }).then((result) => {
-        if (!active) return;
-        if (result.ok && result.base64 && result.mimeType?.startsWith("image/")) {
-          setState({ uri: `data:${result.mimeType};base64,${result.base64}` });
-        } else {
-          setState({ error: result.error ?? "The full image is unavailable." });
-        }
-      }).catch(() => {
-        if (active) setState({ error: "Could not load the full image." });
-      });
+      // The gallery owns the stable host RPC callback across image remounts.
+      // Releasing a subscription ignores late replies while retaining the
+      // bounded payload for navigation and sharing any pending request.
+      return retainFullImage(target.path, openFile, (next) => {
+        if (next.status === "ready") setState({ uri: next.dataUri });
+        else if (next.status === "error") setState({ error: next.message });
+        else setState({});
+      }, imageMaxBytes);
     }
-    return () => { active = false; };
   }, [attempt, image.url, imageMaxBytes, openFile, target?.path]);
   if (state.uri) {
     return <ZoomableImage key={attempt} uri={state.uri} label={imageLabel(image)} theme={theme} onNavigate={onNavigate} onError={() => setState({ error: "Could not display the full image." })} />;
@@ -141,7 +135,10 @@ function FullImage({ image, target, theme, compact, onOpenFile, onNavigate }: {
     <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 16, padding: 20 }}>
       {state.error ? <Icon name="ImageOff" size={32} color={theme.colors.foregroundMuted} /> : <ActivityIndicator color={theme.colors.foregroundMuted} />}
       <Text style={{ color: state.error ? theme.colors.statusDanger : theme.colors.foregroundMuted, textAlign: "center" }}>{state.error ?? "Loading image…"}</Text>
-      {state.error ? <Pressable accessibilityRole="button" accessibilityLabel="Retry full image" onPress={() => setAttempt((value) => value + 1)}><Text style={{ color: theme.colors.accent }}>Retry</Text></Pressable> : null}
+      {state.error ? <Pressable accessibilityRole="button" accessibilityLabel="Retry full image" onPress={() => {
+        if (target) retryFullImage(target.path, openFile, imageMaxBytes);
+        setAttempt((value) => value + 1);
+      }}><Text style={{ color: theme.colors.accent }}>Retry</Text></Pressable> : null}
       {state.error && onOpenFile ? <Pressable accessibilityRole="button" accessibilityLabel="Open image in file preview" onPress={onOpenFile}><Text style={{ color: theme.colors.accent }}>Open in file preview</Text></Pressable> : null}
     </View>
   );
@@ -157,6 +154,7 @@ export function ImageGallery({ images, theme, compact, resolveFile, onLocalFileP
   onLinkPress?: (href: string) => void;
   onImageComment?: (image: GalleryImage, index: number) => void;
 }) {
+  const openFile = useRpc(openLocalFileRpc);
   const [selected, setSelected] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [enabled, setEnabled] = useState(!compact);
@@ -268,7 +266,7 @@ export function ImageGallery({ images, theme, compact, resolveFile, onLocalFileP
               <Pressable ref={closeRef} accessibilityRole="button" accessibilityLabel="Close image viewer" onPress={() => setExpanded(false)} style={{ width: 44, height: 44, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.surface2 }}><Icon name="X" size={20} color={theme.colors.foreground} /></Pressable>
             </View>
             <View style={{ flex: 1, minHeight: 0, paddingHorizontal: compact ? 8 : 24, paddingBottom: 16 }}>
-              <FullImage key={`${index}:${target?.path ?? image.url}`} image={image} target={target} theme={theme} compact={compact} onNavigate={(direction) => select(index + direction)} onOpenFile={target && onLocalFilePress ? () => { setExpanded(false); onLocalFilePress(target); } : undefined} />
+              <FullImage key={`${index}:${target?.path ?? image.url}`} image={image} target={target} theme={theme} compact={compact} openFile={openFile} onNavigate={(direction) => select(index + direction)} onOpenFile={target && onLocalFilePress ? () => { setExpanded(false); onLocalFilePress(target); } : undefined} />
             </View>
             {strip ? <View style={{ paddingBottom: 12 }}>{strip}</View> : null}
           </SafeAreaView>

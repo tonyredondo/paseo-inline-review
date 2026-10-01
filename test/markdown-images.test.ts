@@ -36,7 +36,7 @@ const hostModules: Record<string, string> = {
 
 const bundle = await build({
   stdin: {
-    contents: 'export { MarkdownText } from "./client/markdown"; export { ImageGallery } from "./client/image-gallery"; export { ZoomableImage } from "./client/image-zoom";',
+    contents: 'export { MarkdownText } from "./client/markdown"; export { ImageGallery } from "./client/image-gallery"; export { ZoomableImage } from "./client/image-zoom"; export { disposeImagePreviews } from "./client/image-preview-store";',
     resolveDir: process.cwd(),
     loader: "tsx",
   },
@@ -58,7 +58,7 @@ const bundle = await build({
   }],
 });
 type Component = (props: Record<string, unknown>) => unknown;
-const module = { exports: {} as { MarkdownText: Component; ImageGallery: Component; ZoomableImage: Component } };
+const module = { exports: {} as { MarkdownText: Component; ImageGallery: Component; ZoomableImage: Component; disposeImagePreviews(): void } };
 const openedUrls: string[] = [];
 const keys = new Set<(event: Record<string, unknown>) => void>();
 const hooks = {
@@ -363,7 +363,7 @@ class GalleryFixture {
     return prevented;
   }
   async settle(): Promise<void> { await new Promise((resolve) => setImmediate(resolve)); this.render(); }
-  dispose(): void { this.scope.dispose(); this.fullScope?.dispose(); }
+  dispose(): void { this.scope.dispose(); this.fullScope?.dispose(); module.exports.disposeImagePreviews(); }
 }
 
 function visibleText(tree: unknown): string {
@@ -444,18 +444,35 @@ test("expanded images request 3 MiB on mobile/compact layouts and discard stale 
   }
 });
 
-test("a dismissed full-image request cannot leak into a newly opened viewer", async () => {
+test("closing and reopening the same image shares its pending request", async () => {
   const fixture = new GalleryFixture();
   try {
     fixture.press("Enlarge image");
     fixture.press("Close image viewer");
     fixture.press("Enlarge image");
-    fixture.requests[0].resolve({ ok: true, mimeType: "image/png", base64: "DISMISSED" });
-    await fixture.settle();
-    assert.match(visibleText(fixture.fullTree), /Loading image/);
-    fixture.requests[1].resolve({ ok: true, mimeType: "image/png", base64: "REOPENED" });
+    assert.equal(fixture.requests.length, 1);
+    fixture.requests[0].resolve({ ok: true, mimeType: "image/png", base64: "REOPENED" });
     await fixture.settle();
     assert.equal(descendants(fixture.fullTree)[0].props.uri, "data:image/png;base64,REOPENED");
+  } finally { fixture.dispose(); }
+});
+
+test("returning to a loaded full image and reopening it reuses the cached payload", async () => {
+  const fixture = new GalleryFixture(true);
+  try {
+    fixture.press("Enlarge image");
+    fixture.requests[0].resolve({ ok: true, mimeType: "image/png", base64: "FIRST" });
+    await fixture.settle();
+    fixture.press("Next image");
+    fixture.requests[1].resolve({ ok: true, mimeType: "image/png", base64: "SECOND" });
+    await fixture.settle();
+    fixture.press("Previous image");
+    assert.equal(fixture.requests.length, 2);
+    assert.equal(descendants(fixture.fullTree)[0].props.uri, "data:image/png;base64,FIRST");
+    fixture.press("Close image viewer");
+    fixture.press("Enlarge image");
+    assert.equal(fixture.requests.length, 2);
+    assert.equal(descendants(fixture.fullTree)[0].props.uri, "data:image/png;base64,FIRST");
   } finally { fixture.dispose(); }
 });
 

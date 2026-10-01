@@ -311,7 +311,7 @@ export const openLocalFileRpc = defineRpc({
     /** Chunked download: byte offset and max chunk size (client-driven). */
     offset: z.number().int().min(0).optional(),
     length: z.number().int().positive().max(FILE_TRANSFER_CHUNK_BYTES).optional(),
-    /** Identity returned by the first chunk; later chunks must match it. */
+    /** Download chunk identity, or a cached image version to revalidate. */
     fileVersion: z.string().optional(),
   }),
   output: z.object({
@@ -328,8 +328,10 @@ export const openLocalFileRpc = defineRpc({
     mimeType: z.string().optional(),
     /** Chunked download: false while more chunks remain. */
     done: z.boolean().optional(),
-    /** Stable identity for every chunk in one download. */
+    /** Stable source-file identity for downloads and image previews. */
     fileVersion: z.string().optional(),
+    /** Mode image: the client's cached version still matches; no payload is sent. */
+    unchanged: z.boolean().optional(),
   }),
 });
 

@@ -235,6 +235,7 @@ export async function openLocalFile(
   mimeType?: string;
   done?: boolean;
   fileVersion?: string;
+  unchanged?: boolean;
 }> {
   const absolutePath = expandHome(input.path);
   if (!absolutePath) {
@@ -244,7 +245,7 @@ export async function openLocalFile(
     return readLocalFile(absolutePath);
   }
   if (input.mode === "image") {
-    return readLocalImage(absolutePath, input.optimizeImage, input.imageMaxBytes);
+    return readLocalImage(absolutePath, input.optimizeImage, input.imageMaxBytes, input.fileVersion);
   }
   if (input.mode === "download") {
     return downloadLocalFile(
@@ -309,13 +310,15 @@ function fileVersion(stats: Stats): string {
   return [stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.ctimeMs].join(":");
 }
 
-/** Returns one complete, validated image. Partial image payloads cannot decode. */
-async function readLocalImage(absolutePath: string, optimizeImage = false, imageMaxBytes = MAX_READ_BYTES): Promise<{
+/** Returns one complete image, or confirms that its cached version is unchanged. */
+async function readLocalImage(absolutePath: string, optimizeImage = false, imageMaxBytes = MAX_READ_BYTES, knownFileVersion?: string): Promise<{
   ok: boolean;
   error?: string;
   size?: number;
   base64?: string;
   mimeType?: string;
+  fileVersion?: string;
+  unchanged?: boolean;
 }> {
   let handle: Awaited<ReturnType<typeof open>> | null = null;
   try {
@@ -323,10 +326,14 @@ async function readLocalImage(absolutePath: string, optimizeImage = false, image
     const stats = await handle.stat();
     if (!stats.isFile()) return { ok: false, error: "Path is not a regular file" };
     const maxBytes = Math.min(MAX_READ_BYTES, Math.max(1, imageMaxBytes));
+    const initialVersion = fileVersion(stats);
+    if (knownFileVersion === initialVersion && (stats.size <= maxBytes || optimizeImage)) {
+      return { ok: true, fileVersion: initialVersion, unchanged: true };
+    }
     if (stats.size > maxBytes) {
       if (optimizeImage) {
         const preview = await imagePreviewService.request({ path: absolutePath, variant: "viewer", maxBytes });
-        return { ok: preview.ok, error: preview.error, size: preview.thumbnailSize ?? stats.size, base64: preview.base64, mimeType: preview.mimeType };
+        return { ok: preview.ok, error: preview.error, size: preview.thumbnailSize ?? stats.size, base64: preview.base64, mimeType: preview.mimeType, fileVersion: preview.fileVersion };
       }
       return { ok: false, error: `Image is larger than the ${maxBytes / (1024 * 1024)} MiB viewer limit`, size: stats.size };
     }
@@ -338,7 +345,6 @@ async function readLocalImage(absolutePath: string, optimizeImage = false, image
       bytesRead += result.bytesRead;
     }
     const finalStats = await handle.stat();
-    const initialVersion = fileVersion(stats);
     const finalVersion = fileVersion(finalStats);
     if (initialVersion !== finalVersion || bytesRead !== stats.size) {
       return { ok: false, error: "The image changed while it was being read" };
@@ -346,7 +352,7 @@ async function readLocalImage(absolutePath: string, optimizeImage = false, image
     const content = buffer.subarray(0, bytesRead);
     const mimeType = imageMimeType(content);
     if (!mimeType) return { ok: false, error: "Unsupported local image format" };
-    return { ok: true, size: stats.size, base64: content.toString("base64"), mimeType };
+    return { ok: true, size: stats.size, base64: content.toString("base64"), mimeType, fileVersion: finalVersion };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   } finally {

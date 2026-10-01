@@ -11,7 +11,7 @@ export type ThumbnailResult = {
 export type ThumbnailState =
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "ready"; dataUri: string; fileVersion: string; bytes: number }
+  | { status: "ready"; dataUri: string; fileVersion?: string; bytes: number }
   | { status: "error"; message: string };
 
 type Loader = (input: {
@@ -25,6 +25,9 @@ export type ThumbnailOptions = {
   autoLoad?: boolean;
   maxEdge?: number;
   quality?: number;
+  /** Stable RPC owner; paths on different hosts must never share payloads. */
+  scope?: object;
+  variant?: string;
 };
 
 type Entry = {
@@ -39,6 +42,7 @@ type Entry = {
   timer: ReturnType<typeof setTimeout> | null;
   queued: boolean;
   running: boolean;
+  force: boolean;
   touchedAt: number;
   loadedAt: number;
 };
@@ -49,6 +53,9 @@ export function createImagePreviewStore({
   maxBytes = 16 * 1024 * 1024,
   cacheTtlMs = 60_000,
   mountDelayMs = 80,
+  requireFileVersion = true,
+  keepPreviousOnRefresh = true,
+  loadErrorMessage = "Could not load the image",
   now = Date.now,
   schedule = (callback: () => void, delay: number) => setTimeout(callback, delay),
   cancel = (timer: ReturnType<typeof setTimeout>) => clearTimeout(timer),
@@ -58,12 +65,17 @@ export function createImagePreviewStore({
   maxBytes?: number;
   cacheTtlMs?: number;
   mountDelayMs?: number;
+  requireFileVersion?: boolean;
+  keepPreviousOnRefresh?: boolean;
+  loadErrorMessage?: string;
   now?: () => number;
   schedule?: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
   cancel?: (timer: ReturnType<typeof setTimeout>) => void;
 } = {}) {
   const entries = new Map<string, Entry>();
   const queue: string[] = [];
+  const scopes = new WeakMap<object, number>();
+  let nextScope = 0;
   let active = 0;
   let disposed = false;
   let cachedBytes = 0;
@@ -102,8 +114,13 @@ export function createImagePreviewStore({
     }
   }
 
-  function entryKey(path: string, maxEdge: number, quality: number): string {
-    return `${path}\u0000${maxEdge}\u0000${quality}`;
+  function entryKey(path: string, maxEdge: number, quality: number, scope?: object, variant = "thumbnail"): string {
+    let scopeId = 0;
+    if (scope) {
+      scopeId = scopes.get(scope) ?? ++nextScope;
+      scopes.set(scope, scopeId);
+    }
+    return `${scopeId}\u0000${variant}\u0000${path}\u0000${maxEdge}\u0000${quality}`;
   }
 
   function enqueue(key: string, force = false): void {
@@ -111,12 +128,12 @@ export function createImagePreviewStore({
     if (!entry || disposed || entry.running || entry.queued || entry.interests === 0) return;
     if (!force && entry.ready && now() - entry.loadedAt < cacheTtlMs) {
       hits += 1;
-      publish(entry, entry.ready);
       return;
     }
     misses += 1;
     entry.queued = true;
-    publish(entry, { status: "loading" });
+    entry.force = force;
+    if (!keepPreviousOnRefresh || !entry.ready) publish(entry, { status: "loading" });
     queue.push(key);
     drain();
   }
@@ -131,21 +148,22 @@ export function createImagePreviewStore({
       entry.running = true;
       active += 1;
       maxActive = Math.max(maxActive, active);
-      const knownFileVersion = entry.ready?.fileVersion;
-      void entry.loader({
-        path: entry.path,
-        maxEdge: entry.maxEdge,
-        quality: entry.quality,
-        knownFileVersion,
-      })
+      const knownFileVersion = entry.force ? undefined : entry.ready?.fileVersion;
+      let request: Promise<ThumbnailResult>;
+      try {
+        request = entry.loader({ path: entry.path, maxEdge: entry.maxEdge, quality: entry.quality, knownFileVersion });
+      } catch (error) {
+        request = Promise.reject(error);
+      }
+      void request
         .then((result) => {
           if (disposed) return;
-          if (result.ok && result.unchanged && entry.ready) {
+          if (result.ok && result.unchanged && entry.ready && result.fileVersion === entry.ready.fileVersion) {
             publish(entry, entry.ready);
             return;
           }
-          if (!result.ok || !result.mimeType || !result.base64 || !result.fileVersion) {
-            publish(entry, { status: "error", message: result.error ?? "Could not load the image" });
+          if (!result.ok || !result.mimeType?.startsWith("image/") || !result.base64 || (requireFileVersion && !result.fileVersion)) {
+            publish(entry, { status: "error", message: result.error ?? loadErrorMessage });
             return;
           }
           const dataUri = `data:${result.mimeType};base64,${result.base64}`;
@@ -154,19 +172,23 @@ export function createImagePreviewStore({
             dataUri,
             fileVersion: result.fileVersion,
             // The client retains the encoded URI, not the compressed source
-            // buffer. Count what is actually held in the JS heap.
-            bytes: dataUri.length,
+            // buffer. Budget two bytes per character conservatively; engine
+            // string compression and native decoded caches are independent.
+            bytes: dataUri.length * 2,
           });
         })
         .catch(() => {
-          if (!disposed) publish(entry, { status: "error", message: "Could not load the image" });
+          if (!disposed) publish(entry, { status: "error", message: loadErrorMessage });
         })
         .finally(() => {
           entry.running = false;
           active -= 1;
+          evict();
           drain();
         });
     }
+    // Draining can unpin abandoned queued entries after the last active reply.
+    evict();
   }
 
   function retain(
@@ -178,13 +200,13 @@ export function createImagePreviewStore({
     if (disposed) return () => {};
     const maxEdge = options.maxEdge ?? 640;
     const quality = options.quality ?? 78;
-    const key = entryKey(path, maxEdge, quality);
+    const key = entryKey(path, maxEdge, quality, options.scope, options.variant);
     let entry = entries.get(key);
     if (!entry) {
       entry = {
         path, maxEdge, quality,
         state: { status: "idle" }, ready: null, listeners: new Set(), interests: 0, loader,
-        timer: null, queued: false, running: false, touchedAt: now(), loadedAt: 0,
+        timer: null, queued: false, running: false, force: false, touchedAt: now(), loadedAt: 0,
       };
       entries.set(key, entry);
     } else {
@@ -199,7 +221,9 @@ export function createImagePreviewStore({
     if (options.autoLoad !== false && (
       entry.state.status === "idle" || entry.state.status === "error" || !entry.ready || now() - entry.loadedAt >= cacheTtlMs
     )) {
-      if (!entry.timer) {
+      if (mountDelayMs <= 0) {
+        enqueue(key);
+      } else if (!entry.timer) {
         entry.timer = schedule(() => {
           entry!.timer = null;
           enqueue(key);
@@ -225,7 +249,7 @@ export function createImagePreviewStore({
   }
 
   function retry(path: string, options: ThumbnailOptions = {}): void {
-    const key = entryKey(path, options.maxEdge ?? 640, options.quality ?? 78);
+    const key = entryKey(path, options.maxEdge ?? 640, options.quality ?? 78, options.scope, options.variant);
     const entry = entries.get(key);
     if (!entry) return;
     enqueue(key, true);
@@ -248,11 +272,69 @@ export function createImagePreviewStore({
     retain,
     retry,
     dispose,
-    diagnostics: () => ({ active, queued: queue.length, entries: entries.size, cachedBytes, hits, misses, maxActive }),
+    setLimits(limits: { maxEntries: number; maxBytes: number }): void {
+      maxEntries = limits.maxEntries;
+      maxBytes = limits.maxBytes;
+      evict();
+    },
+    diagnostics: () => ({ active, queued: queue.length, entries: entries.size, cachedBytes, hits, misses, maxActive, maxEntries, maxBytes }),
   };
 }
 
 let defaultStore = createImagePreviewStore();
+
+export type FullImageLoader = (input: {
+  path: string;
+  mode: "image";
+  optimizeImage: true;
+  imageMaxBytes: number;
+  fileVersion?: string;
+}) => Promise<ThumbnailResult & { size?: number }>;
+
+/** Full-image payloads share the same LRU/queue machinery as thumbnails. */
+export function createFullImagePreviewStore(options: Parameters<typeof createImagePreviewStore>[0] = {}) {
+  const store = createImagePreviewStore({
+    maxEntries: 16, maxBytes: 64 * 1024 * 1024, cacheTtlMs: 60_000,
+    mountDelayMs: 0, requireFileVersion: false, keepPreviousOnRefresh: true,
+    loadErrorMessage: "Could not load the full image.",
+    ...options,
+  });
+  function profile(loader: FullImageLoader, imageMaxBytes: number): ThumbnailOptions {
+    // The byte limit separates mobile and desktop variants of the same path.
+    return { scope: loader, variant: `viewer:${imageMaxBytes}`, maxEdge: 4096, quality: 88 };
+  }
+  return {
+    retain(path: string, loader: FullImageLoader, listener: (state: ThumbnailState) => void, imageMaxBytes: number): () => void {
+      return store.retain(path, ({ path, knownFileVersion }) => loader({
+        path, mode: "image", optimizeImage: true, imageMaxBytes, fileVersion: knownFileVersion,
+      }), listener, profile(loader, imageMaxBytes));
+    },
+    retry(path: string, loader: FullImageLoader, imageMaxBytes: number): void {
+      store.retry(path, profile(loader, imageMaxBytes));
+    },
+    dispose: store.dispose,
+    setLimits: store.setLimits,
+    diagnostics: store.diagnostics,
+  };
+}
+
+let defaultFullStore: ReturnType<typeof createFullImagePreviewStore> | null = null;
+
+function fullImageStore(imageMaxBytes: number) {
+  defaultFullStore ??= createFullImagePreviewStore();
+  defaultFullStore.setLimits(imageMaxBytes <= 3 * 1024 * 1024
+    ? { maxEntries: 8, maxBytes: 24 * 1024 * 1024 }
+    : { maxEntries: 16, maxBytes: 64 * 1024 * 1024 });
+  return defaultFullStore;
+}
+
+export function retainFullImage(path: string, loader: FullImageLoader, listener: (state: ThumbnailState) => void, imageMaxBytes: number): () => void {
+  return fullImageStore(imageMaxBytes).retain(path, loader, listener, imageMaxBytes);
+}
+
+export function retryFullImage(path: string, loader: FullImageLoader, imageMaxBytes: number): void {
+  fullImageStore(imageMaxBytes).retry(path, loader, imageMaxBytes);
+}
 
 export function retainImagePreview(
   path: string,
@@ -269,5 +351,7 @@ export function retryImagePreview(path: string, options: ThumbnailOptions = {}):
 
 export function disposeImagePreviews(): void {
   defaultStore.dispose();
+  defaultFullStore?.dispose();
+  defaultFullStore = null;
   defaultStore = createImagePreviewStore();
 }

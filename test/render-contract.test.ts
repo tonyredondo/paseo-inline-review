@@ -12,6 +12,7 @@ import { test } from "node:test";
 import * as path from "node:path";
 const rendererSource = String(readFileSync(path.resolve("client/markdown.tsx"), "utf8"));
 const gallerySource = String(readFileSync(path.resolve("client/image-gallery.tsx"), "utf8"));
+const imageStoreSource = String(readFileSync(path.resolve("client/image-preview-store.ts"), "utf8"));
 const webSource = String(readFileSync(path.resolve("client/web.ts"), "utf8"));
 const wideFrameMutationSource = String(readFileSync(path.resolve("client/wide-frame-mutations.ts"), "utf8"));
 
@@ -328,7 +329,8 @@ test("local markdown images load bounded thumbnails and full images stay explici
   assert.match(gallerySource, /const maxEdge = compact \? 320 : 640/);
   assert.match(gallerySource, /const quality = compact \? 65 : 78/);
   assert.match(gallerySource, /\{expanded \? \([\s\S]*<FullImage/);
-  assert.match(gallerySource, /mode: "image"/);
+  assert.match(gallerySource, /retainFullImage\(target\.path/);
+  assert.match(imageStoreSource, /mode: "image", optimizeImage: true/);
   assert.match(gallerySource, /maxToRenderPerBatch=\{6\}/);
   assert.match(gallerySource, /windowSize=\{3\}/);
 });

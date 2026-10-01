@@ -147,6 +147,16 @@ test("local image previews return a complete typed data payload", async () => {
   assert.deepEqual(Buffer.from(result.base64 ?? "", "base64"), png);
   const optimized = await server.openLocalFile({ path: filePath, mode: "image", optimizeImage: true });
   assert.deepEqual(Buffer.from(optimized.base64 ?? "", "base64"), png);
+  assert.ok(result.fileVersion);
+  const cached = await server.openLocalFile({ path: filePath, mode: "image", fileVersion: result.fileVersion });
+  assert.equal(cached.unchanged, true);
+  assert.equal(cached.fileVersion, result.fileVersion);
+  assert.equal(cached.base64, undefined);
+  writeFileSync(filePath, Buffer.concat([png, Buffer.from("changed")]));
+  const changed = await server.openLocalFile({ path: filePath, mode: "image", fileVersion: result.fileVersion });
+  assert.equal(changed.ok, true);
+  assert.notEqual(changed.fileVersion, result.fileVersion);
+  assert.ok(changed.base64);
 });
 
 function noisyPng(width: number, height: number, alpha: boolean): Buffer {
@@ -192,6 +202,9 @@ test("oversized viewer images are compressed, decodable, bounded and leave the s
     assert.ok(output.length <= FILE_TRANSFER_CHUNK_BYTES);
     assert.equal(result.size, output.length);
     assert.equal(result.mimeType, alpha ? "image/png" : "image/jpeg");
+    const cached = await server.openLocalFile({ path: input, mode: "image", optimizeImage: true, fileVersion: result.fileVersion });
+    assert.equal(cached.unchanged, true);
+    assert.equal(cached.base64, undefined);
     const derived = join(root, alpha ? "derived.png" : "derived.jpg");
     writeFileSync(derived, output);
     const info = execFileSync('/usr/bin/sips', ['--getProperty','pixelWidth','--getProperty','pixelHeight','--getProperty','hasAlpha',derived], { encoding: 'utf8', timeout: 15_000 });
