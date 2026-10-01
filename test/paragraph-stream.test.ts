@@ -59,3 +59,15 @@ test("an unchanged snapshot reuses its paragraph array", () => {
   const first = paragraphs.update("one\n\ntwo");
   assert.equal(paragraphs.update("one\n\ntwo"), first);
 });
+
+test("details retain nested Markdown and blank lines at every streaming boundary", () => {
+  const details = "<details>\n<summary>Devices</summary>\n\n| Name | Price |\n| --- | --- |\n| Phone | 20 |\n\n```html\n</details>\n```\n\n![Diagram](/tmp/image.png)\n</details>";
+  const complete = `Intro\n\n${details}\n\nEnd`;
+  const stream = createStableParagraphs();
+  for (let length = 1; length <= complete.length; length++) {
+    const text = complete.slice(0, length);
+    assert.deepEqual(stream.update(text), splitParagraphs(text));
+  }
+  assert.deepEqual(stream.update(complete), ["Intro", details, "End"]);
+  assert.deepEqual(stream.update("replacement\n\nsecond"), ["replacement", "second"]);
+});

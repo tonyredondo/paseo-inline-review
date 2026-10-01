@@ -148,13 +148,14 @@ function FullImage({ image, target, theme, compact, onOpenFile, onNavigate }: {
 }
 
 /** A consecutive image run, with bounded previews and an explicit full viewer. */
-export function ImageGallery({ images, theme, compact, resolveFile, onLocalFilePress, onLinkPress }: {
+export function ImageGallery({ images, theme, compact, resolveFile, onLocalFilePress, onLinkPress, onImageComment }: {
   images: GalleryImage[];
   theme: PluginTheme;
   compact: boolean;
   resolveFile?: (href: string) => LocalFileTarget | null;
   onLocalFilePress?: (target: LocalFileTarget) => void;
   onLinkPress?: (href: string) => void;
+  onImageComment?: (image: GalleryImage, index: number) => void;
 }) {
   const [selected, setSelected] = useState(0);
   const [expanded, setExpanded] = useState(false);
@@ -243,6 +244,7 @@ export function ImageGallery({ images, theme, compact, resolveFile, onLocalFileP
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: 12 }}>
         <ImageCaption image={image} theme={theme} />
         {controls}
+        {onImageComment ? <Pressable accessibilityRole="button" accessibilityLabel="Comment on image" onPress={() => onImageComment(image, index)} style={{ width: controlSize, height: controlSize, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: theme.colors.surface2 }}><Icon name="MessageSquare" size={17} color={theme.colors.foreground} /></Pressable> : null}
         <Pressable accessibilityRole="button" accessibilityLabel="Enlarge image" onPress={open} style={{ width: controlSize, height: controlSize, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.surface2 }}><Icon name="Maximize2" size={17} color={theme.colors.foreground} /></Pressable>
       </View>
       {image.linkUrl && onLinkPress ? <Pressable accessibilityRole="link" accessibilityLabel="Open image link" onPress={() => onLinkPress(image.linkUrl!)} style={{ paddingHorizontal: 12, paddingBottom: 10 }}><Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open link</Text></Pressable> : null}
@@ -262,6 +264,7 @@ export function ImageGallery({ images, theme, compact, resolveFile, onLocalFileP
             <View style={{ flexDirection: "row", alignItems: "center", gap: 12, padding: compact ? 12 : 20 }}>
               <ImageCaption image={image} theme={theme} fontSize={14} />
               {controls}
+              {onImageComment ? <Pressable accessibilityRole="button" accessibilityLabel="Comment on image" onPress={() => { setExpanded(false); onImageComment(image, index); }} style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: theme.colors.surface2 }}><Icon name="MessageSquare" size={17} color={theme.colors.foreground} /></Pressable> : null}
               <Pressable ref={closeRef} accessibilityRole="button" accessibilityLabel="Close image viewer" onPress={() => setExpanded(false)} style={{ width: 44, height: 44, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.surface2 }}><Icon name="X" size={20} color={theme.colors.foreground} /></Pressable>
             </View>
             <View style={{ flex: 1, minHeight: 0, paddingHorizontal: compact ? 8 : 24, paddingBottom: 16 }}>

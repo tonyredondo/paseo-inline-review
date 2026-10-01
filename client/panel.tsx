@@ -11,6 +11,7 @@ import {
   formatReview,
   isMarkdownPath,
   openLocalFileRpc,
+  orderReviewComments,
   previewLanguage,
   reviewCommentQuote,
   type ReviewComment,
@@ -321,9 +322,9 @@ function PanelFilePreview({
 export function ReviewPanel({ agentId, theme, layout }: PluginAgentPanelProps) {
   const paseo = usePaseo();
   const toast = useToast();
-  const all = useSyncExternalStore(subscribe, getComments).filter(
+  const all = orderReviewComments(useSyncExternalStore(subscribe, getComments).filter(
     (comment) => comment.agentId === agentId,
-  );
+  ));
   const comments = all.filter((comment) => comment.status === "pending");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);

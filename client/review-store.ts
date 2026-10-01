@@ -1,6 +1,8 @@
 import {
   compareReviewCommentVersions,
   sameCodeLineAnchor,
+  sameReviewTarget,
+  type ReviewTarget,
   type CodeLineAnchor,
   type ReviewComment,
 } from "../shared/review.ts";
@@ -142,6 +144,7 @@ export function addComment(input: {
   /** Zero-based list item index when the comment targets one list item. */
   itemIndex?: number | null;
   codeAnchor?: CodeLineAnchor | null;
+  target?: ReviewTarget | null;
   paragraphText: string;
   text: string;
   sourceKey?: string | null;
@@ -154,6 +157,7 @@ export function addComment(input: {
     paragraphIndex: input.paragraphIndex,
     itemIndex: input.itemIndex ?? null,
     codeAnchor: input.codeAnchor ?? null,
+    target: input.target ?? null,
     paragraphText: input.paragraphText,
     text: input.text,
     createdAt: now,
@@ -171,6 +175,7 @@ export function addComment(input: {
       existing.paragraphIndex === comment.paragraphIndex &&
       existing.itemIndex === comment.itemIndex &&
       sameCodeLineAnchor(existing.codeAnchor, comment.codeAnchor) &&
+      sameReviewTarget(existing.target, comment.target) &&
       existing.paragraphText === comment.paragraphText &&
       existing.text === comment.text,
   );
@@ -207,6 +212,7 @@ export function relocateComment(
   messageId: string | null,
   paragraphIndex: number,
   codeAnchor?: CodeLineAnchor | null,
+  target?: ReviewTarget | null,
 ): ReviewComment | null {
   const existing = comments.find((comment) => comment.id === id);
   if (!existing) return null;
@@ -214,6 +220,7 @@ export function relocateComment(
     existing.messageId === messageId &&
     existing.paragraphIndex === paragraphIndex &&
     (codeAnchor === undefined || sameCodeLineAnchor(existing.codeAnchor, codeAnchor)) &&
+    (target === undefined || sameReviewTarget(existing.target, target)) &&
     (messageId === null || existing.sourceKey === null)
   ) {
     return existing;
@@ -222,6 +229,7 @@ export function relocateComment(
     messageId,
     paragraphIndex,
     ...(codeAnchor === undefined ? {} : { codeAnchor }),
+    ...(target === undefined ? {} : { target }),
     sourceKey: messageId === null ? existing.sourceKey : null,
   });
   comments = comments.map((comment) => (comment.id === id ? updated : comment));

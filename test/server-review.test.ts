@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMPACT_IMAGE_VIEWER_MAX_BYTES, FILE_TRANSFER_CHUNK_BYTES } from "../shared/review.ts";
+import { COMPACT_IMAGE_VIEWER_MAX_BYTES, FILE_TRANSFER_CHUNK_BYTES, reviewCommentSchema } from "../shared/review.ts";
 
 const tempRoots: string[] = [];
 const importServer = (tag: string) => import(`../server/review.ts?${tag}`);
@@ -59,6 +59,32 @@ test("save rejects when the store is unavailable", async () => {
     server.saveComments({ agentId: "a1", comments: [] }),
     /Could not load inline-review comments/i,
   );
+});
+
+test("precise targets and general feedback survive daemon restart and device synchronization", async () => {
+  const root = tempRoot();
+  process.env.PASEO_HOME = root;
+  const server = await importServer("target-persistence");
+  const base = {
+    agentId: "a1", messageId: "m1", paragraphIndex: 0, paragraphText: "source", text: "Feedback",
+    createdAt: "2026-10-01T00:00:00.000Z", revision: 1, status: "pending",
+  };
+  const comments = [
+    { ...base, id: "legacy" },
+    { ...base, id: "general", paragraphIndex: -1, target: { kind: "response" } },
+    { ...base, id: "cell", target: { kind: "table-cell", path: [0], row: 0, column: 1, text: "20", header: ["Name", "Price"], rowText: ["Phone", "20"] } },
+    { ...base, id: "image", target: { kind: "image", path: [1], imageIndex: 1, url: "/tmp/image.png", alt: "Diagram" } },
+  ].map(comment => reviewCommentSchema.parse(comment));
+  await server.saveCommentDelta({ agentId: "a1", upserts: comments, deleted: [] });
+  const restarted = await importServer("target-persistence-restarted");
+  assert.deepEqual((await restarted.loadComments({ agentId: "a1" })).comments, comments);
+  const synced = await restarted.syncComments({ agents: [{ agentId: "a1" }] });
+  assert.deepEqual(synced.buckets[0].comments, comments);
+  const changed = { ...comments[2], revision: 2, text: "Updated cell feedback" };
+  await restarted.saveCommentDelta({ agentId: "a1", upserts: [changed], deleted: ["image"] });
+  const next = await restarted.syncComments({ epoch: synced.epoch, agents: [{ agentId: "a1", revision: synced.buckets[0].revision }] });
+  assert.deepEqual(next.buckets[0].comments.find((comment: { id: string }) => comment.id === "cell"), changed);
+  assert.deepEqual(next.buckets[0].deleted, ["image"]);
 });
 
 test("corrupt stores fail closed instead of looking empty", async () => {

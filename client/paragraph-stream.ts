@@ -18,6 +18,7 @@ export function createStableParagraphs() {
   let currentLines: string[] = [];
   let inFence = false;
   let fenceLength = 3;
+  let inDetails = false;
   let lastResult: string[] = [];
   let hasUpdated = false;
   const diagnostics: StableParagraphDiagnostics = {
@@ -33,6 +34,7 @@ export function createStableParagraphs() {
     currentLines = [];
     inFence = false;
     fenceLength = 3;
+    inDetails = false;
   }
 
   function commitCurrent(): void {
@@ -54,7 +56,11 @@ export function createStableParagraphs() {
       currentLines.push(line);
       return;
     }
-    if (!inFence && line.trim().length === 0) {
+    if (!inFence) {
+      if (/^\s*<details\b/i.test(line)) inDetails = true;
+      else if (/^\s*<\/details>/i.test(line)) inDetails = false;
+    }
+    if (!inFence && !inDetails && line.trim().length === 0) {
       commitCurrent();
       return;
     }

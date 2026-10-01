@@ -5,6 +5,10 @@ import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from
 import { MarkdownSpan } from "./markdown-span";
 import {
   createCodeLineAnchor,
+  blockReviewTarget,
+  tableCellReviewTarget,
+  imageReviewTarget,
+  type ReviewTarget,
   isValidHttpUrl,
   type CodeLineAnchor,
 } from "../shared/review";
@@ -18,6 +22,14 @@ import { openExternalUrlOnWeb } from "./web";
 import { compileMarkdown } from "./markdown-compile";
 import { codeHighlightWindow } from "../shared/code-window";
 import { ImageGallery, type GalleryImage } from "./image-gallery";
+import { isReviewTargetAtPath } from "../shared/review-target";
+
+type MarkdownReviewProps = {
+  onTargetPress?: (target: ReviewTarget, event?: unknown, explicit?: boolean) => void;
+  targetExtras?: (path: number[]) => ReactNode;
+  blockPath?: number[];
+  annotatedTargets?: readonly ReviewTarget[];
+};
 
 /**
  * Renders parsed markdown blocks with React Native primitives. Paseo does not
@@ -275,6 +287,8 @@ function DetailsView({
   selectable,
   localFileResolver,
   onLocalFilePress,
+  onComment,
+  reviewProps,
 }: {
   block: Extract<Block, { kind: "details" }>;
   theme: PluginTheme;
@@ -283,6 +297,8 @@ function DetailsView({
   selectable?: boolean;
   localFileResolver?: (href: string) => LocalFileTarget | null;
   onLocalFilePress?: (target: LocalFileTarget) => void;
+  onComment?: () => void;
+  reviewProps?: MarkdownReviewProps;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -294,17 +310,18 @@ function DetailsView({
         backgroundColor: theme.colors.surface2,
       }}
     >
-      <Pressable
+      <View style={{ flexDirection: "row", alignItems: "center" }}><Pressable
         accessibilityRole="button"
         accessibilityLabel={`Toggle ${block.summary || "details"}`}
         onPress={() => setOpen((value) => !value)}
-        style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 8, gap: 6 }}
+        style={{ flex: 1, flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 8, gap: 6 }}
       >
         <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{open ? "▼" : "▶"}</Text>
         <MarkdownSpan style={{ color: theme.colors.foreground, fontWeight: "700", flex: 1, fontSize: compact ? 13 : 14 }}>
           {block.summary || "Details"}
         </MarkdownSpan>
       </Pressable>
+      {onComment ? <Pressable accessibilityRole="button" accessibilityLabel="Comment on details" onPress={onComment} style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}><Icon name="MessageSquare" size={16} color={theme.colors.foregroundMuted} /></Pressable> : null}</View>
       {open ? (
         <View style={{ paddingHorizontal: 10, paddingBottom: 8 }}>
           <MarkdownText
@@ -315,6 +332,7 @@ function DetailsView({
             selectable={selectable}
             localFileResolver={localFileResolver}
             onLocalFilePress={onLocalFilePress}
+            {...reviewProps}
           />
         </View>
       ) : null}
@@ -901,6 +919,10 @@ function Cell({
   flex,
   localFileResolver,
   onLocalFilePress,
+  onPress,
+  onComment,
+  label,
+  marked,
 }: {
   cell: { spans: InlineToken[]; align: string };
   theme: PluginTheme;
@@ -908,13 +930,26 @@ function Cell({
   flex: number;
   localFileResolver?: (href: string) => LocalFileTarget | null;
   onLocalFilePress?: (target: LocalFileTarget) => void;
+  onPress?: (event?: unknown) => void;
+  onComment?: () => void;
+  label?: string;
+  marked?: boolean;
 }) {
   return (
-    <View style={{ flex, padding: styles.cell.padding }}>
+    <Pressable disabled={!onPress} onPress={event => {
+      const native = event?.nativeEvent as unknown as { key?: string; detail?: number } | undefined;
+      const key = (event as unknown as { key?: string })?.key ?? native?.key;
+      // Native browser buttons dispatch a zero-detail click for keyboard activation.
+      if (key === "Enter" || key === " " || Platform.OS === "web" && native?.detail === 0) onComment?.();
+      else onPress?.(event);
+    }} onLongPress={Platform.OS === "web" ? undefined : onComment}
+      accessibilityRole={onPress ? "button" : undefined} accessibilityLabel={label}
+      accessibilityActions={onComment ? [{ name: "activate", label: "Comment on cell" }] : undefined} onAccessibilityAction={onComment}
+      style={{ flex, padding: styles.cell.padding, minHeight: onPress ? styles.tableTouchHeight : undefined, justifyContent: "center", backgroundColor: marked ? withAlpha(theme.colors.accent, 0.18) : undefined }}>
       <Text style={{ color: theme.colors.foreground, fontSize: styles.tableFontSize, textAlign: cell.align as "left" | "center" | "right" }}>
         <InlineRun tokens={cell.spans} theme={theme} styles={styles} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
       </Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -923,6 +958,7 @@ function useStyles(theme: PluginTheme, compact: boolean) {
     () => ({
       codeFontSize: Platform.OS === "ios" ? (compact ? 11 : 12) : compact ? 12 : 13,
       tableFontSize: compact ? 12 : 13,
+      tableTouchHeight: compact ? 44 : 0,
       cell: { padding: 6 } as const,
       blockGap: { gap: compact ? 10 : 14 } as const,
       // Normal left alignment (user preference over justified text).
@@ -1004,6 +1040,10 @@ export function MarkdownText({
   localFileResolver,
   onLocalFilePress,
   cacheKey,
+  onTargetPress,
+  targetExtras,
+  blockPath = [],
+  annotatedTargets,
 }: {
   text: string;
   theme: PluginTheme;
@@ -1013,7 +1053,7 @@ export function MarkdownText({
   /** Native only: enables the platform text selection on rendered text. */
   selectable?: boolean;
   /** Native only: called when the user taps the chunk (used for double-tap). */
-  onChunkPress?: () => void;
+  onChunkPress?: (event?: unknown) => void;
   /** Rendered as a Comment control on code blocks; opens the review editor. */
   onCommentRequest?: () => void;
   /** Desktop modifier-click on one source line inside a code block. */
@@ -1032,6 +1072,10 @@ export function MarkdownText({
   onLocalFilePress?: (target: LocalFileTarget) => void;
   /** Stable only for complete history; streaming text is never globally cached. */
   cacheKey?: string;
+  onTargetPress?: MarkdownReviewProps["onTargetPress"];
+  targetExtras?: MarkdownReviewProps["targetExtras"];
+  blockPath?: number[];
+  annotatedTargets?: MarkdownReviewProps["annotatedTargets"];
 }) {
   const compiled = useMemo(() => compileMarkdown(text, refs, cacheKey), [text, refs, cacheKey]);
   const blocks = compiled.blocks;
@@ -1060,6 +1104,13 @@ export function MarkdownText({
   return (
     <View style={styles.blockGap}>
       {blocks.map((block, index) => {
+        const path = [...blockPath, index];
+        const blockTarget = onTargetPress ? blockReviewTarget(block, path) : null;
+        const blockPress = blockTarget ? (event?: unknown) => onTargetPress?.(blockTarget, event) : undefined;
+        const nestedReview = { onTargetPress, targetExtras, annotatedTargets, blockPath: path };
+        const markedCells = block.kind === "table" ? new Set((annotatedTargets ?? []).flatMap(target =>
+          target.kind === "table-cell" && isReviewTargetAtPath(target, path) ? [`${target.row}:${target.column}`] : [],
+        )) : null;
         const startsNumbered =
           (block.kind === "p" && /^\s*\d+[.)]\s/.test(block.lines[0] ?? "")) ||
           block.kind === "ordered" || block.kind === "bullet";
@@ -1075,7 +1126,8 @@ export function MarkdownText({
                 return Math.min(8, Math.max(1, Math.round(max / 14)));
               })
             : null;
-        switch (block.kind) {
+        const renderBlock = (): ReactNode => {
+          switch (block.kind) {
           case "code": {
             const codeBlockIndex = codeBlockIndexes[index];
             return (
@@ -1099,6 +1151,7 @@ export function MarkdownText({
             return (
               <Fragment key={index}>
                 <MarkdownSpan
+                  onPress={blockPress}
                   style={{
                     color: theme.colors.foreground,
                     fontWeight: "700",
@@ -1193,13 +1246,15 @@ export function MarkdownText({
                 selectable={selectable}
                 localFileResolver={localFileResolver}
                 onLocalFilePress={onLocalFilePress}
+                onComment={blockTarget ? () => onTargetPress?.(blockTarget, undefined, true) : undefined}
+                reviewProps={nestedReview}
               />
             );
           }
           case "footnote": {
             return (
               <View key={index} style={{ gap: 2 }}>
-                <MarkdownSpan style={{ color: theme.colors.foregroundMuted, fontSize: compact ? 12 : 13 }} selectable={selectable}>
+                <MarkdownSpan onPress={blockPress} style={{ color: theme.colors.foregroundMuted, fontSize: compact ? 12 : 13 }} selectable={selectable}>
                   <Text style={{ color: theme.colors.accent, fontWeight: "700" }}>{`[^${block.label}]`}</Text>
                   {" "}
                   <InlineRun tokens={compiled.inline(block.text)} theme={theme} styles={styles} refs={refs} selectable={selectable} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
@@ -1245,7 +1300,7 @@ export function MarkdownText({
               >
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                   <Icon name={alertIcons[block.alertType] ?? "Info"} size={14} color={alertColor} />
-                  <MarkdownSpan style={{ color: alertColor, fontWeight: "700", fontSize: compact ? 13 : 14 }}>
+                  <MarkdownSpan onPress={blockPress} style={{ color: alertColor, fontWeight: "700", fontSize: compact ? 13 : 14 }}>
                     {alertLabels[block.alertType]}
                   </MarkdownSpan>
                 </View>
@@ -1257,6 +1312,8 @@ export function MarkdownText({
                   selectable={selectable}
                   localFileResolver={localFileResolver}
                   onLocalFilePress={onLocalFilePress}
+                  onChunkPress={blockPress}
+                  {...nestedReview}
                 />
               </View>
             );
@@ -1270,7 +1327,7 @@ export function MarkdownText({
                 key={index}
                 style={[styles.quote, { marginLeft: 10 * Math.max(0, block.depth - 1) }]}
               >
-                <MarkdownText text={block.text} theme={theme} compact={compact} refs={refs} selectable={selectable} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
+                <MarkdownText text={block.text} theme={theme} compact={compact} refs={refs} selectable={selectable} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} onChunkPress={blockPress} {...nestedReview} />
               </View>
             );
           case "table":
@@ -1278,7 +1335,11 @@ export function MarkdownText({
               <View key={index} style={styles.table}>
                 <View style={[styles.tableRow, styles.headerRow, styles.cellBorder, { borderBottomWidth: 1 }]}>
                   {block.header.map((cell, cellIndex) => (
-                    <Cell key={cellIndex} cell={cell} theme={theme} styles={styles} flex={weights?.[cellIndex] ?? 1} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
+                    <Cell key={cellIndex} cell={cell} theme={theme} styles={styles} flex={weights?.[cellIndex] ?? 1} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress}
+                      marked={markedCells?.has(`-1:${cellIndex}`)}
+                      label={onTargetPress ? `Comment on table header ${cell.text}` : undefined}
+                      onPress={onTargetPress ? event => onTargetPress(tableCellReviewTarget(block, path, -1, cellIndex), event) : undefined}
+                      onComment={onTargetPress ? () => onTargetPress(tableCellReviewTarget(block, path, -1, cellIndex), undefined, true) : undefined} />
                   ))}
                 </View>
                 {block.rows.map((row, rowIndex) => (
@@ -1288,7 +1349,11 @@ export function MarkdownText({
                   >
                     {row.map((cell, cellIndex) => (
                       <View key={cellIndex} style={[{ flex: weights?.[cellIndex] ?? 1 }, cellIndex < row.length - 1 ? { borderRightWidth: 1, borderColor: theme.colors.border } : null]}>
-                        <Cell cell={cell} theme={theme} styles={styles} flex={weights?.[cellIndex] ?? 1} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress} />
+                        <Cell cell={cell} theme={theme} styles={styles} flex={weights?.[cellIndex] ?? 1} localFileResolver={localFileResolver} onLocalFilePress={onLocalFilePress}
+                          marked={markedCells?.has(`${rowIndex}:${cellIndex}`)}
+                          label={onTargetPress ? `Comment on table row ${rowIndex + 1}, ${block.header[cellIndex]?.text || `column ${cellIndex + 1}`}: ${cell.text}` : undefined}
+                          onPress={onTargetPress ? event => onTargetPress(tableCellReviewTarget(block, path, rowIndex, cellIndex), event) : undefined}
+                          onComment={onTargetPress ? () => onTargetPress(tableCellReviewTarget(block, path, rowIndex, cellIndex), undefined, true) : undefined} />
                       </View>
                     ))}
                   </View>
@@ -1308,8 +1373,11 @@ export function MarkdownText({
               const content: ReactNode[] = [];
               let pendingImages: GalleryImage[] = [];
               let galleryKey = "";
+              let imageIndex = 0;
+              let firstImageIndex = 0;
               const flushImages = (): void => {
                 if (pendingImages.length === 0) return;
+                const offset = firstImageIndex;
                 content.push(
                   <ImageGallery
                     key={galleryKey}
@@ -1318,6 +1386,7 @@ export function MarkdownText({
                     compact={compact}
                     resolveFile={localFileResolver}
                     onLocalFilePress={onLocalFilePress}
+                    onImageComment={onTargetPress ? (selectedImage, selectedIndex) => onTargetPress(imageReviewTarget(selectedImage, path, offset + selectedIndex), undefined, true) : undefined}
                     onLinkPress={(href) => {
                       const target = localFileResolver?.(href) ?? null;
                       if (target) onLocalFilePress?.(target);
@@ -1354,8 +1423,9 @@ export function MarkdownText({
                   flushText(tokenIndex);
                   textStart = tokenIndex + 1;
                   const key = `${lineIndex}:image:${tokenIndex}`;
-                  if (pendingImages.length === 0) galleryKey = key;
+                  if (pendingImages.length === 0) { galleryKey = key; firstImageIndex = imageIndex; }
                   pendingImages.push(token);
+                  imageIndex++;
                 });
                 flushText(tokens.length);
               });
@@ -1368,7 +1438,9 @@ export function MarkdownText({
               </View>
             );
           }
-        }
+          }
+        };
+        return <Fragment key={index}>{renderBlock()}{targetExtras?.(path)}</Fragment>;
       })}
     </View>
   );

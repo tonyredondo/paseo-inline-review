@@ -163,6 +163,53 @@ test("single images and reference links surrounding images still render", () => 
   assert.match(output.text, /reference/);
 });
 
+test("table cells and structured text expose precise comment targets on native and web", () => {
+  const events: unknown[] = [];
+  for (const OS of ["web", "ios", "android"]) {
+    hooks.platform.OS = OS;
+    const output = render("## Heading\n\n| Name | Value |\n| --- | --- |\n| Phone | 20 |\n| Tablet | 20 |\n\n> Quote\n\n> [!NOTE]\n> Callout\n\n[^1]: Footnote", {
+      onTargetPress: (target: unknown) => events.push(target),
+    });
+    const cell = output.elements.find(element => element.props.accessibilityLabel === "Comment on table row 2, Value: 20");
+    assert.ok(cell);
+    (cell.props.onPress as (event: unknown) => void)({ nativeEvent: {} });
+    const target = events.pop() as { kind: string; row: number; column: number; rowText: string[] };
+    assert.equal(target.kind, "table-cell");
+    assert.equal(target.row, 1);
+    assert.equal(target.column, 1);
+    assert.deepEqual([...target.rowText], ["Tablet", "20"]);
+    (cell.props.onAccessibilityAction as () => void)();
+    assert.equal((events.pop() as { kind: string }).kind, "table-cell");
+    if (OS === "web") {
+      (cell.props.onPress as (event: unknown) => void)({ nativeEvent: { detail: 0 } });
+      assert.equal((events.pop() as { kind: string }).kind, "table-cell");
+    } else {
+      (cell.props.onLongPress as () => void)();
+      assert.equal((events.pop() as { kind: string }).kind, "table-cell");
+    }
+    for (const element of output.elements.filter(element => element.type === "Text" && typeof element.props.onPress === "function")) (element.props.onPress as () => void)();
+    for (const blockKind of ["heading", "quote", "alert", "footnote"]) {
+      assert.ok(events.some(target => (target as { kind: string; blockKind?: string }).kind === "block" && (target as { blockKind: string }).blockKind === blockKind), blockKind);
+    }
+    events.length = 0;
+  }
+  hooks.platform.OS = "web";
+});
+
+test("image comment buttons identify the selected image and distinct gallery runs", () => {
+  const targets: Array<{ kind: string; imageIndex: number; url: string }> = [];
+  const output = render(`${markdown[0]}${markdown[1]} intervening text ${markdown[2]}`, {
+    onTargetPress: (target: { kind: string; imageIndex: number; url: string }) => targets.push(target),
+  });
+  const galleries = output.elements.filter(element => typeof element.type === "function" && element.type.name === "ImageGallery");
+  assert.equal(galleries.length, 2);
+  (galleries[0].props.onImageComment as (image: unknown, index: number) => void)((galleries[0].props.images as unknown[])[1], 1);
+  (galleries[1].props.onImageComment as (image: unknown, index: number) => void)((galleries[1].props.images as unknown[])[0], 0);
+  assert.deepEqual(targets.map(target => target.imageIndex), [1, 2]);
+  assert.deepEqual(targets.map(target => target.url), urls.slice(1));
+  assert.equal(output.elements.filter(element => element.props.accessibilityLabel === "Comment on image").length, 2);
+});
+
 test("generated hash and UUID filenames use a concise label without hiding descriptive alt text", () => {
   for (const name of ["63f90dd19679348dc002f2b73b0e3f385b906b02e1947323b56e954c38b2406e.png", "AEAC0436-098C-4469-B1FF-9DF5D44530C9.jpg"]) {
     for (const alt of ["Image", name]) {

@@ -82,6 +82,20 @@ function stylesheet(colors: UserCardStyleColors): string {
 }
 ${card} > *:first-child > *:first-child {
   background-color: transparent !important;
+}
+/* Touch clients cannot reveal the host's hover-only action row. Keep the
+   original row so attachment, copy and rewind actions retain their handlers. */
+@media (hover: none), (pointer: coarse) {
+  ${card} [data-testid="user-message-trailing-row"] {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    height: auto !important;
+    min-height: 44px !important;
+  }
+  ${card} [data-testid="user-message-trailing-row"] [role="button"] {
+    min-width: 44px !important;
+    min-height: 44px !important;
+  }
 }`;
 }
 

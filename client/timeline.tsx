@@ -38,6 +38,11 @@ import {
   locateCodeLineAnchor,
   reviewCommentMatchesParagraph,
   sameCodeLineAnchor,
+  locateReviewTarget,
+  reviewTargetLabel,
+  sameReviewTarget,
+  shortenQuote,
+  type ReviewTarget,
   looksLikeSentReview,
   parseCodeReviewQuote,
   parseReviewMessage,
@@ -64,6 +69,7 @@ import { createStreamingTextCoalescer } from "./stream-text";
 import { DownloadCancelledError } from "./web";
 import { WideFrameController } from "./wide-frame-controller";
 import type { WideFrameAnchorRef, WideFrameLease } from "./wide-frame";
+import { isReviewTargetAtPath } from "../shared/review-target";
 import { finalCardHoverStore } from "./final-card-hover";
 
 /** Data for the dotted compaction divider replacing the host's hairline. */
@@ -83,6 +89,7 @@ type EditingTarget = {
   itemIndex?: number | null;
   /** Set when the target is one source line inside a Markdown code block. */
   codeAnchor?: CodeLineAnchor | null;
+  target?: ReviewTarget | null;
   /** When set, the editor updates an existing comment instead of adding one. */
   commentId?: string;
 };
@@ -113,6 +120,7 @@ function commentAnchorsHere(
   // Per-list-item comments render inside their item row, never chunk-level.
   if (comment.itemIndex !== undefined && comment.itemIndex !== null) return false;
   if (comment.codeAnchor) return false;
+  if (comment.target) return false;
   if (comment.messageId !== null && comment.messageId !== messageId) return false;
   if (comment.paragraphIndex !== index) return false;
   return reviewCommentMatchesParagraph(comment, paragraph);
@@ -384,7 +392,7 @@ function CommentCard({
         gap: 4,
       } as const,
       header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" } as const,
-      label: { color: theme.colors.foregroundMuted, fontSize: 11 } as const,
+      label: { color: theme.colors.foregroundMuted, fontSize: 11, flex: 1, marginRight: 8 } as const,
       text: { color: sent ? theme.colors.foregroundMuted : theme.colors.foreground, fontSize: 13 } as const,
       delete: { color: theme.colors.statusDanger, fontSize: 12 } as const,
     }),
@@ -396,7 +404,7 @@ function CommentCard({
         <Text style={styles.label}>
           {["Your comment", targetLabel, sent ? "sent \u2713" : "pending"].filter(Boolean).join(" \u00b7 ")}
         </Text>
-        <View style={{ flexDirection: "row", gap: 10 }}>
+        <View style={{ flexDirection: "row", gap: 10, flexShrink: 0 }}>
           <Pressable accessibilityRole="button" accessibilityLabel="Edit comment" onPress={() => onEdit(comment)} hitSlop={6}>
             <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Edit</Text>
           </Pressable>
@@ -466,6 +474,36 @@ const ReviewParagraph = memo(function ReviewParagraph({
   }, [comments, index, messageId, paragraph]);
   const itemEditing = editing?.itemIndex !== null && editing?.itemIndex !== undefined;
   const codeEditing = editing?.codeAnchor !== null && editing?.codeAnchor !== undefined;
+  const targetEditing = Boolean(editing?.target);
+  const resolvedTargets = useMemo(() => comments.flatMap(comment => {
+    if (!comment.target || comment.target.kind === "response" || comment.paragraphIndex !== index) return [];
+    const target = locateReviewTarget(paragraph, comment.target, refs);
+    return target ? [{ comment, target }] : [];
+  }), [comments, index, paragraph, refs]);
+  const activeTarget = useMemo(() => editing?.target && editing.target.kind !== "response" ? locateReviewTarget(paragraph, editing.target, refs) : null, [editing?.target, paragraph, refs]);
+  const targetExtras = (path: number[]): ReactNode => (
+    <>
+      {activeTarget && isReviewTargetAtPath(activeTarget, path) ? editorNode : null}
+      {resolvedTargets.filter(entry => isReviewTargetAtPath(entry.target, path)).map(({ comment, target }) => (
+        <CommentCard key={comment.id} comment={comment} theme={theme} targetLabel={reviewTargetLabel(target)}
+          onEdit={() => onSetEditing({ paragraphIndex: index, paragraphText: paragraph, target, draft: comment.text, commentId: comment.id })}
+          onRemove={() => removeComment(comment.id)} />
+      ))}
+    </>
+  );
+  const lastTargetTap = useRef<{ target: ReviewTarget; at: number } | null>(null);
+  const openTargetEditor = (target: ReviewTarget, event?: unknown, explicit = false): void => {
+    const carrier = event as { preventDefault?(): void; stopPropagation?(): void; nativeEvent?: { metaKey?: boolean; ctrlKey?: boolean } } | undefined;
+    const modifier = carrier?.nativeEvent?.metaKey || carrier?.nativeEvent?.ctrlKey;
+    if (!explicit && platform === "web" && !compact && !modifier) return;
+    carrier?.preventDefault?.();
+    carrier?.stopPropagation?.();
+    const now = Date.now();
+    if (explicit || modifier || lastTargetTap.current && sameReviewTarget(lastTargetTap.current.target, target) && now - lastTargetTap.current.at < 350) {
+      lastTargetTap.current = null;
+      onSetEditing({ paragraphIndex: index, paragraphText: paragraph, target, draft: "" });
+    } else lastTargetTap.current = { target, at: now };
+  };
   const openParagraphEditor = (): void => {
     onSetEditing({ paragraphIndex: index, paragraphText: paragraph, draft: "" });
   };
@@ -552,7 +590,7 @@ const ReviewParagraph = memo(function ReviewParagraph({
       compact={compact}
       refs={refs}
       selectable={platform === "web" ? undefined : platform !== "ios"}
-      onChunkPress={platform === "web" ? undefined : () => onChunkTap(index, -1, paragraph)}
+      onChunkPress={platform === "web" && !compact ? undefined : () => onChunkTap(index, -1, paragraph)}
       onCommentRequest={openParagraphEditor}
       onCodeLinePress={platform === "web" ? openCodeLineEditor : undefined}
       codeBlockExtras={codeExtras}
@@ -561,6 +599,9 @@ const ReviewParagraph = memo(function ReviewParagraph({
       onLocalFilePress={onLocalFilePress}
       onListItemPress={(itemIndex, itemText, event) => onListItemTap(index, itemIndex, itemText, event)}
       listItemExtras={listExtras}
+      onTargetPress={openTargetEditor}
+      targetExtras={targetExtras}
+      annotatedTargets={[...resolvedTargets.map(entry => entry.target), ...(activeTarget ? [activeTarget] : [])]}
     />
   );
 
@@ -579,7 +620,7 @@ const ReviewParagraph = memo(function ReviewParagraph({
       ) : (
         <View>{markdown}</View>
       )}
-      {editing && !itemEditing && !codeEditing ? editorNode : null}
+      {editing && !itemEditing && !codeEditing && (!targetEditing || !activeTarget) ? editorNode : null}
       {anchored.map((comment) => (
         <CommentCard
           key={comment.id}
@@ -812,6 +853,30 @@ function UserMessageCard({
   theme,
   layout,
 }: PluginTimelineItemProps<UserMessageCardData>) {
+  const toast = useToast();
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    };
+  }, []);
+
+  async function copy(): Promise<void> {
+    try {
+      await copyText(item.data.text);
+      if (!mounted.current) return;
+      setCopied(true);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(false), 1600);
+    } catch {
+      if (mounted.current) toast.error("Could not copy the message.");
+    }
+  }
+
   const styles = useMemo(
     () => ({
       root: {
@@ -836,15 +901,22 @@ function UserMessageCard({
         color: theme.colors.foregroundMuted,
         fontSize: 11,
         textAlign: "right",
-        paddingTop: 2,
       } as const,
+      footer: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 4 } as const,
+      copy: { minHeight: 44, minWidth: 44, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 } as const,
     }),
     [theme],
   );
   return (
     <View testID="inline-review-user-message" style={styles.root}>
       <MarkdownText text={item.data.text} theme={theme} compact={layout.compact} />
-      <Text style={styles.time}>{timestampLabel(timestamp)}</Text>
+      <View style={styles.footer}>
+        <Text style={styles.time}>{timestampLabel(timestamp)}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Copy user message" onPress={() => void copy()} style={styles.copy}>
+          <Icon name={copied ? "Check" : "Copy"} size={14} color={copied ? theme.colors.accent : theme.colors.foregroundMuted} />
+          <Text accessibilityLiveRegion="polite" style={{ color: copied ? theme.colors.accent : theme.colors.foregroundMuted, fontSize: 12 }}>{copied ? "Copied" : "Copy"}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -1107,7 +1179,10 @@ function ReviewAssistantMessage({
     [revealed],
   );
   const comments = useMessageComments(agentId, data, sourceKey);
-  const reanchoredVersions = useRef(new Map<string, string>());
+  const unattachedComments = useMemo(() => comments.filter(comment =>
+    comment.target && comment.target.kind !== "response" && findReviewCommentParagraphIndex(comment, paragraphs, refs) === -1,
+  ), [comments, paragraphs, refs]);
+  const reanchoredVersions = useRef(new Map<string, { revision: number; messageId: string; paragraphs: readonly string[]; refs: Map<string, string> }>());
   // Re-anchor streaming-time comments once the complete message exists: bind
   // id-less comments to this message and heal paragraph-index drift caused by
   // re-chunking between the streaming and complete snapshots.
@@ -1123,23 +1198,25 @@ function ReviewAssistantMessage({
       ),
     );
     for (const comment of candidates) {
-      const anchorKey = `${comment.revision}:${data.messageId}:${paragraphs.length}:${comment.paragraphText}`;
-      if (reanchoredVersions.current.get(comment.id) === anchorKey) continue;
-      const index = findReviewCommentParagraphIndex(comment, paragraphs);
+      const previous = reanchoredVersions.current.get(comment.id);
+      if (previous?.revision === comment.revision && previous.messageId === data.messageId && previous.paragraphs === paragraphs && previous.refs === refs) continue;
+      const index = findReviewCommentParagraphIndex(comment, paragraphs, refs);
       const codeAnchor = comment.codeAnchor && index !== -1
         ? locateCodeLineAnchor(paragraphs[index], comment.codeAnchor)
         : undefined;
-      if (index !== -1 && (
+      const target = comment.target?.kind === "response" ? comment.target : comment.target && index !== -1 ? locateReviewTarget(paragraphs[index], comment.target, refs) : undefined;
+      if ((index !== -1 || comment.target?.kind === "response") && (
         comment.messageId !== data.messageId ||
         comment.paragraphIndex !== index ||
         (codeAnchor !== undefined && !sameCodeLineAnchor(comment.codeAnchor, codeAnchor)) ||
+        (target !== undefined && !sameReviewTarget(comment.target, target)) ||
         comment.sourceKey !== null
       )) {
-        relocateComment(comment.id, data.messageId, index, codeAnchor);
+        relocateComment(comment.id, data.messageId, index, codeAnchor, target);
       }
-      reanchoredVersions.current.set(comment.id, anchorKey);
+      reanchoredVersions.current.set(comment.id, { revision: comment.revision, messageId: data.messageId, paragraphs, refs });
     }
-  }, [comments, paragraphs, data.messageId, sourceKey]);
+  }, [comments, paragraphs, data.messageId, sourceKey, refs]);
   const [editing, setEditing] = useState<EditingTarget | null>(null);
   // Web: scroll the open editor into the viewport (DOM scrollIntoView). On
   // native the timeline ScrollView is host-owned and the SDK exposes no scroll
@@ -1265,23 +1342,25 @@ function ReviewAssistantMessage({
   ): void => {
     const carrier = event as {
       preventDefault?: () => void;
+      stopPropagation?: () => void;
       nativeEvent?: { metaKey?: boolean; ctrlKey?: boolean };
     } | undefined;
     const native = event === undefined || event === null ? undefined : carrier?.nativeEvent;
     if (layout.platform === "web") {
       if (native?.metaKey || native?.ctrlKey) {
         carrier?.preventDefault?.();
+        carrier?.stopPropagation?.();
         setEditing({
           paragraphIndex: chunkIndex,
           itemIndex,
           paragraphText: itemText,
           draft: "",
         });
-      }
+      } else if (layout.compact) handleChunkTap(chunkIndex, itemIndex, itemText);
       return;
     }
     handleChunkTap(chunkIndex, itemIndex, itemText);
-  }, [handleChunkTap, layout.platform]);
+  }, [handleChunkTap, layout.platform, layout.compact]);
 
   const handleLocalFilePress = useCallback((target: LocalFileTarget): void => {
     // Desktop and tablets (iPad): open the review panel tab with the file
@@ -1393,6 +1472,7 @@ function ReviewAssistantMessage({
         paragraphIndex: editing.paragraphIndex,
         itemIndex: editing.itemIndex ?? null,
         codeAnchor: editing.codeAnchor ?? null,
+        target: editing.target ?? null,
         paragraphText: editing.paragraphText,
         text: editing.draft.trim(),
         sourceKey: data.messageId === null ? sourceKey : null,
@@ -1405,6 +1485,7 @@ function ReviewAssistantMessage({
   // inside the tapped list item (per-item comments).
   const editorNode = editing ? (
     <View ref={editorRef} style={styles.editor}>
+      {editing.target ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{reviewTargetLabel(editing.target)}</Text> : null}
       {editing.codeAnchor ? (
         <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
           {`Code block ${editing.codeAnchor.blockIndex + 1} \u00b7 line ${editing.codeAnchor.lineIndex + 1}`}
@@ -1413,7 +1494,7 @@ function ReviewAssistantMessage({
       <TextInput
         value={editing.draft}
         onChangeText={(draft) => setEditing({ ...editing, draft })}
-        placeholder="Write your comment about this passage..."
+        placeholder={editing.target?.kind === "response" ? "Write your general comment about this response..." : "Write your comment about this passage..."}
         multiline
         autoFocus
         onKeyPress={(event) => {
@@ -1456,6 +1537,20 @@ function ReviewAssistantMessage({
         platform={layout.platform}
         hoverKey={finalCardHoverKey}
       >
+      <View style={{ gap: 4 }}>
+        {finalCardPosition !== "middle" && finalCardPosition !== "end" ? <Pressable accessibilityRole="button" accessibilityLabel="Comment on entire response"
+          onPress={() => setEditing({ paragraphIndex: -1, paragraphText: shortenQuote(data.text), target: { kind: "response" }, draft: "" })}
+          style={{ alignSelf: "flex-start", minHeight: layout.compact ? 44 : 32, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Icon name="MessageSquare" size={14} color={theme.colors.foregroundMuted} />
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Comment on response</Text>
+        </Pressable> : null}
+        {editing?.target?.kind === "response" ? editorNode : null}
+        {comments.filter(comment => comment.target?.kind === "response").map(comment => (
+          <CommentCard key={comment.id} comment={comment} theme={theme} targetLabel="Entire response"
+            onEdit={() => setEditing({ paragraphIndex: -1, paragraphText: comment.paragraphText, target: comment.target, draft: comment.text, commentId: comment.id })}
+            onRemove={() => removeComment(comment.id)} />
+        ))}
+      </View>
       {paragraphs.map((paragraph, index) => (
         <ReviewParagraph
           key={index}
@@ -1478,6 +1573,13 @@ function ReviewAssistantMessage({
           onListItemTap={handleListItemTap}
           onLocalFilePress={handleLocalFilePress}
         />
+      ))}
+      {editing?.paragraphIndex === -2 ? editorNode : null}
+      {unattachedComments.map(comment => (
+        <CommentCard key={comment.id} comment={comment} theme={theme}
+          targetLabel={`${reviewTargetLabel(comment.target!)} · source changed`}
+          onEdit={() => setEditing({ paragraphIndex: -2, paragraphText: comment.paragraphText, target: comment.target, draft: comment.text, commentId: comment.id })}
+          onRemove={() => removeComment(comment.id)} />
       ))}
       {finalCardPosition === "start" || finalCardPosition === "middle" ? (
         <View pointerEvents="none" style={styles.cardBridge} />

@@ -1,6 +1,9 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { parseBlocks } from "./markdown-parse.ts";
+import { locateReviewTarget, reviewTargetQuote, reviewTargetSchema } from "./review-target.ts";
+export { blockReviewTarget, imageReviewTarget, locateReviewTarget, reviewTargetLabel, sameReviewTarget, tableCellReviewTarget } from "./review-target.ts";
+export type { ReviewTarget } from "./review-target.ts";
 
 /** Data carried by the plugin-owned replacement of an assistant message. */
 export const reviewItemSchema = z.object({
@@ -37,6 +40,8 @@ export const reviewCommentSchema = z.object({
   itemIndex: z.number().int().nullable().optional(),
   /** A precise source-line target inside this paragraph's Markdown code block. */
   codeAnchor: codeLineAnchorSchema.nullable().optional(),
+  /** A response-wide, table-cell, image or structured Markdown block target. */
+  target: reviewTargetSchema.nullable().optional(),
   /** Snapshot of the commented paragraph, used for quoting and anchoring. */
   paragraphText: z.string(),
   text: z.string(),
@@ -176,10 +181,12 @@ export function commentBelongsToReviewSource(
 
 /** A streaming paragraph snapshot may be a prefix of the completed paragraph. */
 export function reviewCommentMatchesParagraph(
-  comment: Pick<ReviewComment, "codeAnchor" | "itemIndex" | "paragraphText">,
+  comment: Pick<ReviewComment, "codeAnchor" | "itemIndex" | "paragraphText" | "target">,
   paragraph: string | undefined,
+  refs?: Map<string, string>,
 ): boolean {
   if (paragraph === undefined) return false;
+  if (comment.target) return comment.target.kind !== "response" && locateReviewTarget(paragraph, comment.target, refs) !== null;
   if (comment.codeAnchor) return locateCodeLineAnchor(paragraph, comment.codeAnchor) !== null;
   if (comment.itemIndex !== null && comment.itemIndex !== undefined) {
     return paragraph.includes(comment.paragraphText);
@@ -190,13 +197,15 @@ export function reviewCommentMatchesParagraph(
 
 /** Finds the completed paragraph for both block-level and list-item comments. */
 export function findReviewCommentParagraphIndex(
-  comment: Pick<ReviewComment, "codeAnchor" | "itemIndex" | "paragraphIndex" | "paragraphText">,
+  comment: Pick<ReviewComment, "codeAnchor" | "itemIndex" | "paragraphIndex" | "paragraphText" | "target">,
   paragraphs: readonly string[],
+  refs?: Map<string, string>,
 ): number {
-  if (reviewCommentMatchesParagraph(comment, paragraphs[comment.paragraphIndex])) {
+  if (comment.target?.kind === "response") return -1;
+  if (reviewCommentMatchesParagraph(comment, paragraphs[comment.paragraphIndex], refs)) {
     return comment.paragraphIndex;
   }
-  return paragraphs.findIndex((paragraph) => reviewCommentMatchesParagraph(comment, paragraph));
+  return paragraphs.findIndex((paragraph) => reviewCommentMatchesParagraph(comment, paragraph, refs));
 }
 
 /** Pulls the persisted comments for one agent into the client store. */
@@ -358,14 +367,14 @@ export function looksLikeSentReview(text: string): boolean {
   return /(?:^|\n)Review:\s*\n/.test(text) && /\[\d+\] On: /.test(text);
 }
 
-/** Splits text into comment-anchorable chunks: blank-line separated blocks,
- * with fenced code blocks kept whole even when their content contains blank
- * lines. Splitting inside a fence used to break code block rendering. */
+/** Splits comment-anchorable chunks while keeping fences and details whole,
+ * including their internal blank lines and nested Markdown. */
 export function splitParagraphs(text: string): string[] {
   const chunks: string[] = [];
   let current: string[] = [];
   let inFence = false;
   let fenceLength = 3;
+  let inDetails = false;
   for (const line of text.split("\n")) {
     const fence = /^\s*(`{3,})/.exec(line);
     if (fence) {
@@ -378,7 +387,11 @@ export function splitParagraphs(text: string): string[] {
       current.push(line);
       continue;
     }
-    if (!inFence && line.trim().length === 0) {
+    if (!inFence) {
+      if (/^\s*<details\b/i.test(line)) inDetails = true;
+      else if (/^\s*<\/details>/i.test(line)) inDetails = false;
+    }
+    if (!inFence && !inDetails && line.trim().length === 0) {
       if (current.length > 0) {
         const chunk = current.join("\n").trim();
         if (chunk.length > 0) chunks.push(chunk);
@@ -403,8 +416,10 @@ export function shortenQuote(text: string): string {
 }
 
 export function reviewCommentQuote(
-  comment: Pick<ReviewComment, "codeAnchor" | "paragraphText">,
+  comment: Pick<ReviewComment, "codeAnchor" | "paragraphText" | "target">,
 ): string {
+  if (comment.target?.kind === "response") return shortenQuote(`Entire response: ${comment.paragraphText}`);
+  if (comment.target) return shortenQuote(reviewTargetQuote(comment.target));
   if (!comment.codeAnchor) return shortenQuote(comment.paragraphText);
   return [
     `Code block ${comment.codeAnchor.blockIndex + 1}, line ${comment.codeAnchor.lineIndex + 1}:`,
@@ -414,9 +429,14 @@ export function reviewCommentQuote(
   ].join("\n");
 }
 
+/** General feedback precedes targeted feedback, preserving order within each group. */
+export function orderReviewComments(comments: readonly ReviewComment[]): ReviewComment[] {
+  return [...comments.filter(comment => comment.target?.kind === "response"), ...comments.filter(comment => comment.target?.kind !== "response")];
+}
+
 /** Renders the PENDING comments as a review block the user can attach, paste or send. */
 export function formatReview(comments: readonly ReviewComment[]): string {
-  const pending = comments.filter((comment) => comment.status === "pending");
+  const pending = orderReviewComments(comments.filter((comment) => comment.status === "pending"));
   if (pending.length === 0) return "";
   const lines: string[] = ["Review:", ""];
   pending.forEach((comment, index) => {
