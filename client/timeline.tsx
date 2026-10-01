@@ -1179,6 +1179,7 @@ function ReviewAssistantMessage({
     [revealed],
   );
   const comments = useMessageComments(agentId, data, sourceKey);
+  const responseComments = useMemo(() => comments.filter(comment => comment.target?.kind === "response"), [comments]);
   const unattachedComments = useMemo(() => comments.filter(comment =>
     comment.target && comment.target.kind !== "response" && findReviewCommentParagraphIndex(comment, paragraphs, refs) === -1,
   ), [comments, paragraphs, refs]);
@@ -1263,7 +1264,7 @@ function ReviewAssistantMessage({
               borderBottomRightRadius: endsFinalCard ? 8 : 0,
               paddingLeft: 16,
               paddingRight: 16,
-              paddingTop: startsFinalCard ? 14 : 4,
+              paddingTop: startsFinalCard ? (layout.compact ? 44 : 32) : 4,
               marginTop: startsFinalCard ? 4 : 0,
               position: "relative" as const,
             }
@@ -1537,20 +1538,20 @@ function ReviewAssistantMessage({
         platform={layout.platform}
         hoverKey={finalCardHoverKey}
       >
-      <View style={{ gap: 4 }}>
         {finalCardPosition === "single" || finalCardPosition === "start" ? <Pressable accessibilityRole="button" accessibilityLabel="Comment on entire response"
           onPress={() => setEditing({ paragraphIndex: -1, paragraphText: shortenQuote(data.text), target: { kind: "response" }, draft: "" })}
-          style={{ alignSelf: "flex-start", minHeight: layout.compact ? 44 : 32, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", gap: 6 }}>
+          style={{ position: "absolute", top: 0, left: 4, minHeight: layout.compact ? 44 : 32, paddingHorizontal: 4, flexDirection: "row", alignItems: "center", gap: 6 }}>
           <Icon name="MessageSquare" size={14} color={theme.colors.foregroundMuted} />
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Comment on response</Text>
         </Pressable> : null}
+      {editing?.target?.kind === "response" || responseComments.length > 0 ? <View style={{ gap: 4 }}>
         {editing?.target?.kind === "response" ? editorNode : null}
-        {comments.filter(comment => comment.target?.kind === "response").map(comment => (
+        {responseComments.map(comment => (
           <CommentCard key={comment.id} comment={comment} theme={theme} targetLabel="Entire response"
             onEdit={() => setEditing({ paragraphIndex: -1, paragraphText: comment.paragraphText, target: comment.target, draft: comment.text, commentId: comment.id })}
             onRemove={() => removeComment(comment.id)} />
         ))}
-      </View>
+      </View> : null}
       {paragraphs.map((paragraph, index) => (
         <ReviewParagraph
           key={index}
