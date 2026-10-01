@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Image, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import {
   COMPACT_FILE_TRANSFER_CHUNK_BYTES,
   DESKTOP_FILE_TRANSFER_CHUNK_BYTES,
@@ -35,6 +35,7 @@ import {
   subscribe as subscribePreview,
 } from "./preview-store";
 import { FileCodeBlock, MarkdownText } from "./markdown";
+import { FullImage } from "./image-gallery";
 import { downloadLocalFileProgressively, formatFileSize } from "./file-download";
 import { DownloadCancelledError } from "./web";
 
@@ -89,7 +90,7 @@ function PanelFilePreview({
     | { kind: "error"; message: string }
     | { kind: "binary"; size?: number }
     | { kind: "text"; content: string; truncated: boolean }
-    | { kind: "image"; dataUri?: string; mimeType: string; size?: number }
+    | { kind: "image" }
   >({ kind: "loading" });
   const canPreviewMarkdown = state.kind === "text" && isMarkdownPath(target.path);
   const markdownRoot = useMemo(() => {
@@ -126,16 +127,12 @@ function PanelFilePreview({
       lineStart: target.lineStart,
       lineEnd: target.lineEnd,
       mode: "read",
+      imageMetadataOnly: true,
     })
       .then((result) => {
         if (cancelled) return;
         if (result.ok && result.mimeType) {
-          setState({
-            kind: "image",
-            dataUri: result.base64 ? `data:${result.mimeType};base64,${result.base64}` : undefined,
-            mimeType: result.mimeType,
-            size: result.size,
-          });
+          setState({ kind: "image" });
         } else if (result.ok && result.binary) {
           setState({ kind: "binary", size: result.size });
         } else if (result.ok) {
@@ -161,7 +158,6 @@ function PanelFilePreview({
       muted: { color: theme.colors.foregroundMuted, fontSize: 12 } as const,
       error: { color: theme.colors.statusDanger, fontSize: 12 } as const,
       body: { flex: 1 } as const,
-      image: { width: "100%" as const, height: "100%" as const } as const,
       binaryBox: { gap: 8, paddingVertical: 24, alignItems: "center" } as const,
       markdownBody: { paddingHorizontal: 8, paddingTop: 4, paddingBottom: 28 } as const,
       downloadButton: {
@@ -250,20 +246,13 @@ function PanelFilePreview({
         <Text style={styles.error}>{state.message}</Text>
       ) : state.kind === "image" ? (
         <View key={target.requestId} style={[styles.body, { padding: 4 }]}>
-          {state.dataUri ? (
-            <Image
-              source={{ uri: state.dataUri }}
-              style={styles.image}
-              resizeMode="contain"
-              accessibilityLabel={`Preview of ${target.path}`}
-            />
-          ) : (
-            <View style={styles.binaryBox}>
-              <Text style={styles.muted}>
-                {`Image${state.size ? ` · ${formatSize(state.size)}` : ""} exceeds the 5 MB preview limit.`}
-              </Text>
-            </View>
-          )}
+          <FullImage
+            image={{ type: "image", alt: "", url: target.path }}
+            target={target}
+            theme={theme}
+            compact={layout.compact}
+            openFile={openFile}
+          />
         </View>
       ) : state.kind === "binary" ? (
         <View style={styles.binaryBox}>

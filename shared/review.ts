@@ -304,6 +304,8 @@ export const openLocalFileRpc = defineRpc({
     lineStart: z.number().int().optional(),
     lineEnd: z.number().int().optional(),
     mode: z.enum(["open", "read", "image", "download"]).optional(),
+    /** Mode read: detect an image without transferring it; the viewer loads a bounded preview. */
+    imageMetadataOnly: z.boolean().optional(),
     /** For mode image, derive a detailed preview when the original exceeds imageMaxBytes. */
     optimizeImage: z.boolean().optional(),
     /** Maximum image file bytes before Base64; defaults to 5 MiB independently of download chunks. */

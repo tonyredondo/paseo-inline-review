@@ -342,13 +342,16 @@ test("compact remote markdown images wait for explicit interaction", () => {
   assert.match(gallerySource, /onLoad=\{\(\) => setEnabled\(true\)\}/);
 });
 
-test("file preview panels render detected images instead of the binary fallback", () => {
+test("file previews detect images without a payload and share the gallery's detailed viewer", () => {
   const panelSource = String(readFileSync(path.resolve("client/panel.tsx")));
   const timelineSource = String(readFileSync(path.resolve("client/timeline.tsx")));
   assert.match(panelSource, /state\.kind === "image"/);
-  assert.match(panelSource, /<Image[\s\S]{0,200}source=\{\{ uri: state\.dataUri \}\}/);
+  assert.match(panelSource, /imageMetadataOnly: true/);
+  assert.match(panelSource, /<FullImage[\s\S]{0,250}openFile=\{openFile\}/);
   assert.match(timelineSource, /filePreview\.kind === "image"/);
-  assert.match(timelineSource, /<Image[\s\S]{0,200}source=\{\{ uri: filePreview\.dataUri \}\}/);
+  assert.match(timelineSource, /imageMetadataOnly: true/);
+  assert.equal(timelineSource.match(/<FullImage/g)?.length, 2, "web overlay and native sheet share the image viewer");
+  assert.doesNotMatch(panelSource + timelineSource, /exceeds the 5 MB preview limit/);
 });
 
 test("Markdown file tabs switch between source and an on-demand rendered preview", () => {

@@ -25,7 +25,7 @@ import {
 } from "./turn-final-store";
 import { z } from "zod";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type Ref } from "react";
-import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   openLocalFileRpc,
   COMPACT_FILE_TRANSFER_CHUNK_BYTES,
@@ -62,6 +62,8 @@ import {
   updateComment,
 } from "./review-store";
 import { FileCodeBlock, MarkdownText } from "./markdown";
+import { FullImage } from "./image-gallery";
+import type { FullImageLoader } from "./image-preview-store";
 import { downloadLocalFileProgressively, formatFileSize } from "./file-download";
 import { createStableReferenceDefinitions } from "./markdown-stream";
 import { createStableParagraphs } from "./paragraph-stream";
@@ -230,7 +232,7 @@ type FilePreviewBase = {
 
 type FilePreviewState = FilePreviewBase & (
   | { kind: "text"; content: string; truncated: boolean }
-  | { kind: "image"; dataUri?: string; mimeType: string }
+  | { kind: "image" }
 );
 
 /**
@@ -245,6 +247,7 @@ function WebFilePreviewOverlay({
   onClose,
   onOpenLocally,
   onDownload,
+  openFile,
 }: {
   filePreview: FilePreviewState;
   theme: PluginTheme;
@@ -252,6 +255,7 @@ function WebFilePreviewOverlay({
   onClose(): void;
   onOpenLocally(): void;
   onDownload(): void;
+  openFile: FullImageLoader;
 }): ReactNode {
   // Escape closes the overlay.
   useEffect(() => {
@@ -328,20 +332,13 @@ function WebFilePreviewOverlay({
         </View>
         <View style={{ flex: 1, padding: 4 }}>
           {filePreview.kind === "image" ? (
-            filePreview.dataUri ? (
-              <Image
-                source={{ uri: filePreview.dataUri }}
-                style={{ width: "100%", height: "100%" }}
-                resizeMode="contain"
-                accessibilityLabel={`Preview of ${filePreview.path}`}
-              />
-            ) : (
-              <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-                  {`Image · ${formatFileSize(filePreview.size)} exceeds the 5 MB preview limit.`}
-                </Text>
-              </View>
-            )
+            <FullImage
+              image={{ type: "image", alt: "", url: filePreview.path }}
+              target={filePreview}
+              theme={theme}
+              compact={compact}
+              openFile={openFile}
+            />
           ) : (
             <FileCodeBlock
               code={filePreview.content}
@@ -880,7 +877,8 @@ function UserMessageCard({
   const styles = useMemo(
     () => ({
       root: {
-        alignSelf: "flex-end",
+        // Flex-based Markdown rows need the timeline's width to measure text.
+        alignSelf: "stretch",
         maxWidth: "100%",
         backgroundColor: theme.colors.surface2,
         borderRadius: 8,
@@ -1122,6 +1120,12 @@ function ReviewAssistantMessage({
     }
   }, [paseo, agentId, turnScopeId]);
   const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
+  const filePreviewRequest = useRef(0);
+  useEffect(() => () => { filePreviewRequest.current += 1; }, []);
+  const closeFilePreview = useCallback(() => {
+    filePreviewRequest.current += 1;
+    setFilePreview(null);
+  }, []);
   const wideFrameAnchorRef = useRef<LiveWideFrameAnchorRef | null>(null);
   if (!wideFrameAnchorRef.current) {
     wideFrameAnchorRef.current = createLiveWideFrameAnchorRef();
@@ -1364,6 +1368,8 @@ function ReviewAssistantMessage({
   }, [handleChunkTap, layout.platform, layout.compact]);
 
   const handleLocalFilePress = useCallback((target: LocalFileTarget): void => {
+    const requestId = ++filePreviewRequest.current;
+    setFilePreview(null);
     // Desktop and tablets (iPad): open the review panel tab with the file
     // preview — the panel is the large surface (the host sheet caps at
     // 520px with no size escape). Phones get the host bottom sheet.
@@ -1383,7 +1389,9 @@ function ReviewAssistantMessage({
       lineStart: target.lineStart,
       lineEnd: target.lineEnd,
       mode: "read",
+      imageMetadataOnly: true,
     }).then((result) => {
+      if (filePreviewRequest.current !== requestId) return;
       if (!result.ok) {
         toast.error(result.error ?? "Could not open the file.");
         return;
@@ -1392,8 +1400,6 @@ function ReviewAssistantMessage({
         setFilePreview({
           kind: "image",
           path: target.path,
-          dataUri: result.base64 ? `data:${result.mimeType};base64,${result.base64}` : undefined,
-          mimeType: result.mimeType,
           size: result.size ?? 0,
           lineStart: target.lineStart,
           lineEnd: target.lineEnd,
@@ -1414,7 +1420,7 @@ function ReviewAssistantMessage({
         lineEnd: target.lineEnd,
       });
     }).catch(() => {
-      toast.error("Could not open the file.");
+      if (filePreviewRequest.current === requestId) toast.error("Could not open the file.");
     });
   }, [agentId, agentWorkspaceId, layout.compact, layout.platform, openLocalFile, toast]);
 
@@ -1456,7 +1462,7 @@ function ReviewAssistantMessage({
       return;
     }
     openFileTab(filePreview.path, filePreview.lineStart, filePreview.lineEnd, workspaceId, agentId);
-    setFilePreview(null);
+    closeFilePreview();
   }
 
   function save() {
@@ -1591,9 +1597,10 @@ function ReviewAssistantMessage({
             filePreview={filePreview}
             theme={theme}
             compact={layout.compact}
-            onClose={() => setFilePreview(null)}
+            onClose={closeFilePreview}
             onOpenLocally={openFileOnAgentMachine}
             onDownload={downloadPreviewedFile}
+            openFile={openLocalFile}
           />
         ) : null
       ) : (
@@ -1602,7 +1609,7 @@ function ReviewAssistantMessage({
           icon={<Icon name="FileText" size={14} color={theme.colors.accent} />}
           open={filePreview !== null}
           onOpenChange={(open) => {
-            if (!open) setFilePreview(null);
+            if (!open) closeFilePreview();
           }}
         >
           <Modal.Content
@@ -1633,20 +1640,14 @@ function ReviewAssistantMessage({
                   </View>
                 </View>
                 {filePreview.kind === "image" ? (
-                  filePreview.dataUri ? (
-                    <Image
-                      source={{ uri: filePreview.dataUri }}
-                      style={{ width: "100%", flex: 1 }}
-                      resizeMode="contain"
-                      accessibilityLabel={`Preview of ${filePreview.path}`}
-                    />
-                  ) : (
-                    <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-                      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-                        {`Image · ${formatFileSize(filePreview.size)} exceeds the 5 MB preview limit.`}
-                      </Text>
-                    </View>
-                  )
+                  <FullImage
+                    key={filePreview.path}
+                    image={{ type: "image", alt: "", url: filePreview.path }}
+                    target={filePreview}
+                    theme={theme}
+                    compact={layout.compact}
+                    openFile={openLocalFile}
+                  />
                 ) : (
                   <FileCodeBlock
                     code={filePreview.content}

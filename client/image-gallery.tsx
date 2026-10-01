@@ -1,15 +1,16 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
-import { FlatList, Icon } from "@getpaseo/plugin/client/react-native";
+import { FlatList, Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator, Image, Modal, PanResponder, Platform, Pressable, SafeAreaView, Text, View,
   type FlatList as NativeFlatList, type ImageStyle, type StyleProp,
 } from "react-native";
 import type { InlineToken, LocalFileTarget } from "../shared/markdown-parse";
-import { COMPACT_IMAGE_VIEWER_MAX_BYTES, FILE_TRANSFER_CHUNK_BYTES, localImagePreviewRpc, openLocalFileRpc } from "../shared/review";
+import { COMPACT_FILE_TRANSFER_CHUNK_BYTES, COMPACT_IMAGE_VIEWER_MAX_BYTES, DESKTOP_FILE_TRANSFER_CHUNK_BYTES, FILE_TRANSFER_CHUNK_BYTES, localImagePreviewRpc, openLocalFileRpc } from "../shared/review";
 import { retainFullImage, retainImagePreview, retryFullImage, retryImagePreview, type FullImageLoader, type ThumbnailState } from "./image-preview-store";
-import { listenImageViewerKeys } from "./web";
+import { DownloadCancelledError, listenImageViewerKeys } from "./web";
+import { downloadLocalFileProgressively, formatFileSize } from "./file-download";
 import { ZoomableImage } from "./image-zoom";
 
 export type GalleryImage = Extract<InlineToken, { type: "image" }>;
@@ -101,14 +102,15 @@ function ImagePreview({ image, target, theme, compact, enabled, thumbnail, onLoa
   );
 }
 
-function FullImage({ image, target, theme, compact, openFile, onOpenFile, onNavigate }: {
+/** Shared detailed image preview for galleries, file tabs and linked-file sheets. */
+export function FullImage({ image, target, theme, compact, openFile, onOpenFile, onNavigate }: {
   image: GalleryImage;
   target: LocalFileTarget | null;
   theme: PluginTheme;
   compact: boolean;
   openFile: FullImageLoader;
   onOpenFile?: () => void;
-  onNavigate(direction: -1 | 1): void;
+  onNavigate?(direction: -1 | 1): void;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<{ uri?: string; error?: string }>({});
@@ -118,7 +120,7 @@ function FullImage({ image, target, theme, compact, openFile, onOpenFile, onNavi
     if (!target) {
       setState({ uri: image.url });
     } else {
-      // The gallery owns the stable host RPC callback across image remounts.
+      // The parent owns the stable host RPC callback across image remounts.
       // Releasing a subscription ignores late replies while retaining the
       // bounded payload for navigation and sharing any pending request.
       return retainFullImage(target.path, openFile, (next) => {
@@ -155,12 +157,21 @@ export function ImageGallery({ images, theme, compact, resolveFile, onLocalFileP
   onImageComment?: (image: GalleryImage, index: number) => void;
 }) {
   const openFile = useRpc(openLocalFileRpc);
+  const toast = useToast();
   const [selected, setSelected] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [enabled, setEnabled] = useState(!compact);
+  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+  const downloading = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const index = Math.max(0, Math.min(selected, images.length - 1));
   const image = images[index];
   const target = image ? resolveFile?.(image.url) ?? null : null;
+  const canDownload = Platform.OS === "web" && target !== null;
   const closeRef = useRef<View>(null);
   const thumbnails = useRef<NativeFlatList<GalleryImage>>(null);
   const select = (next: number): void => { setSelected(Math.max(0, Math.min(next, images.length - 1))); };
@@ -185,6 +196,28 @@ export function ImageGallery({ images, theme, compact, resolveFile, onLocalFileP
   }), [index, images.length]);
   if (!image) return null;
   const open = (): void => { setEnabled(true); setExpanded(true); };
+  const download = (): void => {
+    if (!target || downloading.current) return;
+    // Capture the selected original before navigation; full-viewer compression
+    // and its cache never become the download source. Lock before the picker.
+    downloading.current = true;
+    setDownloadProgress(0);
+    void downloadLocalFileProgressively({
+      path: target.path,
+      openFile,
+      chunkBytes: compact ? COMPACT_FILE_TRANSFER_CHUNK_BYTES : DESKTOP_FILE_TRANSFER_CHUNK_BYTES,
+      onProgress: (progress) => { if (mounted.current) setDownloadProgress(progress ?? 1); },
+    }).then((size) => {
+      if (mounted.current) toast.show(`Downloaded ${imageLabel(image)} (${formatFileSize(size)}).`);
+    }).catch((error) => {
+      if (mounted.current && !(error instanceof DownloadCancelledError)) {
+        toast.error(error instanceof Error ? error.message : "Could not download the image.");
+      }
+    }).finally(() => {
+      downloading.current = false;
+      if (mounted.current) setDownloadProgress(null);
+    });
+  };
   const controlSize = compact ? 44 : 36;
   const arrow = (direction: -1 | 1) => {
     const disabled = direction < 0 ? index === 0 : index === images.length - 1;
@@ -259,11 +292,19 @@ export function ImageGallery({ images, theme, compact, resolveFile, onLocalFileP
           onShow={() => closeRef.current?.focus()}
         >
           <SafeAreaView accessibilityLabel="Image viewer content" style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 12, padding: compact ? 12 : 20 }}>
-              <ImageCaption image={image} theme={theme} fontSize={14} />
-              {controls}
-              {onImageComment ? <Pressable accessibilityRole="button" accessibilityLabel="Comment on image" onPress={() => { setExpanded(false); onImageComment(image, index); }} style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: theme.colors.surface2 }}><Icon name="MessageSquare" size={17} color={theme.colors.foreground} /></Pressable> : null}
-              <Pressable ref={closeRef} accessibilityRole="button" accessibilityLabel="Close image viewer" onPress={() => setExpanded(false)} style={{ width: 44, height: 44, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.surface2 }}><Icon name="X" size={20} color={theme.colors.foreground} /></Pressable>
+            <View style={{ padding: compact ? 12 : 20, gap: 8 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: compact ? 8 : 12 }}>
+                <ImageCaption image={image} theme={theme} fontSize={14} />
+                {compact && canDownload ? null : controls}
+                {canDownload ? <Pressable accessibilityRole="button" accessibilityLabel="Download original image" accessibilityState={{ disabled: downloadProgress !== null }}
+                  disabled={downloadProgress !== null} onPress={download}
+                  style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: theme.colors.surface2 }}>
+                  {downloadProgress === null ? <Icon name="Download" size={18} color={theme.colors.foreground} /> : <Text accessibilityLiveRegion="polite" style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{`${Math.round(downloadProgress * 100)}%`}</Text>}
+                </Pressable> : null}
+                {onImageComment ? <Pressable accessibilityRole="button" accessibilityLabel="Comment on image" onPress={() => { setExpanded(false); onImageComment(image, index); }} style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: theme.colors.surface2 }}><Icon name="MessageSquare" size={17} color={theme.colors.foreground} /></Pressable> : null}
+                <Pressable ref={closeRef} accessibilityRole="button" accessibilityLabel="Close image viewer" onPress={() => setExpanded(false)} style={{ width: 44, height: 44, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.surface2 }}><Icon name="X" size={20} color={theme.colors.foreground} /></Pressable>
+              </View>
+              {compact && canDownload && controls ? <View style={{ alignItems: "center" }}>{controls}</View> : null}
             </View>
             <View style={{ flex: 1, minHeight: 0, paddingHorizontal: compact ? 8 : 24, paddingBottom: 16 }}>
               <FullImage key={`${index}:${target?.path ?? image.url}`} image={image} target={target} theme={theme} compact={compact} openFile={openFile} onNavigate={(direction) => select(index + direction)} onOpenFile={target && onLocalFilePress ? () => { setExpanded(false); onLocalFilePress(target); } : undefined} />

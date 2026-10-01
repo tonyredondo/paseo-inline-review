@@ -269,6 +269,51 @@ test("the normal file preview recognizes images instead of reporting binary", as
   assert.equal(largeResult.base64, undefined);
 });
 
+test("image metadata detection never transfers small or oversized image payloads", async () => {
+  const root = tempRoot();
+  process.env.PASEO_HOME = root;
+  const server = await importServer("image-metadata");
+  const signatures = [
+    ["image/png", Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])],
+    ["image/jpeg", Buffer.from([255, 216, 255, 224])],
+    ["image/gif", Buffer.from("GIF89a")],
+    ["image/webp", Buffer.from("RIFF\0\0\0\0WEBP")],
+  ] as const;
+  for (const [mimeType, signature] of signatures) {
+    for (const size of [64, COMPACT_IMAGE_VIEWER_MAX_BYTES + 1, FILE_TRANSFER_CHUNK_BYTES + 1]) {
+      const bytes = Buffer.alloc(size, 1);
+      signature.copy(bytes);
+      const path = join(root, "extensionless-image");
+      writeFileSync(path, bytes);
+      const detected = await server.openLocalFile({ path, mode: "read", imageMetadataOnly: true });
+      assert.deepEqual(detected, { ok: true, mimeType, size });
+      assert.deepEqual(readFileSync(path), bytes, "metadata detection preserves the original");
+    }
+  }
+});
+
+test("image metadata detection keeps text, binary, missing-file and directory previews intact", async () => {
+  const root = tempRoot();
+  process.env.PASEO_HOME = root;
+  const server = await importServer("image-metadata-fallbacks");
+  for (const [name, bytes] of [
+    ["empty", Buffer.alloc(0)],
+    ["short", Buffer.from("hello")],
+    ["source.ts", Buffer.from("const text = 'ordinary source';\n".repeat(8))],
+    ["binary", Buffer.from([0, 0, 1, 0, 2])],
+  ] as const) {
+    const path = join(root, name);
+    writeFileSync(path, bytes);
+    assert.deepEqual(
+      await server.openLocalFile({ path, mode: "read", imageMetadataOnly: true }),
+      await server.openLocalFile({ path, mode: "read" }),
+    );
+  }
+  for (const path of [root, join(root, "missing")]) {
+    assert.equal((await server.openLocalFile({ path, mode: "read", imageMetadataOnly: true })).ok, false);
+  }
+});
+
 test("download rejects a same-size file replacement between chunks", async () => {
   const root = tempRoot();
   process.env.PASEO_HOME = root;

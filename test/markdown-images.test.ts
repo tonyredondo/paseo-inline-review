@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
 
 import { classifyLocalFileLink } from "../shared/markdown-parse.ts";
-import { COMPACT_IMAGE_VIEWER_MAX_BYTES, FILE_TRANSFER_CHUNK_BYTES } from "../shared/review.ts";
+import { COMPACT_FILE_TRANSFER_CHUNK_BYTES, COMPACT_IMAGE_VIEWER_MAX_BYTES, DESKTOP_FILE_TRANSFER_CHUNK_BYTES, FILE_TRANSFER_CHUNK_BYTES } from "../shared/review.ts";
 
 // Execute the real renderer with host primitives and synchronous hooks. Image
 // loading and cache lifetimes are exercised separately by the preview tests.
@@ -15,6 +16,7 @@ const hostModules: Record<string, string> = {
     export const useRef = current => __hooks.current ? __hooks.current.memo(() => ({ current }), []) : ({ current });
     export const useState = initial => __hooks.current ? __hooks.current.state(initial) : [typeof initial === "function" ? initial() : initial, () => {}];
     export const useEffect = (effect, deps) => __hooks.current?.effect(effect, deps);
+    export const useCallback = fn => fn, useSyncExternalStore = (_subscribe, snapshot) => snapshot();
   `,
   "react/jsx-runtime": `
     export const Fragment = "Fragment";
@@ -30,13 +32,13 @@ const hostModules: Record<string, string> = {
     export const Linking = { openURL: () => {} };
   `,
   "@getpaseo/plugin": "export const defineRpc = contract => contract;",
-  "@getpaseo/plugin/client": "export const useRpc = contract => __hooks.rpc(contract.name);",
-  "@getpaseo/plugin/client/react-native": "export const copyText = () => {}; export const Icon = 'Icon'; export const FlatList = props => props.data.slice(0, props.initialNumToRender).map((item, index) => props.renderItem({ item, index }));",
+  "@getpaseo/plugin/client": "export const useRpc = contract => __hooks.rpc(contract.name), usePaseo = () => null;",
+  "@getpaseo/plugin/client/react-native": "export const copyText = () => {}; export const Icon = 'Icon', TextInput = 'TextInput', useToast = () => __hooks.toast; export const FlatList = props => props.data.slice(0, props.initialNumToRender).map((item, index) => props.renderItem({ item, index }));",
 };
 
 const bundle = await build({
   stdin: {
-    contents: 'export { MarkdownText } from "./client/markdown"; export { ImageGallery } from "./client/image-gallery"; export { ZoomableImage } from "./client/image-zoom"; export { disposeImagePreviews } from "./client/image-preview-store";',
+    contents: 'export { MarkdownText } from "./client/markdown"; export { ImageGallery } from "./client/image-gallery"; export { PanelFilePreview } from "./client/panel"; export { ZoomableImage } from "./client/image-zoom"; export { disposeImagePreviews } from "./client/image-preview-store";',
     resolveDir: process.cwd(),
     loader: "tsx",
   },
@@ -48,6 +50,10 @@ const bundle = await build({
   plugins: [{
     name: "paseo-host-primitives",
     setup(builder) {
+      // Exercise the private file-tab renderer without making it public API.
+      builder.onLoad({ filter: /client\/panel\.tsx$/ }, args => ({
+        contents: readFileSync(args.path, "utf8").replace("function PanelFilePreview(", "export function PanelFilePreview("), loader: "tsx",
+      }));
       builder.onResolve({ filter: /^(react|react-native|@getpaseo\/plugin)(\/.*)?$/ }, (args) => ({
         path: args.path, namespace: "host",
       }));
@@ -58,10 +64,12 @@ const bundle = await build({
   }],
 });
 type Component = (props: Record<string, unknown>) => unknown;
-const module = { exports: {} as { MarkdownText: Component; ImageGallery: Component; ZoomableImage: Component; disposeImagePreviews(): void } };
+const module = { exports: {} as { MarkdownText: Component; ImageGallery: Component; PanelFilePreview: Component; ZoomableImage: Component; disposeImagePreviews(): void } };
 const openedUrls: string[] = [];
 const keys = new Set<(event: Record<string, unknown>) => void>();
 const hooks = {
+  toast: { show: (message: string) => notices.push(message), error: (message: string) => errors.push(message) },
+  filePicker: async (_options: { suggestedName: string }): Promise<unknown> => { throw new Error("Unexpected download picker"); },
   platform: { OS: "web" },
   current: null as HookScope | null,
   imageSize: (_uri: string, success: (width: number, height: number) => void, _failure: () => void) => success(800, 400),
@@ -69,8 +77,10 @@ const hooks = {
     return () => { throw new Error("Unexpected image RPC during render"); };
   },
 };
+const notices: string[] = [], errors: string[] = [];
 runInNewContext(`(function(module, exports) {\n${bundle.outputFiles[0].text}\n})(module, exports);`, {
-  module, exports: module.exports, setTimeout, clearTimeout, URL,
+  module, exports: module.exports, setTimeout, clearTimeout, URL, Error, atob,
+  showSaveFilePicker: (options: { suggestedName: string }) => hooks.filePicker(options),
   __hooks: hooks,
   addEventListener: (_name: string, listener: (event: Record<string, unknown>) => void) => keys.add(listener),
   removeEventListener: (_name: string, listener: (event: Record<string, unknown>) => void) => keys.delete(listener),
@@ -328,12 +338,12 @@ class GalleryFixture {
   fullKey?: string;
   tree: unknown;
   fullTree: unknown;
-  requests: { path: string; optimizeImage: unknown; imageMaxBytes: unknown; resolve(value: unknown): void; reject(error: Error): void }[] = [];
+  requests: { input: Record<string, unknown>; path: string; optimizeImage: unknown; imageMaxBytes: unknown; resolve(value: unknown): void; reject(error: Error): void }[] = [];
   openedFiles: string[] = [];
   props: Record<string, unknown>;
   constructor(compact = false) {
     const fullLoader = (input: Record<string, unknown>) => new Promise((resolve, reject) => {
-      this.requests.push({ path: String(input.path), optimizeImage: input.optimizeImage, imageMaxBytes: input.imageMaxBytes, resolve, reject });
+      this.requests.push({ input, path: String(input.path), optimizeImage: input.optimizeImage, imageMaxBytes: input.imageMaxBytes, resolve, reject });
     });
     hooks.rpc = () => fullLoader;
     this.props = {
@@ -372,6 +382,114 @@ function visibleText(tree: unknown): string {
   if (Array.isArray(tree)) return tree.map(visibleText).join("");
   return visibleText((tree as Element).props.children);
 }
+
+test("expanded galleries download the selected original in bounded chunks while navigation stays usable", async () => {
+  for (const compact of [true, false]) {
+    hooks.platform.OS = "web";
+    const fixture = new GalleryFixture(compact);
+    const writes: number[] = [];
+    let picks = 0, finish: () => void = () => {};
+    hooks.filePicker = async ({ suggestedName }) => {
+      picks += 1;
+      assert.equal(suggestedName, "two.png");
+      return { createWritable: async () => ({
+        write: async (bytes: Uint8Array) => { writes.push(...bytes); },
+        close: () => new Promise<void>(resolve => { finish = resolve; }),
+        abort: async () => { assert.fail("Successful downloads must close the destination"); },
+      }) };
+    };
+    const noticeCount = notices.length;
+    try {
+      assert.equal(descendants(fixture.tree).some(element => element.props.accessibilityLabel === "Download original image"), false);
+      fixture.press("Next image"); fixture.press("Enlarge image");
+      fixture.requests[0].resolve({ ok: true, mimeType: "image/jpeg", base64: "COMPRESSED_PREVIEW" });
+      await fixture.settle();
+      const button = descendants(fixture.tree).find(element => element.props.accessibilityLabel === "Download original image")!;
+      (button.props.onPress as () => void)();
+      (button.props.onPress as () => void)();
+      await fixture.settle();
+      assert.equal(picks, 1, "double clicks do not open a second picker");
+      const first = fixture.requests[1];
+      assert.equal(first.input.mode, "download");
+      assert.equal(first.path, "/tmp/two.png");
+      assert.equal(first.input.offset, 0);
+      assert.equal(first.input.length, compact ? COMPACT_FILE_TRANSFER_CHUNK_BYTES : DESKTOP_FILE_TRANSFER_CHUNK_BYTES);
+      fixture.press("Next image"); fixture.press("Close image viewer");
+      first.resolve({ ok: true, base64: "YWJj", size: 6, fileVersion: "v1", done: false });
+      await fixture.settle();
+      const second = fixture.requests[3];
+      assert.equal(second.path, "/tmp/two.png", "navigation never replaces an in-flight download source");
+      assert.equal(second.input.offset, 3);
+      assert.equal(second.input.fileVersion, "v1");
+      assert.equal(second.input.length, first.input.length);
+      fixture.press("Enlarge image");
+      assert.match(visibleText(fixture.tree), /50%/);
+      second.resolve({ ok: true, base64: "ZGVm", size: 6, fileVersion: "v1", done: true });
+      await fixture.settle();
+      assert.deepEqual(writes, [...Buffer.from("abcdef")]);
+      assert.equal(descendants(fixture.tree).find(element => element.props.accessibilityLabel === "Download original image")?.props.disabled, true, "remain locked until the destination closes");
+      finish(); await fixture.settle();
+      assert.equal(descendants(fixture.tree).find(element => element.props.accessibilityLabel === "Download original image")?.props.disabled, false);
+      assert.match(notices[noticeCount], /Downloaded two \(6 B\)/);
+    } finally { fixture.dispose(); }
+  }
+});
+
+test("gallery picker cancellation and transfer errors restore the download control for retry", async () => {
+  for (const cancellation of [true, false]) {
+    const fixture = new GalleryFixture(true);
+    const errorCount = errors.length;
+    let aborted = false;
+    hooks.filePicker = cancellation
+      ? async () => { const error = new Error("Picker dismissed"); error.name = "AbortError"; throw error; }
+      : async () => ({ createWritable: async () => ({ write: async () => {}, close: async () => {}, abort: async () => { aborted = true; } }) });
+    try {
+      fixture.press("Enlarge image"); fixture.press("Download original image");
+      await fixture.settle();
+      if (!cancellation) { fixture.requests[1].reject(new Error("Transfer failed")); await fixture.settle(); }
+      assert.equal(errors.length, errorCount + (cancellation ? 0 : 1));
+      if (!cancellation) { assert.equal(errors.at(-1), "Transfer failed"); assert.equal(aborted, true); }
+      assert.equal(descendants(fixture.tree).find(element => element.props.accessibilityLabel === "Download original image")?.props.disabled, false);
+      hooks.filePicker = async () => ({ createWritable: async () => ({ write: async () => {}, close: async () => {} }) });
+      fixture.press("Download original image"); await fixture.settle();
+      const retry = fixture.requests.at(-1)!;
+      assert.equal(retry.input.mode, "download");
+      retry.resolve({ ok: true, base64: "", size: 0, fileVersion: "v1", done: true });
+      await fixture.settle();
+      assert.equal(descendants(fixture.tree).find(element => element.props.accessibilityLabel === "Download original image")?.props.disabled, false);
+    } finally { fixture.dispose(); }
+  }
+});
+
+test("unmounted gallery downloads ignore late updates and still abort a failed destination", async () => {
+  const fixture = new GalleryFixture(true);
+  const errorCount = errors.length;
+  let aborted = false;
+  hooks.filePicker = async () => ({ createWritable: async () => ({ write: async () => {}, close: async () => {}, abort: async () => { aborted = true; } }) });
+  fixture.press("Enlarge image"); fixture.press("Download original image");
+  await fixture.settle();
+  fixture.dispose();
+  fixture.requests[1].reject(new Error("Connection lost after unmount"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(errors.length, errorCount);
+  assert.equal(fixture.scope.dirty, false);
+  assert.equal(aborted, true);
+});
+
+test("gallery downloads match file-preview support and require a local target", () => {
+  for (const OS of ["ios", "android", "web"]) {
+    hooks.platform.OS = OS;
+    const fixture = new GalleryFixture(true);
+    try {
+      fixture.press("Enlarge image");
+      assert.equal(descendants(fixture.tree).some(element => element.props.accessibilityLabel === "Download original image"), OS === "web");
+      fixture.props.resolveFile = () => null;
+      fixture.render();
+      assert.equal(descendants(fixture.tree).some(element => element.props.accessibilityLabel === "Download original image"), false);
+    } finally { fixture.dispose(); }
+  }
+  hooks.platform.OS = "web";
+});
 
 test("carousel selection, thumbnails and shrinking streamed groups retain a valid current image", () => {
   const fixture = new GalleryFixture(true);
@@ -531,11 +649,82 @@ test("changing a resolved file target or clearing an open gallery discards its f
   } finally { fixture.dispose(); }
 });
 
+class FilePreviewFixture {
+  scope = new HookScope();
+  fullScope?: HookScope;
+  tree: unknown;
+  fullTree: unknown;
+  requests: { input: Record<string, unknown>; resolve(value: unknown): void; reject(error: Error): void }[] = [];
+  props: Record<string, unknown>;
+  constructor(compact: boolean) {
+    const loader = (input: Record<string, unknown>) => new Promise((resolve, reject) => this.requests.push({ input, resolve, reject }));
+    hooks.rpc = () => loader;
+    this.props = { target: { path: "/tmp/linked-image", requestId: "first", agentId: "a", workspaceId: "w" }, theme, layout: { compact, platform: hooks.platform.OS } };
+    this.render();
+  }
+  render(): void {
+    this.tree = this.scope.render(module.exports.PanelFilePreview, this.props);
+    const full = descendants(this.tree).find(element => typeof element.type === "function" && element.type.name === "FullImage");
+    if (!full) { this.fullScope?.dispose(); this.fullScope = undefined; }
+    this.fullTree = full ? (this.fullScope ??= new HookScope()).render(full.type as Component, full.props) : null;
+  }
+  async settle(): Promise<void> { await new Promise(resolve => setImmediate(resolve)); this.render(); }
+  dispose(): void { this.scope.dispose(); this.fullScope?.dispose(); module.exports.disposeImagePreviews(); }
+}
+
+test("file tabs identify images first, load the shared bounded viewer and reuse its cached payload", async () => {
+  for (const OS of ["ios", "android", "web"]) for (const compact of [true, false]) {
+    hooks.platform.OS = OS;
+    const fixture = new FilePreviewFixture(compact);
+    try {
+      assert.equal(fixture.requests.length, 1);
+      assert.equal(fixture.requests[0].input.mode, "read");
+      assert.equal(fixture.requests[0].input.imageMetadataOnly, true);
+      fixture.requests[0].resolve({ ok: true, mimeType: "image/png", size: FILE_TRANSFER_CHUNK_BYTES + 1 });
+      await fixture.settle();
+      assert.equal(fixture.requests.length, 2);
+      assert.equal(fixture.requests[1].input.mode, "image");
+      assert.equal(fixture.requests[1].input.optimizeImage, true);
+      assert.equal(fixture.requests[1].input.imageMaxBytes, compact || OS !== "web" ? COMPACT_IMAGE_VIEWER_MAX_BYTES : FILE_TRANSFER_CHUNK_BYTES);
+      fixture.requests[1].resolve({ ok: true, mimeType: "image/jpeg", base64: "OPTIMIZED", fileVersion: "v1" });
+      await fixture.settle();
+      const zoom = descendants(fixture.fullTree).find(element => element.type === module.exports.ZoomableImage);
+      assert.ok(zoom, "linked images use the same zoom component as the gallery");
+      assert.equal(zoom.props.uri, "data:image/jpeg;base64,OPTIMIZED");
+      fixture.props.target = { ...(fixture.props.target as object), requestId: "reopened" };
+      fixture.render();
+      assert.equal(fixture.requests.length, 3);
+      fixture.requests[2].resolve({ ok: true, mimeType: "image/png", size: FILE_TRANSFER_CHUNK_BYTES + 1 });
+      await fixture.settle();
+      assert.equal(fixture.requests.length, 3, "reopening does not download the full preview again");
+    } finally { fixture.dispose(); }
+  }
+  hooks.platform.OS = "web";
+});
+
+test("linked image errors retry the optimized preview and unmount ignores pending replies", async () => {
+  hooks.platform.OS = "ios";
+  const fixture = new FilePreviewFixture(true);
+  try {
+    fixture.requests[0].resolve({ ok: true, mimeType: "image/png" }); await fixture.settle();
+    fixture.requests[1].reject(new Error("Connection lost")); await fixture.settle();
+    assert.match(visibleText(fixture.fullTree), /Could not load the full image/);
+    const retry = descendants(fixture.fullTree).find(element => element.props.accessibilityLabel === "Retry full image")!;
+    (retry.props.onPress as () => void)(); fixture.render();
+    assert.equal(fixture.requests[2].input.optimizeImage, true);
+    assert.equal(fixture.requests[2].input.imageMaxBytes, COMPACT_IMAGE_VIEWER_MAX_BYTES);
+    fixture.dispose();
+    fixture.requests[2].resolve({ ok: true, mimeType: "image/jpeg", base64: "LATE" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fixture.fullScope?.dirty, false);
+  } finally { fixture.dispose(); hooks.platform.OS = "web"; }
+});
+
 class ZoomFixture {
   scope = new HookScope();
   tree: unknown;
   navigation: number[] = [];
-  props = { uri: "data:image/png;base64,IMAGE", label: "Screenshot", theme, onError: () => {}, onNavigate: (direction: number) => this.navigation.push(direction) };
+  props: Record<string, unknown> = { uri: "data:image/png;base64,IMAGE", label: "Screenshot", theme, onError: () => {}, onNavigate: (direction: number) => this.navigation.push(direction) };
   constructor() {
     this.render();
     this.call("onLayout", { nativeEvent: { layout: { width: 400, height: 300 } } });
@@ -559,6 +748,21 @@ class ZoomFixture {
   }
 }
 const touch = (...points: [number, number][]) => ({ nativeEvent: { touches: points.map(([locationX, locationY]) => ({ locationX, locationY })) } });
+
+test("single-image file previews zoom and pan without a carousel navigation callback", () => {
+  const fixture = new ZoomFixture();
+  try {
+    fixture.props = { ...fixture.props, onNavigate: undefined };
+    fixture.render();
+    fixture.call("onPanResponderGrant", touch([100, 100]));
+    fixture.call("onPanResponderRelease", touch(), { dx: -80, dy: 0 });
+    fixture.press("Zoom in");
+    assert.match(visibleText(fixture.tree), /200%/);
+    fixture.press("Reset zoom");
+    assert.match(visibleText(fixture.tree), /100%/);
+    assert.deepEqual(fixture.navigation, []);
+  } finally { fixture.scope.dispose(); }
+});
 
 test("pinch owns the first finger at fit scale and responds as soon as the second finger moves", () => {
   const fixture = new ZoomFixture();

@@ -242,7 +242,7 @@ export async function openLocalFile(
     return { ok: false, error: "path could not be resolved to an absolute location" };
   }
   if (input.mode === "read") {
-    return readLocalFile(absolutePath);
+    return readLocalFile(absolutePath, input.imageMetadataOnly);
   }
   if (input.mode === "image") {
     return readLocalImage(absolutePath, input.optimizeImage, input.imageMaxBytes, input.fileVersion);
@@ -360,7 +360,7 @@ async function readLocalImage(absolutePath: string, optimizeImage = false, image
   }
 }
 
-async function readLocalFile(absolutePath: string): Promise<{
+async function readLocalFile(absolutePath: string, imageMetadataOnly = false): Promise<{
   ok: boolean;
   error?: string;
   content?: string;
@@ -376,6 +376,22 @@ async function readLocalFile(absolutePath: string): Promise<{
     const stats = await handle.stat();
     if (!stats.isFile()) return { ok: false, error: "Path is not a regular file" };
     const size = stats.size;
+    if (imageMetadataOnly) {
+      const header = Buffer.alloc(Math.min(size, 32));
+      let bytesRead = 0;
+      while (bytesRead < header.length) {
+        const result = await handle.read(header, bytesRead, header.length - bytesRead, bytesRead);
+        if (result.bytesRead === 0) break;
+        bytesRead += result.bytesRead;
+      }
+      const mimeType = imageMimeType(header.subarray(0, bytesRead));
+      if (mimeType) {
+        if (fileVersion(await handle.stat()) !== fileVersion(stats)) {
+          return { ok: false, error: "The file changed while it was being read" };
+        }
+        return { ok: true, mimeType, size };
+      }
+    }
     const buffer = Buffer.alloc(Math.min(size, MAX_READ_BYTES));
     let bytesRead = 0;
     while (bytesRead < buffer.length) {

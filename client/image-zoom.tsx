@@ -28,7 +28,7 @@ export function ZoomableImage({ uri, label, theme, onError, onNavigate }: {
   label: string;
   theme: PluginTheme;
   onError(): void;
-  onNavigate(direction: -1 | 1): void;
+  onNavigate?(direction: -1 | 1): void;
 }) {
   const [frame, setFrame] = useState<Size>({ width: 0, height: 0 });
   const [source, setSource] = useState<Size | null>(null);
@@ -99,7 +99,7 @@ export function ZoomableImage({ uri, label, theme, onError, onNavigate }: {
     onPanResponderRelease: (_event, state) => {
       const start = gesture.current;
       gesture.current = null;
-      if (start && !start.pinched && current.current.scale === 1 && Math.abs(state.dx) >= 40 && Math.abs(state.dx) > Math.abs(state.dy) * 1.5) onNavigate(state.dx < 0 ? 1 : -1);
+      if (start && !start.pinched && current.current.scale === 1 && Math.abs(state.dx) >= 40 && Math.abs(state.dx) > Math.abs(state.dy) * 1.5) onNavigate?.(state.dx < 0 ? 1 : -1);
     },
     onPanResponderTerminate: () => { gesture.current = null; },
     onPanResponderTerminationRequest: () => false,
