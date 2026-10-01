@@ -1,13 +1,11 @@
 import type { InlineToken } from "../shared/markdown-parse";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { useRpc } from "@getpaseo/plugin/client";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View, type ImageStyle, type StyleProp, type ViewStyle } from "react-native";
+import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MarkdownSpan } from "./markdown-span";
 import {
   createCodeLineAnchor,
   isValidHttpUrl,
-  localImagePreviewRpc,
   type CodeLineAnchor,
 } from "../shared/review";
 import type { LocalFileTarget } from "../shared/markdown-parse";
@@ -19,11 +17,7 @@ import { copyText, FlatList, Icon } from "@getpaseo/plugin/client/react-native";
 import { openExternalUrlOnWeb } from "./web";
 import { compileMarkdown } from "./markdown-compile";
 import { codeHighlightWindow } from "../shared/code-window";
-import {
-  retainImagePreview,
-  retryImagePreview,
-  type ThumbnailState,
-} from "./image-preview-store";
+import { ImageGallery, type GalleryImage } from "./image-gallery";
 
 /**
  * Renders parsed markdown blocks with React Native primitives. Paseo does not
@@ -178,8 +172,8 @@ function InlineRun({
               </MarkdownSpan>
             );
           case "image": {
-            // Inline image inside a text line renders as its alt text; when the
-            // image is wrapped in a link, the whole placeholder is tappable.
+            // Text-only contexts keep an alt label. Paragraphs lift images out
+            // of Text so their native preview cards can render as siblings.
             const image = (
               <MarkdownSpan key={index} style={{ color: theme.colors.foregroundMuted }} selectable={selectable}>
                 {`[${token.alt}]`}
@@ -988,137 +982,9 @@ function useStyles(theme: PluginTheme, compact: boolean) {
       tableRow: { flexDirection: "row" } as const,
       headerRow: { backgroundColor: theme.colors.surface2 } as const,
       cellBorder: { borderColor: theme.colors.border } as const,
-      image: { width: "100%" as const, height: compact ? 160 : 220, borderRadius: 6 } as const,
-      localImageCard: {
-        alignSelf: "flex-start" as const,
-        width: "100%" as const,
-        maxWidth: compact ? 320 : 420,
-        padding: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        borderRadius: 10,
-        backgroundColor: theme.colors.surface1,
-        overflow: "hidden" as const,
-      } as const,
       paragraphGap: { gap: 0 } as const,
     }),
     [theme, compact],
-  );
-}
-
-function LocalMarkdownImage({
-  target,
-  alt,
-  theme,
-  compact,
-  style,
-  cardStyle,
-  onPress,
-}: {
-  target: LocalFileTarget;
-  alt: string;
-  theme: PluginTheme;
-  compact: boolean;
-  style: StyleProp<ImageStyle>;
-  cardStyle: StyleProp<ViewStyle>;
-  onPress?: (target: LocalFileTarget) => void;
-}) {
-  const loadThumbnail = useRpc(localImagePreviewRpc);
-  const [state, setState] = useState<ThumbnailState>({ status: "idle" });
-  const label = alt.trim() || target.path.split(/[\\/]/).pop() || "Image";
-  const maxEdge = compact ? 320 : 640;
-  const quality = compact ? 65 : 78;
-
-  useEffect(() => {
-    return retainImagePreview(target.path, loadThumbnail, setState, {
-      autoLoad: !compact,
-      maxEdge,
-      quality,
-    });
-  }, [compact, loadThumbnail, maxEdge, quality, target.path]);
-
-  if (state.status === "ready") {
-    const dataUri = state.dataUri;
-    return (
-      <Pressable
-        accessibilityRole="imagebutton"
-        accessibilityLabel={`Open local image ${label}`}
-        style={cardStyle}
-        onPress={() => onPress?.(target)}
-      >
-        <Image source={{ uri: dataUri }} style={style} resizeMode="contain" accessibilityLabel={alt || label} />
-      </Pressable>
-    );
-  }
-
-  if (state.status === "error") {
-    return (
-      <View style={cardStyle} accessibilityLabel={`Local image ${label} could not be loaded`}>
-        <Text style={{ color: theme.colors.statusDanger }}>{`${label}: ${state.message}`}</Text>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 8 }}>
-          <Pressable accessibilityRole="button" onPress={() => retryImagePreview(target.path, { maxEdge, quality })}>
-            <Text style={{ color: theme.colors.accent }}>Retry thumbnail</Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" onPress={() => onPress?.(target)}>
-            <Text style={{ color: theme.colors.accent }}>Open full image</Text>
-          </Pressable>
-        </View>
-      </View>
-    );
-  }
-
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={state.status === "loading" ? `Loading local image ${label}` : `Load local image ${label}`}
-      style={cardStyle}
-      disabled={state.status === "loading"}
-      onPress={() => retryImagePreview(target.path, { maxEdge, quality })}
-    >
-      <Text style={{ color: state.status === "loading" ? theme.colors.foregroundMuted : theme.colors.accent }}>
-        {state.status === "loading" ? `Loading ${label}…` : `Load ${label}`}
-      </Text>
-    </Pressable>
-  );
-}
-
-function RemoteMarkdownImage({
-  url,
-  alt,
-  compact,
-  style,
-  cardStyle,
-  theme,
-}: {
-  url: string;
-  alt: string;
-  compact: boolean;
-  style: StyleProp<ImageStyle>;
-  cardStyle: StyleProp<ViewStyle>;
-  theme: PluginTheme;
-}) {
-  const [loaded, setLoaded] = useState(!compact);
-  if (!loaded) {
-    return (
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Load remote image ${alt || "image"}`}
-        style={cardStyle}
-        onPress={() => setLoaded(true)}
-      >
-        <Text style={{ color: theme.colors.accent }}>Load image</Text>
-      </Pressable>
-    );
-  }
-  return (
-    <View style={cardStyle}>
-      <Image
-        source={{ uri: url }}
-        style={style}
-        resizeMode="contain"
-        accessibilityLabel={alt}
-      />
-    </View>
   );
 }
 
@@ -1435,38 +1301,66 @@ export function MarkdownText({
             return null;
           case "p":
           default: {
-            const singleTokens = block.lines.length === 1 ? compiled.inline(block.lines[0]) : [];
-            const single = singleTokens.length === 1 && singleTokens[0]?.type === "image";
-            if (single) {
-              const token = singleTokens[0];
-              if (token.type === "image") {
-                const localTarget = localFileResolver?.(token.url) ?? null;
-                if (localTarget) {
-                  return (
-                    <LocalMarkdownImage
-                      key={index}
-                      target={localTarget}
-                      alt={token.alt}
-                      theme={theme}
-                      compact={compact}
-                      style={styles.image}
-                      cardStyle={[styles.localImageCard, blockSpacing ?? null]}
-                      onPress={onLocalFilePress}
-                    />
-                  );
-                }
-                return (
-                  <RemoteMarkdownImage
-                    key={index}
-                    url={token.url}
-                    alt={token.alt}
-                    compact={compact}
+            const hasImages = block.lines.some((line) =>
+              compiled.inline(line).some((token) => token.type === "image"),
+            );
+            if (hasImages) {
+              const content: ReactNode[] = [];
+              let pendingImages: GalleryImage[] = [];
+              let galleryKey = "";
+              const flushImages = (): void => {
+                if (pendingImages.length === 0) return;
+                content.push(
+                  <ImageGallery
+                    key={galleryKey}
+                    images={pendingImages}
                     theme={theme}
-                    style={styles.image}
-                    cardStyle={[styles.localImageCard, blockSpacing ?? null]}
-                  />
+                    compact={compact}
+                    resolveFile={localFileResolver}
+                    onLocalFilePress={onLocalFilePress}
+                    onLinkPress={(href) => {
+                      const target = localFileResolver?.(href) ?? null;
+                      if (target) onLocalFilePress?.(target);
+                      else void openLink(href);
+                    }}
+                  />,
                 );
-              }
+                pendingImages = [];
+              };
+              block.lines.forEach((line, lineIndex) => {
+                const tokens = compiled.inline(line);
+                let textStart = 0;
+                const flushText = (end: number): void => {
+                  if (end === textStart) return;
+                  const run = tokens.slice(textStart, end);
+                  if (run.every((token) => token.type === "text" && !token.text.trim())) return;
+                  flushImages();
+                  content.push(
+                    <MarkdownSpan key={`${lineIndex}:text:${textStart}`} style={styles.paragraphLine} selectable={selectable} onPress={onChunkPress}>
+                      <InlineRun
+                        tokens={run}
+                        theme={theme}
+                        styles={styles}
+                        refs={refs}
+                        selectable={selectable}
+                        localFileResolver={localFileResolver}
+                        onLocalFilePress={onLocalFilePress}
+                      />
+                    </MarkdownSpan>,
+                  );
+                };
+                tokens.forEach((token, tokenIndex) => {
+                  if (token.type !== "image") return;
+                  flushText(tokenIndex);
+                  textStart = tokenIndex + 1;
+                  const key = `${lineIndex}:image:${tokenIndex}`;
+                  if (pendingImages.length === 0) galleryKey = key;
+                  pendingImages.push(token);
+                });
+                flushText(tokens.length);
+              });
+              flushImages();
+              return <View key={index} style={[{ gap: 8 }, blockSpacing]}>{content}</View>;
             }
             return (
               <View key={index} style={[styles.paragraphGap, blockSpacing]}>

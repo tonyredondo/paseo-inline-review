@@ -10,6 +10,8 @@ const files = [
   "client/comment-sync.ts",
   "client/file-download.ts",
   "client/image-preview-store.ts",
+  "client/image-gallery.tsx",
+  "client/image-zoom.tsx",
   "client/markdown-compile.ts",
   "client/markdown-stream.ts",
   "client/paragraph-stream.ts",

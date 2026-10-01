@@ -24,6 +24,32 @@ type WebGlobals = typeof globalThis & {
   open?(url: string, target?: string, features?: string): unknown;
 };
 
+/** Keyboard navigation belongs only to an open image viewer. */
+export function listenImageViewerKeys(onKey: (key: "ArrowLeft" | "ArrowRight" | "Escape") => void): () => void {
+  if (Platform.OS !== "web") return () => {};
+  const web = globalThis as unknown as {
+    addEventListener?(name: string, listener: (event: ImageViewerKeyEvent) => void): void;
+    removeEventListener?(name: string, listener: (event: ImageViewerKeyEvent) => void): void;
+  };
+  const listener = (event: ImageViewerKeyEvent): void => {
+    if (event.altKey || event.ctrlKey || event.metaKey || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target?.tagName ?? "")) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Escape") return;
+    event.preventDefault();
+    onKey(event.key);
+  };
+  web.addEventListener?.("keydown", listener);
+  return () => web.removeEventListener?.("keydown", listener);
+}
+
+interface ImageViewerKeyEvent {
+  key: string;
+  altKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  target?: { tagName?: string };
+  preventDefault(): void;
+}
+
 export class DownloadCancelledError extends Error {
   constructor() {
     super("Download cancelled");

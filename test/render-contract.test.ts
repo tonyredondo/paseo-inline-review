@@ -11,6 +11,7 @@ import { test } from "node:test";
 
 import * as path from "node:path";
 const rendererSource = String(readFileSync(path.resolve("client/markdown.tsx"), "utf8"));
+const gallerySource = String(readFileSync(path.resolve("client/image-gallery.tsx"), "utf8"));
 const webSource = String(readFileSync(path.resolve("client/web.ts"), "utf8"));
 const wideFrameMutationSource = String(readFileSync(path.resolve("client/wide-frame-mutations.ts"), "utf8"));
 
@@ -316,28 +317,27 @@ test("assistant renderers never suppress host timeline rows", () => {
 });
 
 test("local markdown images load bounded thumbnails and full images stay explicit", () => {
-  const branchStart = rendererSource.indexOf("const singleTokens = block.lines.length === 1");
-  const singleImageBranch = rendererSource.slice(branchStart, branchStart + 2_000);
-  assert.match(singleImageBranch, /localFileResolver\?\.\(token\.url\)/);
-  assert.match(singleImageBranch, /<LocalMarkdownImage/);
-  assert.match(singleImageBranch, /cardStyle=\{\[styles\.localImageCard, blockSpacing \?\? null\]\}/);
-  assert.match(rendererSource, /useRpc\(localImagePreviewRpc\)/);
+  const branchStart = rendererSource.indexOf("const hasImages = block.lines.some");
+  const imageParagraphBranch = rendererSource.slice(branchStart, branchStart + 4_000);
+  assert.match(imageParagraphBranch, /<ImageGallery/);
+  assert.match(imageParagraphBranch, /resolveFile=\{localFileResolver\}/);
+  assert.match(gallerySource, /useRpc\(localImagePreviewRpc\)/);
   assert.doesNotMatch(rendererSource, /mode: "image"/);
-  assert.match(rendererSource, /retainImagePreview\(target\.path/);
-  assert.match(rendererSource, /autoLoad: !compact/);
-  assert.match(rendererSource, /const maxEdge = compact \? 320 : 640/);
-  assert.match(rendererSource, /const quality = compact \? 65 : 78/);
-  assert.match(rendererSource, /accessibilityLabel=\{state\.status === "loading" \? `Loading local image/);
-  assert.match(rendererSource, /source=\{\{ uri: dataUri \}\}/);
-  assert.match(rendererSource, />Open full image<\/Text>/);
-  assert.match(rendererSource, /localImageCard:[\s\S]{0,200}alignSelf: "flex-start"/);
-  assert.match(rendererSource, /localImageCard:[\s\S]{0,400}backgroundColor: theme\.colors\.surface1/);
+  assert.match(gallerySource, /retainImagePreview\(target\.path/);
+  assert.match(gallerySource, /autoLoad: enabled/);
+  assert.match(gallerySource, /const maxEdge = compact \? 320 : 640/);
+  assert.match(gallerySource, /const quality = compact \? 65 : 78/);
+  assert.match(gallerySource, /\{expanded \? \([\s\S]*<FullImage/);
+  assert.match(gallerySource, /mode: "image"/);
+  assert.match(gallerySource, /maxToRenderPerBatch=\{6\}/);
+  assert.match(gallerySource, /windowSize=\{3\}/);
 });
 
 test("compact remote markdown images wait for explicit interaction", () => {
-  assert.match(rendererSource, /const \[loaded, setLoaded\] = useState\(!compact\)/);
-  assert.match(rendererSource, /accessibilityLabel=\{`Load remote image/);
-  assert.match(rendererSource, /onPress=\{\(\) => setLoaded\(true\)\}/);
+  assert.match(gallerySource, /const \[enabled, setEnabled\] = useState\(!compact\)/);
+  assert.match(gallerySource, /const uri = remoteError \? null : target/);
+  assert.match(gallerySource, /enabled \? image\.url : null/);
+  assert.match(gallerySource, /onLoad=\{\(\) => setEnabled\(true\)\}/);
 });
 
 test("file preview panels render detected images instead of the binary fallback", () => {

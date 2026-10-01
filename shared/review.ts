@@ -257,6 +257,7 @@ export const saveCommentDeltaRpc = defineRpc({
 });
 /** Maximum bytes carried by one file-transfer RPC. */
 export const FILE_TRANSFER_CHUNK_BYTES = 5 * 1024 * 1024;
+export const COMPACT_IMAGE_VIEWER_MAX_BYTES = 3 * 1024 * 1024;
 export const COMPACT_FILE_TRANSFER_CHUNK_BYTES = 768 * 1024;
 export const DESKTOP_FILE_TRANSFER_CHUNK_BYTES = 2 * 1024 * 1024;
 /** Total-size safety rail for one download. */
@@ -294,6 +295,10 @@ export const openLocalFileRpc = defineRpc({
     lineStart: z.number().int().optional(),
     lineEnd: z.number().int().optional(),
     mode: z.enum(["open", "read", "image", "download"]).optional(),
+    /** For mode image, derive a detailed preview when the original exceeds imageMaxBytes. */
+    optimizeImage: z.boolean().optional(),
+    /** Maximum image file bytes before Base64; defaults to 5 MiB independently of download chunks. */
+    imageMaxBytes: z.number().int().positive().max(FILE_TRANSFER_CHUNK_BYTES).optional(),
     /** Chunked download: byte offset and max chunk size (client-driven). */
     offset: z.number().int().min(0).optional(),
     length: z.number().int().positive().max(FILE_TRANSFER_CHUNK_BYTES).optional(),

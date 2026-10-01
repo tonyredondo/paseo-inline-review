@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { IMAGE_THUMBNAIL_MAX_BYTES } from "../shared/review.ts";
+import { FILE_TRANSFER_CHUNK_BYTES, IMAGE_THUMBNAIL_MAX_BYTES } from "../shared/review.ts";
 
 export type ImagePreviewResult = {
   ok: boolean;
@@ -96,7 +96,7 @@ async function readSipsInfo(path: string): Promise<SipsInfo> {
  */
 export const platformImageProcessor: ImageProcessor = async (path, input) => {
   if (process.platform !== "darwin") {
-    throw new Error("Local thumbnails are unavailable on this daemon platform; open the full image instead");
+    throw new Error("Local image processing is unavailable on this daemon platform");
   }
 
   // sips deliberately produces a static first-frame preview for animated input.
@@ -139,7 +139,7 @@ export const platformImageProcessor: ImageProcessor = async (path, input) => {
     }
 
     if (!output || !outputInfo || output.byteLength > input.maxBytes) {
-      throw new Error(`Could not create a thumbnail below ${input.maxBytes} bytes`);
+      throw new Error(`Could not create an image preview below ${input.maxBytes} bytes`);
     }
     return {
       buffer: output,
@@ -207,11 +207,12 @@ export function createImagePreviewService({
     originalSize: number,
     maxEdge: number,
     quality: number,
+    maxBytes: number,
   ): Promise<ImagePreviewResult> {
     if (!(await hasSupportedSignature(path))) return { ok: false, error: "Unsupported local image format" };
-    const processed = await processor(path, { maxEdge, quality, maxBytes: IMAGE_THUMBNAIL_MAX_BYTES });
-    if (processed.buffer.byteLength > IMAGE_THUMBNAIL_MAX_BYTES) {
-      return { ok: false, error: "Generated thumbnail exceeds the configured byte limit" };
+    const processed = await processor(path, { maxEdge, quality, maxBytes });
+    if (processed.buffer.byteLength > maxBytes) {
+      return { ok: false, error: "Generated image preview exceeds the configured byte limit" };
     }
     const after = await stat(path);
     if (versionOf(after) !== fileVersion) return { ok: false, error: "The image changed while it was being processed" };
@@ -234,6 +235,9 @@ export function createImagePreviewService({
     maxEdge?: number;
     quality?: number;
     knownFileVersion?: string;
+    /** The viewer profile shares the thumbnail queue and bounded cache, never the 100 KiB cap. */
+    variant?: "thumbnail" | "viewer";
+    maxBytes?: number;
   }): Promise<ImagePreviewResult> {
     if (disposed) return { ok: false, error: "Image preview service is disposed" };
     try {
@@ -241,9 +245,11 @@ export function createImagePreviewService({
       if (!stats.isFile()) return { ok: false, error: "Path is not a regular file" };
       if (stats.size > MAX_SOURCE_BYTES) return { ok: false, error: "Image is larger than the 100 MB processing limit", originalSize: stats.size };
       const fileVersion = versionOf(stats);
-      const maxEdge = Math.min(1280, Math.max(64, input.maxEdge ?? 640));
-      const quality = Math.min(95, Math.max(35, input.quality ?? 78));
-      const key = `${fileVersion}:${maxEdge}:${quality}`;
+      const viewer = input.variant === "viewer";
+      const maxEdge = viewer ? 4096 : Math.min(1280, Math.max(64, input.maxEdge ?? 640));
+      const quality = viewer ? 88 : Math.min(95, Math.max(35, input.quality ?? 78));
+      const maxBytes = viewer ? Math.min(FILE_TRANSFER_CHUNK_BYTES, Math.max(1, input.maxBytes ?? FILE_TRANSFER_CHUNK_BYTES)) : IMAGE_THUMBNAIL_MAX_BYTES;
+      const key = `${fileVersion}:${maxEdge}:${quality}:${maxBytes}`;
       const cached = cache.get(key);
       if (cached) {
         hits += 1;
@@ -265,7 +271,7 @@ export function createImagePreviewService({
           async run() {
             let result: ImagePreviewResult;
             try {
-              result = await generate(input.path, fileVersion, stats.size, maxEdge, quality);
+              result = await generate(input.path, fileVersion, stats.size, maxEdge, quality, maxBytes);
             } catch (error) {
               result = { ok: false, error: error instanceof Error ? error.message : String(error) };
             }

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import { execFileSync } from "node:child_process";
+import { randomFillSync } from "node:crypto";
+import { deflateSync } from "node:zlib";
 import {
   mkdirSync,
   mkdtempSync,
@@ -10,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FILE_TRANSFER_CHUNK_BYTES } from "../shared/review.ts";
+import { COMPACT_IMAGE_VIEWER_MAX_BYTES, FILE_TRANSFER_CHUNK_BYTES } from "../shared/review.ts";
 
 const tempRoots: string[] = [];
 const importServer = (tag: string) => import(`../server/review.ts?${tag}`);
@@ -116,6 +119,86 @@ test("local image previews return a complete typed data payload", async () => {
   assert.equal(result.ok, true);
   assert.equal(result.mimeType, "image/png");
   assert.deepEqual(Buffer.from(result.base64 ?? "", "base64"), png);
+  const optimized = await server.openLocalFile({ path: filePath, mode: "image", optimizeImage: true });
+  assert.deepEqual(Buffer.from(optimized.base64 ?? "", "base64"), png);
+});
+
+function noisyPng(width: number, height: number, alpha: boolean): Buffer {
+  const stride = width * (alpha ? 4 : 3) + 1;
+  const pixels = randomFillSync(Buffer.alloc(stride * height));
+  for (let row = 0; row < height; row++) pixels[row * stride] = 0;
+  const chunk = (type: string, content: Buffer): Buffer => {
+    const body = Buffer.concat([Buffer.from(type), content]);
+    let crc = 0xffffffff;
+    for (const byte of body) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+    const prefix = Buffer.alloc(4), suffix = Buffer.alloc(4);
+    prefix.writeUInt32BE(content.length);
+    suffix.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+    return Buffer.concat([prefix, body, suffix]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width); header.writeUInt32BE(height, 4);
+  header[8] = 8; header[9] = alpha ? 6 : 2;
+  return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk("IHDR", header), chunk("IDAT", deflateSync(pixels)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+test("oversized viewer images are compressed, decodable, bounded and leave the source intact", { timeout: 120_000 }, async () => {
+  const root = tempRoot();
+  const server = await importServer("optimized-viewer");
+  for (const alpha of [false, true]) {
+    const original = noisyPng(4097, 1400, alpha);
+    assert.ok(original.length > FILE_TRANSFER_CHUNK_BYTES);
+    const input = join(root, alpha ? "transparent.png" : "photo.png");
+    writeFileSync(input, original);
+    const legacy = await server.openLocalFile({ path: input, mode: "image" });
+    assert.equal(legacy.ok, false);
+    const result = await server.openLocalFile({ path: input, mode: "image", optimizeImage: true });
+    if (process.platform !== "darwin") {
+      assert.equal(result.ok, false);
+      assert.match(result.error ?? "", /unavailable on this daemon platform/);
+      continue;
+    }
+    assert.equal(result.ok, true, result.error);
+    const output = Buffer.from(result.base64 ?? "", "base64");
+    assert.ok(output.length <= FILE_TRANSFER_CHUNK_BYTES);
+    assert.equal(result.size, output.length);
+    assert.equal(result.mimeType, alpha ? "image/png" : "image/jpeg");
+    const derived = join(root, alpha ? "derived.png" : "derived.jpg");
+    writeFileSync(derived, output);
+    const info = execFileSync('/usr/bin/sips', ['--getProperty','pixelWidth','--getProperty','pixelHeight','--getProperty','hasAlpha',derived], { encoding: 'utf8', timeout: 15_000 });
+    const width = Number(/pixelWidth:\s*(\d+)/.exec(info)?.[1]);
+    const height = Number(/pixelHeight:\s*(\d+)/.exec(info)?.[1]);
+    assert.ok(width >= 1400 && width <= 4096, info);
+    assert.ok(Math.abs(width / height - 4097 / 1400) < 0.01);
+    assert.equal(/hasAlpha:\s*yes/.test(info), alpha);
+    assert.deepEqual(readFileSync(input), original);
+    const mobile = await server.openLocalFile({ path: input, mode: "image", optimizeImage: true, imageMaxBytes: COMPACT_IMAGE_VIEWER_MAX_BYTES });
+    assert.equal(mobile.ok, true, mobile.error);
+    assert.ok(Buffer.from(mobile.base64 ?? "", "base64").length <= COMPACT_IMAGE_VIEWER_MAX_BYTES);
+    console.log(JSON.stringify({ originalBytes: original.length, viewerBytes: output.length, width, height, alpha }));
+  }
+});
+
+test("images between 3 and 5 MiB stay original on desktop and are compressed on mobile", { timeout: 120_000 }, async () => {
+  const root = tempRoot(), server = await importServer("mobile-viewer-limit");
+  const original = noisyPng(1400, 800, false), input = join(root, "medium.png");
+  assert.ok(original.length > COMPACT_IMAGE_VIEWER_MAX_BYTES && original.length < FILE_TRANSFER_CHUNK_BYTES);
+  writeFileSync(input, original);
+  const desktop = await server.openLocalFile({ path: input, mode: "image", optimizeImage: true });
+  assert.deepEqual(Buffer.from(desktop.base64 ?? "", "base64"), original);
+  const mobile = await server.openLocalFile({ path: input, mode: "image", optimizeImage: true, imageMaxBytes: COMPACT_IMAGE_VIEWER_MAX_BYTES });
+  if (process.platform === "darwin") {
+    assert.equal(mobile.ok, true, mobile.error);
+    assert.ok(Buffer.from(mobile.base64 ?? "", "base64").length <= COMPACT_IMAGE_VIEWER_MAX_BYTES);
+    assert.equal(mobile.mimeType, "image/jpeg");
+    assert.deepEqual(readFileSync(input), original);
+  } else {
+    assert.equal(mobile.ok, false);
+    assert.match(mobile.error ?? "", /unavailable on this daemon platform/);
+  }
 });
 
 test("the normal file preview recognizes images instead of reporting binary", async () => {

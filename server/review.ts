@@ -244,7 +244,7 @@ export async function openLocalFile(
     return readLocalFile(absolutePath);
   }
   if (input.mode === "image") {
-    return readLocalImage(absolutePath);
+    return readLocalImage(absolutePath, input.optimizeImage, input.imageMaxBytes);
   }
   if (input.mode === "download") {
     return downloadLocalFile(
@@ -310,7 +310,7 @@ function fileVersion(stats: Stats): string {
 }
 
 /** Returns one complete, validated image. Partial image payloads cannot decode. */
-async function readLocalImage(absolutePath: string): Promise<{
+async function readLocalImage(absolutePath: string, optimizeImage = false, imageMaxBytes = MAX_READ_BYTES): Promise<{
   ok: boolean;
   error?: string;
   size?: number;
@@ -322,8 +322,13 @@ async function readLocalImage(absolutePath: string): Promise<{
     handle = await open(absolutePath, "r");
     const stats = await handle.stat();
     if (!stats.isFile()) return { ok: false, error: "Path is not a regular file" };
-    if (stats.size > MAX_READ_BYTES) {
-      return { ok: false, error: "Image is larger than the 5 MB inline preview limit", size: stats.size };
+    const maxBytes = Math.min(MAX_READ_BYTES, Math.max(1, imageMaxBytes));
+    if (stats.size > maxBytes) {
+      if (optimizeImage) {
+        const preview = await imagePreviewService.request({ path: absolutePath, variant: "viewer", maxBytes });
+        return { ok: preview.ok, error: preview.error, size: preview.thumbnailSize ?? stats.size, base64: preview.base64, mimeType: preview.mimeType };
+      }
+      return { ok: false, error: `Image is larger than the ${maxBytes / (1024 * 1024)} MiB viewer limit`, size: stats.size };
     }
     const buffer = Buffer.alloc(stats.size);
     let bytesRead = 0;

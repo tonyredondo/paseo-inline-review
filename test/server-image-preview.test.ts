@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createImagePreviewService, type ImageProcessor } from "../server/image-preview.ts";
-import { IMAGE_THUMBNAIL_MAX_BYTES } from "../shared/review.ts";
+import { COMPACT_IMAGE_VIEWER_MAX_BYTES, FILE_TRANSFER_CHUNK_BYTES, IMAGE_THUMBNAIL_MAX_BYTES } from "../shared/review.ts";
 
 const roots: string[] = [];
 function imageFile(name: string): string {
@@ -83,6 +83,39 @@ test("server thumbnail processing concurrency never exceeds two", async () => {
   await Promise.all(requests);
   assert.equal(maxActive, 2);
   service.dispose();
+});
+
+test("viewer derivatives have a separate high-resolution profile and retain the 5 MiB bound", async () => {
+  const path = imageFile("viewer-profile.png");
+  const inputs: { maxEdge: number; quality: number; maxBytes: number }[] = [];
+  const service = createImagePreviewService({ processor: async (_path, input) => {
+    inputs.push(input);
+    return fakeProcessor(Buffer.alloc(input.maxBytes > IMAGE_THUMBNAIL_MAX_BYTES ? IMAGE_THUMBNAIL_MAX_BYTES + 1 : 32))(_path, input);
+  } });
+  try {
+    const viewer = await service.request({ path, variant: "viewer" });
+    assert.equal(viewer.ok, true);
+    assert.deepEqual(inputs[0], { maxEdge: 4096, quality: 88, maxBytes: FILE_TRANSFER_CHUNK_BYTES });
+    assert.ok((viewer.thumbnailSize ?? Infinity) <= FILE_TRANSFER_CHUNK_BYTES);
+    const thumbnail = await service.request({ path });
+    assert.equal(thumbnail.ok, true);
+    assert.equal(inputs.length, 2);
+    assert.ok((thumbnail.thumbnailSize ?? Infinity) <= IMAGE_THUMBNAIL_MAX_BYTES);
+    assert.deepEqual(await service.request({ path, variant: "viewer" }), viewer);
+    assert.equal(inputs.length, 2);
+    const mobile = await service.request({ path, variant: "viewer", maxBytes: COMPACT_IMAGE_VIEWER_MAX_BYTES });
+    assert.equal(mobile.ok, true);
+    assert.equal(inputs.length, 3);
+    assert.equal(inputs[2].maxBytes, COMPACT_IMAGE_VIEWER_MAX_BYTES);
+    assert.deepEqual(await service.request({ path, variant: "viewer" }), viewer);
+    assert.equal(inputs.length, 3);
+  } finally { service.dispose(); }
+  const oversized = createImagePreviewService({ processor: fakeProcessor(Buffer.alloc(FILE_TRANSFER_CHUNK_BYTES + 1)) });
+  assert.equal((await oversized.request({ path, variant: "viewer" })).ok, false);
+  const mobileOversized = createImagePreviewService({ processor: fakeProcessor(Buffer.alloc(COMPACT_IMAGE_VIEWER_MAX_BYTES + 1)) });
+  assert.equal((await mobileOversized.request({ path, variant: "viewer", maxBytes: COMPACT_IMAGE_VIEWER_MAX_BYTES })).ok, false);
+  mobileOversized.dispose();
+  oversized.dispose();
 });
 
 test("oversized processor output and same-size file replacement are rejected", async () => {
