@@ -894,7 +894,7 @@ function UserMessageCard({
         borderLeftColor: withAlpha(theme.colors.accent, 0.35),
         paddingHorizontal: 10,
         paddingTop: 12,
-        paddingBottom: 8,
+        paddingBottom: 2,
         marginVertical: 2,
       } as const,
       time: {
@@ -902,8 +902,8 @@ function UserMessageCard({
         fontSize: 11,
         textAlign: "right",
       } as const,
-      footer: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 4 } as const,
-      copy: { minHeight: 44, minWidth: 44, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 } as const,
+      footer: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 6 } as const,
+      copy: { minHeight: 32, minWidth: 44, paddingHorizontal: 4, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 } as const,
     }),
     [theme],
   );
@@ -1264,7 +1264,7 @@ function ReviewAssistantMessage({
               borderBottomRightRadius: endsFinalCard ? 8 : 0,
               paddingLeft: 16,
               paddingRight: 16,
-              paddingTop: startsFinalCard ? (layout.compact ? 44 : 32) : 4,
+              paddingTop: startsFinalCard ? 32 : 4,
               marginTop: startsFinalCard ? 4 : 0,
               position: "relative" as const,
             }
@@ -1540,7 +1540,7 @@ function ReviewAssistantMessage({
       >
         {finalCardPosition === "single" || finalCardPosition === "start" ? <Pressable accessibilityRole="button" accessibilityLabel="Comment on entire response"
           onPress={() => setEditing({ paragraphIndex: -1, paragraphText: shortenQuote(data.text), target: { kind: "response" }, draft: "" })}
-          style={{ position: "absolute", top: 0, left: 4, minHeight: layout.compact ? 44 : 32, paddingHorizontal: 4, flexDirection: "row", alignItems: "center", gap: 6 }}>
+          style={{ position: "absolute", top: 0, left: 4, minHeight: 32, paddingHorizontal: 4, flexDirection: "row", alignItems: "center", gap: 6 }}>
           <Icon name="MessageSquare" size={14} color={theme.colors.foregroundMuted} />
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Comment on response</Text>
         </Pressable> : null}

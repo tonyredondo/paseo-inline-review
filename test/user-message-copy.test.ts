@@ -90,7 +90,8 @@ test("phone and tablet user cards copy the original Markdown and confirm only cl
     const fixture = new Fixture(text, compact);
     try {
       assert.ok(fixture.button());
-      assert.equal((fixture.button().props.style as { minHeight: number }).minHeight, 44);
+      const target = fixture.button().props.style as { minHeight: number; minWidth: number };
+      assert.ok(target.minHeight >= 32 && target.minWidth >= 44);
       fixture.press();
       assert.equal(fixture.requests[0].text, text);
       assert.equal(fixture.copied(), false);
