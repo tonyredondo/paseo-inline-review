@@ -5,7 +5,7 @@ A [Paseo](https://paseo.sh) plugin for commenting on agent responses inline and 
 ## What it does
 
 - Replaces each assistant response with Markdown that supports inline review. Use Cmd/Ctrl + click on desktop or double-tap on mobile to comment on text, headings, quotes, callouts, footnotes and individual table cells. Cells also offer a long-press comment action in the native app. Images and details sections have dedicated comment buttons. Text uses the plugin's own CommonMark-style parser with GFM tables because Paseo does not expose its native markdown renderer to plugins.
-- **Comment on response** adds general feedback for the whole response. General comments appear before targeted comments in the panel and in the review sent to the agent.
+- **Comment on response** appears once on each final response card and adds general feedback for the whole response. General comments appear before targeted comments in the panel and in the review sent to the agent.
 - Native user-message cards include a visible **Copy** button that copies the original message, including its Markdown formatting. Touch browsers keep Paseo's original message actions visible without hover.
 - Adds a "Review (n)" composer pill for every agent that opens the plugin panel.
 - Comments persist in the daemon store and carry a status: **pending** comments are included in the next "Send to agent"; **sent** comments stay visible as muted conversation context (and can be re-opened).

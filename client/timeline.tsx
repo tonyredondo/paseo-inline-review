@@ -1538,7 +1538,7 @@ function ReviewAssistantMessage({
         hoverKey={finalCardHoverKey}
       >
       <View style={{ gap: 4 }}>
-        {finalCardPosition !== "middle" && finalCardPosition !== "end" ? <Pressable accessibilityRole="button" accessibilityLabel="Comment on entire response"
+        {finalCardPosition === "single" || finalCardPosition === "start" ? <Pressable accessibilityRole="button" accessibilityLabel="Comment on entire response"
           onPress={() => setEditing({ paragraphIndex: -1, paragraphText: shortenQuote(data.text), target: { kind: "response" }, draft: "" })}
           style={{ alignSelf: "flex-start", minHeight: layout.compact ? 44 : 32, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", gap: 6 }}>
           <Icon name="MessageSquare" size={14} color={theme.colors.foregroundMuted} />
